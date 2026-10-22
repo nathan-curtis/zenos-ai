@@ -298,7 +298,7 @@ script.zen_dojotools_identity:
 
 **First occupant behavior:**
 - First `user` added → also fills `VolumeInfo.acls.owner` (Head of Household slot)
-- First `ai_user` added → also fills `VolumeInfo.acls.partner` with `role: prime`
+- First `ai_user` added → also fills `VolumeInfo.acls.prime`
 
 **This is not how residents join.** For a `user`, this mode fills the Head of Household slot and nothing else. Everyone else who lives in the home joins through a family: add them with `family_add_member`, and attach that family with `household_add_family` (above) if it isn't in the household yet. Family members become residents by traversal.
 
@@ -317,7 +317,7 @@ script.zen_dojotools_identity:
   member_type: user   # or ai_user
 ```
 
-Removes from `members.users` or `members.ai_users`. Does **not** clear the `acls.owner` or `acls.partner` slots — those require a dedicated admin transfer (SP1).
+Removes from `members.users` or `members.ai_users`. Does **not** clear the `acls.owner` or `acls.prime` slots — those require a dedicated admin transfer (SP1).
 
 ---
 
@@ -425,7 +425,7 @@ script.zen_dojotools_identity:
   ai_entity: sensor.<cabinet_b>       # any type: user, ai_user
 ```
 
-Writes to `VolumeInfo.acls.partner[]` on **both** entities. Each entry carries `{guid, entity_id, cab_type, role: partner, sid}`.
+Adds each entity's GUID to the other's `VolumeInfo.acls.partners`.
 
 Idempotent — re-running does not create duplicate entries.
 
@@ -438,7 +438,7 @@ script.zen_dojotools_identity:
   ai_entity: sensor.<cabinet_b>
 ```
 
-Removes each entity from the other's `acls.partner[]`.
+Removes each entity from the other's `acls.partners`.
 
 ---
 
@@ -462,7 +462,7 @@ script.zen_dojotools_identity:
   mode: set_principal
   member_entity: sensor.<cabinet>
   member_type: user      # user → fills/replaces acls.owner (HoH)
-                         # ai_user → fills/replaces acls.partner prime slot
+                         # ai_user → fills/replaces acls.prime
   # family_entity: sensor.<family_cabinet>  # optional — targets family instead of default household
 ```
 

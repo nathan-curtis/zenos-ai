@@ -1,7 +1,7 @@
-# Zen DojoTools FileCabinet — v6.9.0
+# Zen DojoTools FileCabinet — v6.26.0
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
-**ZenOS Release:** 2026.7.0 'Neo'
+**ZenOS Release:** 2026.11.0 'This Is Spinal Tap'
 
 ---
 
@@ -22,7 +22,9 @@ zen_dojotools_filecabinet  (DojoTool, MCP-facing — expose this to MCP)
                         → CABS (reads) + set/remove_variable_legacy (writes)
 ```
 
-`zen_sutra_filecabinet` is the internal terminus. It is **not** MCP-exposed. Callers always go through `zen_dojotools_filecabinet`.
+`zen_sutra_filecabinet` is the engine. It is **not** MCP-exposed. Agents and MCP callers go through `zen_dojotools_filecabinet`; ZenOS scripts call `zen_sutra_filecabinet` directly for get, list, create, update, upsert and delete (one script run instead of two). The wrapper still accepts every action.
+
+Structural drawers (`AI_Cabinet_VolumeInfo`, `meta`, `_label_index`, `_zen_relationships`), the system cabinet and the vault are written only through the admin door, `zen_admintools_cabinet_writer`. FileCabinet refuses those keys.
 
 `stack=wiki` routes to `zen_sutra_wikijs`. FileCabinet is the single surface for both knowledge stacks. The former standalone `zen_dojotools_wikijs` script no longer exists.
 
@@ -34,10 +36,10 @@ There are exactly two licensed paths to cabinet data, and they must never be cro
 
 | Path | Who uses it | Purpose |
 |------|-------------|---------|
-| `script.zen_dojotools_filecabinet` | Scripts, automations, AI agents, MCP callers | All reads and writes |
-| `zenos_cabinets.jinja` CABS macros | Templates only — and only inside `zen_sutra_filecabinet` | Internal terminus reads |
+| `script.zen_dojotools_filecabinet` or `script.zen_sutra_filecabinet` | Scripts, automations, AI agents, MCP callers (agents only through the wrapper) | All drawer reads and writes |
+| `zenos_cabinets.jinja` CABS macros | Templates | Reads |
 
-Scripts must call `script.zen_dojotools_filecabinet`. Templates must import CABS. Never cross these paths — calling the Sutra directly from outside the Sutra creates a loop at prod rename.
+Scripts write through FileCabinet (or the admin door, for structural keys). Templates read through CABS. Never fire raw cabinet events.
 
 ---
 
@@ -46,18 +48,20 @@ Scripts must call `script.zen_dojotools_filecabinet`. Templates must import CABS
 ### Drawer Operations
 Implements the full CRUD+M model:
 
-- `create` — create a new drawer; errors if key exists (use `upsert` or `force_action` to overwrite)
-- `update` — full overwrite of an existing drawer (default mode: replace)
+- `create` — create a new drawer; errors if key exists (`force_action` overwrites the whole drawer)
+- `update` — overwrite an existing drawer (default mode: replace); `not_found` if the key is missing (`force_action` creates it)
 - `upsert` — create if absent, update if present (default mode: merge)
 - `delete` — remove a drawer and cascade to all children
-- `move` — transfer a drawer to another key or cabinet; cascade + index migration
+- `move` — transfer a drawer to another key or cabinet; cascade + index migration; refuses a destination that resolves to the source key
 - `copy` — copy a drawer; cascade; inherits source labels if no tags supplied
 - `relabel` — update the `_label_index` for a drawer without touching its value
 
-All writes are re-read and verified for correctness via `wait_template`.
+Every write states merge or replace: pass `mode: merge` or `mode: replace` (or `merge: true`). A read-modify-write caller passes `mode: replace`; under a merge, a key the caller removed comes back.
+
+All writes are re-read and verified via `wait_template`. A write the cabinet never confirmed answers `status: error`, `code: write_unverified`, `write_verified: false`, and logs a system_log warning (logger `zen_sutra_filecabinet`), so a caller that never reads the answer still leaves a trace.
 
 ### Reads (Four Modes)
-1. **Direct Read** (`get`) — read a specific drawer; surfaces subdrawers and mount traversal
+1. **Direct Read** (`get`, alias `read`) — read a specific drawer; the content is in `value`; surfaces subdrawers and mount traversal
 2. **Directory** (`list`) — list all non-system drawers in a volume; supports `path_prefix` filter
 3. **Label + Text Search** (`search`) — match drawers by label via `_label_index` or text scan across key/title/content
 4. **Global Manifest** (`manifest`) — delegates to `zen_dojotools_manifest`
@@ -100,20 +104,26 @@ All moves verify the destination write before deleting the source. This prevents
 
 ---
 
-## Storage Format (v6.2+)
+## Storage Format (v6.16+)
 
-Each drawer is stored as:
+Each drawer is stored as an envelope:
 
 ```json
 {
   "drawer_key": {
     "value": <raw content — string, dict, list, number, bool, or null>,
-    "timestamp": "2026-06-16T12:00:00-05:00"
+    "meta": {"expires_after": null, "no_autoexpire": false, "no_autorecycle": false},
+    "timestamp": "2026-06-16T12:00:00-05:00",
+    "acl": {"ops": {}}
   }
 }
 ```
 
-The `meta` key is reserved for future ACL use and is not yet written by the Sutra.
+- `value` is the content. Reads return it in `value`.
+- `meta` is always present and holds expiry and drawer flags such as `ro`. A cabinet set keeps `meta` and `acl` instead of rebuilding the drawer; incoming `meta` merges over the stored one.
+- `acl` is optional and may set `ops` only. See [Access Control](#access-control-acl-v2).
+
+Expiry stored inside an older drawer's value still counts. FileCabinet GC's `repair` mode moves it into `meta`, and GC normalizes every drawer it moves.
 
 ### dict-in / dict-out Contract
 
@@ -134,6 +144,8 @@ Old v1-envelope drawers — where `value` is a dict with `v: 1` and a `content` 
 ### content → value Migration
 
 FC GET no longer returns a `content` key. All callers read `.get('value', {})` from the response. The `content` key is an internal v1 artifact that is unwrapped silently.
+
+`result` is only the tool envelope. The `{path: value}` map that `read` once returned in `result` is retired; `read` returns exactly what `get` returns.
 
 ---
 
@@ -212,7 +224,7 @@ A VirtualDrawer has `mount_point: true` in its `value`:
 }
 ```
 
-Mount traversal is a redirect, not execution. The Sutra follows the mount chain up to depth 8. Loop detection and depth-limit guards are enforced.
+Mount traversal is a redirect, not execution. `get`, `create`, `update` and `upsert` resolve the whole chain once (CABS `fc_resolve`, up to 8 hops) and act on the real target. A chain that loops, runs too deep or has no target refuses with `mount_traversal: {status, reason, loop_at, depth, visited}`. Delete, move, copy and the mount commands act on the pointer itself.
 
 Mounts are set with `set_mount` (requires `key` + `target_guid`). They are removed with `remove_mount`. The `clone` action copies mount point drawers through to the destination (noted in the response as `mounts_copied`).
 
@@ -305,7 +317,7 @@ Cross-stack copy and move are supported via `destination_stack`.
 Delegates to `zen_dojotools_manifest`. Returns the full Cabinet manifest. Supports `show_hidden_volumes` and `show_stacks`.
 
 ### `get`
-Read a specific drawer. Returns `value`, `tags`, `updated_at`, and optionally `drawers` (immediate children) and `subdrawers` (full CabCeption paths) if the key has children.
+Read a specific drawer (alias `read`). Returns `value`, `tags`, `updated_at`, the drawer's expiry from `meta`, and optionally `drawers` (immediate children) and `subdrawers` (full CabCeption paths) if the key has children.
 
 Mount traversal is transparent — if the drawer is a VirtualDrawer, FC follows the chain and returns the resolved value with `mount_traversal` metadata. If it is a LiveDrawer with a warm cache hit, FC fires the tool call and returns the result.
 
@@ -313,19 +325,19 @@ Mount traversal is transparent — if the drawer is a VirtualDrawer, FC follows 
 List all non-system drawers in a volume. Supports `path_prefix` to filter by key prefix. Returns `key`, `title`, `description`, `created_at`, `updated_at` for each drawer.
 
 ### `create`
-Requires `path` and `value` (or `title`/`description`). Errors if the key already exists — use `upsert` or `force_action: true` to overwrite.
+Requires `path` and `value` (or `title`/`description`). Errors if the key already exists — use `upsert`, or `force_action: true` to overwrite the whole drawer.
 
 ### `update`
-Full overwrite of an existing drawer. Default mode is `replace`. Pass `merge: true` to force deep-merge instead. Errors if the key does not exist — use `upsert` or `force_action: true` to create-if-missing.
+Full overwrite of an existing drawer. Default mode is `replace`. Pass `mode: merge` or `merge: true` to deep-merge instead. Answers `not_found` and logs a warning if the key does not exist — use `upsert`, or `force_action: true` to create it.
 
 ### `upsert`
-Creates if absent, updates if present. Default mode is `merge` (deep-merge into existing value). Pass `merge: false` or use `mode: replace` to force replace. Atomic — no separate existence check needed from the caller.
+Creates if absent, updates if present (alias `write`). Default mode is `merge` (deep-merge into existing value). Pass `mode: replace` to replace. Atomic — no separate existence check needed from the caller.
 
 ### `delete`
-Removes the drawer, prunes `_label_index`, verifies deletion, then cascades to all children via prefix scan.
+Removes the drawer, prunes `_label_index`, verifies deletion, then cascades to all children via prefix scan. The answer counts the children removed in `children_deleted`.
 
 ### `move`
-Transfers a drawer to `destination_path` (same cabinet) or `destination_volume_entity_id` (cross-cabinet). Cascades to all children. Each child write is verified before the source child is deleted. Label index is migrated: source index is pruned, destination index is updated with moved labels.
+Transfers a drawer to `destination_path` (same cabinet) or `destination_volume_entity_id` (cross-cabinet). A destination that resolves to the source key refuses with `code: same_key`. Cascades to all children. Each child write is verified before the source child is deleted. Label index is migrated: source index is pruned, destination index is updated with moved labels.
 
 **Mounted drawer protection:** If the drawer is a VirtualDrawer or LiveDrawer, `move` returns `status: error, code: mounted_drawer` with the mount type. Use `set_mount` at the destination key + `delete` at the source instead. Pass `force_action: true` to bypass — the full mount config transfers intact (the mount_point structure moves with the entry, not just `.value`). Without `force_action`, the operation is hard-blocked; a plain move without it would silently strip the mount config, leaving a dead entry at the destination.
 
@@ -424,7 +436,37 @@ All outputs follow a consistent envelope:
 }
 ```
 
-Fields present depends on the action. `value` is present on `get`. `write_verified` is present on writes. `has_children` and `subdrawers` are present only when children exist.
+Fields present depends on the action. `value` is present on `get`. `write_verified` is present on writes; an unconfirmed write answers `status: error` with `code: write_unverified`. `has_children` and `subdrawers` are present only when children exist. `children_deleted` is present on delete, and `acl_audit` only when the ACL gate would deny or ask (see below).
+
+---
+
+## Access Control (ACL v2)
+
+FileCabinet enforces the ACL record Identity writes: VolumeInfo `acls` `{v: 2, owner, prime, partners, ops}`, with cabinet GUIDs as principals. `ops` holds one rule per op class, `{cert, ack, who}`, where `who` may list `*`, `@owner`, `@prime` or GUIDs. A drawer's envelope `acl` may set `ops` only. Each op inherits on its own: drawer, then cabinet, then the default, which is open.
+
+| Op | Actions |
+|---|---|
+| `r` | get, list, search and other reads |
+| `w` | create, update, upsert, relabel, set_mount, the copy destination |
+| `d` | delete, move, remove_mount |
+| `a` | mount_cabinet, dismount_cabinet, set_cabinet_ro, expand_drawer, and any unknown action |
+
+Get and the writes are checked against the resolved mount target; delete, move, copy and the mount commands against the pointer itself.
+
+**The gate is audit-only.** It refuses nothing. When it would deny or would ask for a live acknowledgement, it logs `fc_acl_audit` and the answer carries:
+
+```json
+"acl_audit": {
+  "mode": "audit",
+  "action": "upsert",
+  "checks": [{"op": "w", "target": "...", "source": "drawer|cabinet|default", "why": "..."}],
+  "would_deny": false,
+  "reasons": [],
+  "would_ack": false
+}
+```
+
+Read the record only through the CABS macros (`acl_record`, `acl_for`, `acl_check`); see [zenos_cabinets.jinja](../custom_templates/zenos_cabinets_jinja.md). Identity's `acl_migrate`, `acl_set` and `take_ownership` write it; see [Identity](zen_dojotools_identity_readme.md).
 
 ---
 
@@ -463,7 +505,7 @@ Drawers in a cabinet have three visibility tiers:
 |------|-------------|
 | Active / described | Regular drawer with `title` or `description` in the envelope; surfaced by list and inspect |
 | Hidden / undescribed | Regular drawer with no title/description; surfaced by list but not featured in summaries |
-| System-protected | Keys prefixed with `_` (e.g. `_label_index`) or `AI_Cabinet_VolumeInfo`; require `force_action: true` to write; `sensor.zenos_system_cabinet` is hard read-only |
+| System-protected | `AI_Cabinet_VolumeInfo`, `meta`, `_label_index` and `_zen_relationships` are refused (`protected_drawer`); write them through the admin door. `sensor.zenos_system_cabinet` is hard read-only |
 
 ---
 
@@ -502,7 +544,7 @@ Drawers support two GC fields set on write:
 | `no_autoexpire` | `true` suppresses auto-expiry even past `expires_after` |
 | `no_autorecycle` | `true` suppresses the auto-recycle pass |
 
-These fields are stored in the drawer envelope by the Sutra. GC runs independently; FC does not enforce expiry at read time.
+These fields are stored in the drawer's `meta` by the Sutra and reported by `get`. GC runs independently; FC does not enforce expiry at read time.
 
 ### GC Operator (`zen_dojotools_kata_gc`)
 
@@ -539,7 +581,10 @@ Writes blocked when:
 - per-drawer `meta.ro` flag
 
 ### Write Verification
-Every write uses `wait_template` (30-second timeout) to confirm the updated timestamp is visible in state before returning. `write_verified: true` in the response means the post-write read confirmed the change landed.
+Every write uses `wait_template` (30-second timeout) to confirm the updated timestamp is visible in state before returning. `write_verified: true` in the response means the post-write read confirmed the change landed. Otherwise the answer is `status: error`, `code: write_unverified`, and a warning is logged.
+
+### Cabinet Guards
+The cabinet itself refuses a write past its 128 KB size cap, and a write to a cabinet whose contents are unknown at boot, leaving the cabinet as it was. FileCabinet answers `write_unverified`.
 
 ### Move Safety
 For `move`, the destination write is verified before the source is deleted. If the destination write times out, the operation returns `status: partial` and leaves the source intact. No data loss on timeout.

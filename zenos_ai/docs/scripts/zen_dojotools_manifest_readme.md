@@ -1,4 +1,4 @@
-# Zen DojoTools Manifest — v6.4.15 (ZenOS-AI 2026.11.0)
+# Zen DojoTools Manifest — v6.4.18 (ZenOS-AI 2026.11.0)
 **File:** `zen_dojotools_manifest_readme.md`
 **Type:** Technical Documentation
 
@@ -229,7 +229,7 @@ No repairs. No rewrites. No silent mutations. The cabinet scanner is strictly an
 
 **Drawers** — all drawers except system/hidden drawers, drawers starting with `_` or `.`, and `AI_Cabinet_VolumeInfo` (always hidden). Mount-point drawers are annotated with their target `entity_id` or `volume_id`.
 
-**ACLs** — reads `acls` from volume metadata and normalizes across `entity_guid`, `family_guid`, and `household_guid` categories.
+**ACLs** — the cabinet's ACL principals from the shared ACL v2 record (`CABS.acl_record`): `owner`, `prime` and `partners`, as GUIDs. Empty slots are left out.
 
 **Labels** — canonical label list with hidden/system label filtering. Override with `show_hidden: true`.
 
@@ -280,8 +280,8 @@ Write access is blocked on: read-only flag, schema version mismatch, storage war
       "label1": ["drawerA"]
     },
     "acls_by_category": {
-      "allow": [],
-      "deny": []
+      "owner": ["<cabinet GUID>"],
+      "prime": ["<cabinet GUID>"]
     },
     "health": {
       "status": "ready",

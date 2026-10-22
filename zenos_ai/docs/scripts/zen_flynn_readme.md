@@ -1,4 +1,4 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.1.2
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.1.9
 
 *ZenOS-AI's boot guard, initializer, and onboarding driver*
 
@@ -206,10 +206,11 @@ If `zen_monastery_health` is `critical` **or** `disabled`, **or `flynn_bootstrap
 5. **Seeds AI persona essence** — writes default legacy-schema essence with `identity.name = 'your AI'` as placeholder (non-destructive — skips if drawer already exists). Three-layer cabinets already have a real name stamped at mint; this step is a no-op for them.
 6. **Seeds schema templates** — calls `reset_template` if either template drawer is missing.
 7. **Loads prompt substrate** — calls `zen_admintools_zenos_prompt_loader` (Cortex, Directives, Purpose).
-8. **Wires default family graph** *(4.5.6)* — calls `household_add_family` for the default family cabinet, then `family_add_member` for the default user and AI user. All three calls are guarded (skips if cabinet unavailable) and idempotent (no-op if already wired). Closes a gap where cold builds left the default family as an orphan in the identity graph.
-9. **Seeds home mode timers** *(4.5.6)* — each `input_datetime` schedule anchor and quiet/work bounds helper is individually checked and seeded to its default time if still bare (`''`, `unknown`, or `unavailable`). Each timer has its own guard — partially-configured installs are safe.
-10. **Flags completion** — calls `flynn_unified_engine` with `action_type: flag_complete`.
-11. **Stamps `flynn_bootstrap_state`** — only after a fresh read-back confirms `_household_name` and the AI essence identity name are both real (not `''`/`unknown`/`unavailable`/the `'your AI'` placeholder). A backfill on any install that predates this drawer: every system re-enters Gate 3 once on the next Stepgate tick, runs through idempotently (no-op on an already-good install), and gets tagged retroactively.
+8. **Wires default family graph** *(4.5.6)* — calls `household_add_family` for the default family cabinet, then `family_add_member` for the default user and AI user. All three calls are guarded (skips if cabinet unavailable) and idempotent (no-op if already wired). Closes a gap where cold builds left the default family as an orphan in the identity graph. Every identity setup call passes `force_action`, so a household or family still on the old ACL schema is upgraded first instead of refused.
+9. **Migrates ACLs** — runs identity `acl_migrate` with `dry_run: false` after the VolumeInfo stamps: every cabinet's VolumeInfo to the ACL v2 record, with bad identity data fixed. Idempotent; a clean install writes nothing. The migration is mandatory (identity setup needs ACL v2), so an existing install migrates the next time this bootstrap runs.
+10. **Seeds home mode timers** *(4.5.6)* — each `input_datetime` schedule anchor and quiet/work bounds helper is individually checked and seeded to its default time if still bare (`''`, `unknown`, or `unavailable`). Each timer has its own guard — partially-configured installs are safe.
+11. **Flags completion** — calls `flynn_unified_engine` with `action_type: flag_complete`.
+12. **Stamps `flynn_bootstrap_state`** — only after a fresh read-back confirms `_household_name` and the AI essence identity name are both real (not `''`/`unknown`/`unavailable`/the `'your AI'` placeholder). A backfill on any install that predates this drawer: every system re-enters Gate 3 once on the next Stepgate tick, runs through idempotently (no-op on an already-good install), and gets tagged retroactively.
 
 **Event fired:** `flynn_stepgate_event` (gate: 3, action: bootstrap_complete)
 
@@ -277,7 +278,7 @@ Four `template: select` entities provide UI-level dropdowns for the critical inp
 | `select.zenos_conversation_agent` | `input_text.zenos_conversation_agent` | All `conversation.*` domain entities |
 | `select.zenos_ai_task` | `input_text.zenos_ai_task_entity` | All `ai_task.*` domain entities |
 
-Options resolve dynamically at render time. The persona select only shows personas with a valid name in their essence — `unknown`, `your AI`, and empty strings are excluded. `select.zenos_primary_user` additionally excludes any person already assigned as head-of-household elsewhere — gathered across every household cabinet's `AI_Cabinet_VolumeInfo.acls.owner` — so the dropdown never offers a person who'd need a `set_principal` takeover to become someone's HoH twice.
+Options resolve dynamically at render time. The persona select only shows personas with a valid name in their essence — `unknown`, `your AI`, and empty strings are excluded. `select.zenos_primary_user` additionally excludes any person already assigned as head-of-household elsewhere — matched by person entity through Identity's `member_index`, which reads each household's ACL owner — so the dropdown never offers a person who'd need a `set_principal` takeover to become someone's HoH twice.
 
 **Fastest setup path:** Use these selects from Settings → Helpers instead of typing entity IDs manually.
 

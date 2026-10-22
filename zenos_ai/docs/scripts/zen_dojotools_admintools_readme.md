@@ -1,6 +1,6 @@
 # Zen DojoTools AdminTools
 
-**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.1 · `reset_labels` 1.0.0 · `cabinetadmin` 4.6.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 45 · `run_repair` 5.1.0.
+**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.1 · `reset_labels` 1.0.0 · `cabinetadmin` 4.6.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 45 · `run_repair` 5.2.0.
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -28,7 +28,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
 | `zen_admintools_prompt_loader` | 45 | No | Load versioned Cortex, Directives, and Purpose (v45 = Open Door (default/latest), v44 = Open Door, v43 = Rule Zero). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`. |
-| `zen_admintools_run_repair` | 4.5.6 | **No** | Human-confirmed passthrough to versioned maint/ repair scripts |
+| `zen_admintools_run_repair` | 5.2.0 | **No** | Human-confirmed passthrough to identity `acl_migrate` (the one repair action) |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
 
@@ -127,7 +127,7 @@ Ring-2 cabinet maintenance tool. Provisions new expansion cabinets, inspects cab
 | `repair_mount` | No | Force `meta.mounted: true` on a stuck cabinet. Does not touch drawer content |
 | `repair_dismount` | No | Force `meta.mounted: false` on a stuck cabinet. Mirror of `repair_mount` |
 | `expand_drawer` | **Yes** (has rollback) | Atomically migrate one leaf drawer from `target_cabinet` to an expansion cabinet: validates the key is a leaf (rejects subtrees/Cabception children), checks space threshold on both source and target, copies the value, replaces the source entry with a `mount_point` pointer, then round-trip verifies the mount resolves through `zen_dojotools_filecabinet` before declaring success. Any failure at any step rolls back (restores original value, deletes target copy). Requires `source_cabinet`, `source_drawer`, optional `space_threshold` |
-| `reset_all` | **NUCLEAR** | Wipe all Ring-0 cabinets + reseed schemas + trigger Flynn bootstrap. `confirm: true` required. User and expansion cabinets untouched |
+| `reset_all` | **NUCLEAR** | Wipe all Ring-0 cabinets + reseed schemas + trigger Flynn bootstrap. `confirm: true` and a live household-admin ack required. User and expansion cabinets untouched. The wipe also clears the console override and every cert, which live in those cabinets: throw the override from the console and re-request certs afterwards |
 | `flip_schema_version` | No | Toggle `cab_schema_version` in syscab (0=legacy, 1+=mount-aware). Controls Flynn operating mode |
 | `repair_volumeinfo` | No | Targeted repair for a cabinet whose `VolumeInfo` is a JSON string instead of a mapping — parses and rewrites as a proper dict. Also self-heals the missing-header case (cabinet in `init` state with no VolumeInfo at all): stamps a fresh header via `cabinetadmin_factory`, no `hammer`/rearm needed. Skips silently if VolumeInfo is already a valid mapping |
 
@@ -199,9 +199,10 @@ Use this when a cabinet is missing its metadata header — for example, after cr
 | `auto_profile` | boolean | `true` | Auto-detect security flag profile from cabinet type |
 | `explicit_flag_profile` | select | `standard` | Override flag profile: `system`, `secure`, `public`, `standard` |
 | `mount_scan` | boolean | `true` | Scan existing drawers for `[mount:GUID]` links |
-| `owner_person` | entity (person) | — | Owner reference (HA person entity) |
-| `partner_person` | entity (person) | — | Partner reference |
-| `family_guid` | text | — | Family GUID for ACL |
+| `owner_person` | entity (person) | — | Owner, stamped into the ACL as the person's member cabinet GUID |
+| `partner_person` | entity (person) | — | Partner, stamped the same way |
+
+The factory stamps the ACL as v2 (`{v: 2, owner, prime, partners, ops}`). Family membership lives in the `members` drawers, not in the ACL.
 
 ### Flag Profiles (Auto-Detected)
 
@@ -283,9 +284,9 @@ On every run, the prompt loader also stamps `meta.mounted: true` on syscab — e
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `mode` | select | `load` | `load` — stamp Purpose/Directives/Cortex into syscab. `whitelist` — manage act or seed whitelists. |
+| `mode` | select | `load` | `load` — stamp Purpose/Directives/Cortex into syscab. `whitelist` — manage act or seed whitelists. `lens_registry` — the one writer for household lens providers. `codex_registry` — the one writer for household finance codices (`list`/`get`/`register`/`unregister`). Runs queued, up to 25 at once. |
 | `cortex_version` | select | `latest` | `latest` or `45` = Open Door (current), `44` = Open Door, `43` = Rule Zero. Only used when `mode=load`. |
-| `sim_mode_allowed` | boolean | `false` | Stamped into `integrations_config.identity.sim_mode_allowed` on every factory run. OS-level policy switch (see `zen_dojotools_identity resolve_caller_identity`) — `false` (default) fails closed on any simulated/shunted identity result until real Authentik/OIDC (SP1) is live. Leave off unless you deliberately want simulated identity resolution accepted platform-wide. |
+| `sim_mode_allowed` | boolean | — | Stamped into `integrations_config.identity.sim_mode_allowed` only when it is unset; an existing value is never changed. Omitted, the stamp follows Flynn's `input_boolean.zenos_sim_mode_override` (Flynn also keeps the two in step on every boot). `false` fails closed on any simulated/shunted identity result until real Authentik/OIDC (SP1) is live (see `zen_dojotools_identity resolve_caller_identity`). |
 | `whitelist_type` | select | — | `mode=whitelist` only. `act` = `zen_summarizer_act_whitelist`. `seed` = `zen_summarizer_seed_whitelist`. |
 | `action_type` | select | `list` | `mode=whitelist` only. `list` \| `add` \| `remove` \| `reset`. |
 | `item` | text | — | `mode=whitelist add/remove` only. Event kind string (act) or script name (seed). |
@@ -392,6 +393,19 @@ Run when a cabinet fails identity's ACL schema check (identity answers `acl_sche
 
 | Version | Change |
 |---------|--------|
+| v5.4.19 | cabinetadmin's result carries `repair_results` only for `repair_volumeinfo`; `hammer_ok` defaults to `false` when absent. |
+| v5.4.18 | prompt_loader stamps an unset `sim_mode_allowed` from Flynn's `input_boolean.zenos_sim_mode_override`, so a load right after `reset_all` still resolves its caller. |
+| v5.4.17 | cabinetadmin `reset_all` wipes: its ack and wipe are gated on `confirm` and the ack's answer. |
+| v5.4.16 | Wipe acks name the console override as the stand-in for the human (identity 5.8.0). |
+| v5.4.15 | run_repair 5.2.0 runs identity `acl_migrate`; `maint_4_5_6` and `repair_fam_cab_volumeinfo` are retired. A refusal answers `error`. |
+| v5.4.14 | cabinetadmin_factory stamps the ACL as v2; `family_guid` is gone. |
+| v5.4.13 | prompt_loader `mode=codex_registry`: the one queued writer for the household finance codex registry. |
+| v5.4.12 | prompt_loader runs queued (max 25). |
+| v5.4.11 | prompt_loader's syscab `cabinet_ro` stamp writes VolumeInfo unwrapped; system cabinet reads use its resolver. |
+| v5.4.10 | Purpose, directives and cortex go through the admin door, verified by `content_verified`. No raw cabinet write events remain in AdminTools. |
+| v5.4.9 | Every other AdminTools cabinet write goes through the admin door. `flip_schema_version` reads the stored `{value: N}`. |
+| v5.4.8 | prompt_loader no longer chains the retired KungFu Loader; `ship_zen_system` is gone. A prompt load only loads the prompt. |
+| v5.4.7 | cabinetadmin refusals hold (cert denial, `hammer_ok`, live-ack denial); `reset` asks the same live household-admin ack as hammer. |
 | v5.4.6 | prompt_loader: cortex v45 (Open Door) replaces the v42 slot; `core_tools` names the real log viewer. Selectable versions: 45, 44, 43. |
 | v5.3.5 | prompt_loader: `mode=load` returns a per-key `write_report` and reports `error` if any write failed, instead of an unconditional success. |
 | v5.3.4 | prompt_loader: v44 has its own purpose/directives copy (header version 44 / Open Door). |

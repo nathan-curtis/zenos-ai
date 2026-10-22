@@ -94,10 +94,10 @@ Core primitive for label CRUD and entity tagging. Backbone of the label index th
 
 ---
 
-## 5. Zen DojoTools Identity — v1.1.2
+## 5. Zen DojoTools Identity — v1.1.3
 **File:** [`zen_dojotools_identity_readme.md`](zen_dojotools_identity_readme.md)
 
-Identity resolver for household members and AI constructs. MCP-exposed. Resolves by label, person entity, cabinet entity, or GUID. Delegates to the same path the prompt uses.
+Identity resolver for household members and AI constructs. MCP-exposed. Resolves by label, person entity, cabinet entity, or GUID. Delegates to the same path the prompt uses. Writes the ACL v2 record FileCabinet enforces (`acl_migrate`, `acl_set`, `take_ownership`) and owns the live-ack chokepoint.
 
 ---
 
@@ -178,14 +178,14 @@ Universal, contract-safe telemetry tool for emitting structured ZenOS-AI events 
 
 ---
 
-## 16. Zen DojoTools FileCabinet — v6.9.1
+## 16. Zen DojoTools FileCabinet — v6.26.0
 **File:** [`zen_dojotools_filecabinet_readme.md`](zen_dojotools_filecabinet_readme.md)
 
-Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. CabCeption nested drawer trees via `/` path separator. VirtualDrawer (cross-cabinet redirect) and LiveDrawer (tool-call-on-read with warm/cold cache). **Tapestry** (`weave`/`weave_preview`/`weave_save`) — multi-cabinet drawer composer; definitions stored as labeled drawers; cycle detection; depth 3 unrolled. `move`/`copy` blocked on mounted drawers by default (`force_action=true` required to transfer mount config intact). `fleet` + `expansion_sitrep` modes. Mode-scoped `tool:mode` callout whitelist entries (KF5 self-registration support) alongside legacy plain/`tool:*` forms. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet.
+Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. CabCeption nested drawer trees via `/` path separator. VirtualDrawer (cross-cabinet redirect) and LiveDrawer (tool-call-on-read with warm/cold cache). **Tapestry** (`weave`/`weave_preview`/`weave_save`) — multi-cabinet drawer composer; definitions stored as labeled drawers; cycle detection; depth 3 unrolled. `move`/`copy` blocked on mounted drawers by default (`force_action=true` required to transfer mount config intact). `fleet` + `expansion_sitrep` modes. Mode-scoped `tool:mode` callout whitelist entries (KF5 self-registration support) alongside legacy plain/`tool:*` forms. Single exit per action, honest `write_unverified` answers, every write a stated merge or replace, and an audit-only ACL gate on the resolved mount target. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet or the admin door.
 
 ---
 
-## 17. Zen DojoTools Manifest — v6.4.11
+## 17. Zen DojoTools Manifest — v6.4.18
 **File:** [`zen_dojotools_manifest_readme.md`](zen_dojotools_manifest_readme.md)
 
 System manifest broker. Entity namespace scanning (`zen_dojotools_*`, `zen_stack_*`, `zen_sutra_*`). Modes: `cabinets` (zero-persistence cabinet health scanner), `tools`, `identity`, `labels`, `automations`, `audit`, `audit_help`, `health`, `health_refresh`, `autotag`, `publish`, `mcp_sync`, `bootstrap_stacks`, `bootstrap_kfc`, `domains`, `all`. `bootstrap_stacks` auto-registers Lens Bus providers including `script.zen_dojotools_library`. `bootstrap_kfc` auto-registers KF5 self-declaring tools — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools). Domain routing table maps domains to authoritative scripts (now built dynamically from `label_entities('zen_domain_*')`, not hardcoded). UMP `tool_manifest` contract supported.
@@ -296,10 +296,10 @@ MCP-exposed HA to-do list CRUD. `create`/`update` are cert-gated (`pii_disclosur
 
 ---
 
-## 32. Zen AdminTools Cabinet Writer — v1.1.0
+## 32. Zen AdminTools Cabinet Writer — v1.6.0
 **File:** [`zen_admintools_cabinet_writer_readme.md`](zen_admintools_cabinet_writer_readme.md)
 
-The admin door: the one writer for structural, system and vault cabinet writes that FileCabinet refuses by design. Not MCP-exposed. Every write names its caller, is logged, and is verified on the cabinet before it answers.
+The admin door: the one writer for structural, system and vault cabinet writes that FileCabinet refuses by design. Not MCP-exposed. Every write names its caller, is logged, and is verified on the cabinet before it answers. `merge` writes only the changed keys; agent and console writes pass an audit-only gate.
 
 ---
 

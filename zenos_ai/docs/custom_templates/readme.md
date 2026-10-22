@@ -55,7 +55,9 @@ Key macros:
 * `cabinet_drawer_value(entity_id, drawer_key, fallback)` — extracts the `.value` field from a named drawer, FG-38 safe
 * `cabinet_drawer(entity_id, drawer_key, fallback)` — full drawer dict including `value`, `timestamp`, `meta`
 * `cabinet_variables(entity_id, fallback)` — full `variables` attribute dict, safe getter
-* `cabinet_volume_info / cabinet_guid / cabinet_acls` — VolumeInfo metadata helpers
+* `cabinet_volume_info / cabinet_guid` — VolumeInfo metadata helpers
+* `acl_record / acl_for / acl_check / acl_schema_check` — the ACL v2 record
+* `fc_resolve` — the mount resolver
 * `volume_drawer_value(volume, drawer_key, fallback)` — value extraction on a pre-fetched dict (use inside loops)
 * `cabinet_guid_new_v4()` — RFC 4122 UUID v4 generator
 

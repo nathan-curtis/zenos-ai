@@ -1,6 +1,6 @@
 # zenos_cabinets.jinja — Cabinet Macro Library
 
-**Version:** 1.0.0 (introduced in 2026.4.0 'Ectoplasm' — current as of 2026.6.0 'Clue' stable / 2026.7.0 'Neo' beta)
+**Version:** 1.4.0 (introduced in 2026.4.0 'Ectoplasm'; ACL macros and `fc_resolve` in 2026.11.0 'This Is Spinal Tap')
 **File:** `custom_templates/zenos_ai/zenos_cabinets.jinja`
 **Status:** Stable. Required by `zen_os_1.jinja`, `zenos_health.jinja`, `dojotools_filecabinet`, and any template that reads cabinet drawers.
 
@@ -115,8 +115,39 @@ For cases where the variables dict is already loaded (e.g., inside a loop over `
 | `cabinet_guid(entity_id, fallback='')` | String | GUID (`id` field) from VolumeInfo — plain string, not JSON |
 | `cabinet_guid_compat(entity_id, fallback='')` | String | GUID with fallback to legacy `guid` field — use for pre-4.5.6 cabinets |
 | `cabinet_friendly_name(entity_id, fallback='')` | String | `friendly_name` from VolumeInfo |
-| `cabinet_acls(entity_id, fallback={})` | JSON object | ACLs block from VolumeInfo |
 | `cabinet_members(entity_id, fallback={})` | JSON object | `members` drawer value |
+| `volumeinfo_copies(entity_id)` | JSON object | `{keys, best}`: stray VolumeInfo copies (`ai_cabinet_volumeinfo`, `_ai_cabinet_volumeinfo`) and the one holding an id |
+| `cabinet_slot_candidates()` | JSON list | Expansion-slot cabinet entity_ids, from the canonical slot map |
+| `cabinet_slot_status(entity_id)` | JSON object | Whether an expansion slot is free (no user drawers, not an expansion slave) and ready (booted) |
+| `identity_roster(hh_cab='')` | JSON object | `{users, ai_users, all}` from the household's identity manifest; empty lists on any failure |
+
+---
+
+### ACL v2
+
+The one ACL record Identity writes and FileCabinet enforces: VolumeInfo `acls` `{v: 2, owner, prime, partners, ops}`, principals as cabinet GUIDs. Read it only through these macros. All return JSON except `acl_guid_of` and `acl_op_class`.
+
+| Macro | Returns | Description |
+|-------|---------|-------------|
+| `acl_guid_of(entity_id)` | String | The cabinet's VolumeInfo `id`, falling back to the legacy `guid` |
+| `acl_default_ops()` | JSON object | `{r, w, d, a}`, all open |
+| `acl_record(entity_id, idmap={})` | JSON object | `{v, stored_v, owner, prime, partners, ops, ops_stored, ops_source, unresolved}`. Reads v1 records compatibly. `ops_stored` is what a writer stores back; `idmap` supplies ids for cabinets about to get one |
+| `acl_for(entity_id, drawer_key='')` | JSON object | `{owner, prime, partners, ops, source}`: effective ops for a drawer, each inherited drawer → cabinet → default; `source` names where each op came from |
+| `acl_op_class(action)` | String | `r`, `w`, `d` or `a` for a FileCabinet action (unknown actions are `a`) |
+| `acl_check(acl, op, caller_guid)` | JSON object | `{op, who_ok, cert, ack, source, reason}`. `who` may hold `*`, `@owner`, `@prime` or GUIDs |
+| `acl_schema_check(entity_id)` | JSON object | `{ok, why}`. `why` can name: no VolumeInfo, no id, legacy guid field, no flags, acls not v2, stray VolumeInfo copies |
+
+`cabinet_acls` and `drawer_acl` are retired.
+
+---
+
+### Mounts and Drawer Shape
+
+| Macro | Returns | Description |
+|-------|---------|-------------|
+| `fc_resolve(entity_id, drawer_key, max_hops=8)` | JSON object | `{status, vol, key, depth, visited, reason, loop_at, fc_args, entry}`: the real target behind a mount chain. `status` is `absent`, `direct`, `resolved`, `live`, `not_found_in_target`, `unresolvable`, `loop_detected` or `depth_limit_exceeded`. FileCabinet's one mount resolver |
+| `cabinet_drawer_value_mounted(entity_id, drawer_key, fallback={})` | JSON object/any | Like `cabinet_drawer_value`, following one mount hop |
+| `drawer_normalize(env)` | JSON object | `{ok, changed, value, meta, repairs}`: a drawer envelope normalized to `{value, meta}` (nested envelopes unwrapped, expiry moved into `meta`). `ok: false` means do not write |
 
 ---
 

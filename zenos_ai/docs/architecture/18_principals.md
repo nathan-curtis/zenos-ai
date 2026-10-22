@@ -35,9 +35,9 @@ The data model allows families to nest to any depth. Security resolution walks a
 
 ## 18.3 Partners
 
-A partner link is delegation, not a social relationship. `link_partners` writes each principal into the other's `acls.partner`, meaning each is authorized to act on the other's behalf. It works between any pair: person and person, person and AI persona, or two AI personas. `unlink_partners` severs it.
+A partner link is delegation, not a social relationship. `link_partners` adds each principal's GUID to the other's `acls.partners`, meaning each is authorized to act on the other's behalf. It works between any pair: person and person, person and AI persona, or two AI personas. `unlink_partners` severs it.
 
-> **Not yet built.** Partner links are recorded but no gated tool reads `acls.partner` when deciding whether to allow an action today. Authorization runs through certification (Chapter 19). Partner-aware authorization is design direction.
+> **Not yet built.** Partner links are recorded but no gated tool reads `acls.partners` when deciding whether to allow an action today. Authorization runs through certification (Chapter 19). Partner-aware authorization is design direction.
 
 ## 18.4 Resolving the caller
 

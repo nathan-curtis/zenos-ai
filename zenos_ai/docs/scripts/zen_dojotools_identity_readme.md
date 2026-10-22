@@ -1,4 +1,4 @@
-# Zen DojoTools Identity — v1.1.2
+# Zen DojoTools Identity — v1.1.3
 
 *Identity resolution, presence, and household/family group management for ZenOS-AI*
 
@@ -33,13 +33,15 @@ System
 
 **Depth rule:** Families nest arbitrarily deep in the data model. Security resolution only chases 2 levels — `is_member(A, B)` checks: is A directly in B? Or is A in C which is directly in B? Anything deeper is not resolved for security purposes.
 
-**Principal slots:** Each household and family has two privileged occupant slots:
+**Principal slots:** Each household and family has two privileged occupant slots in its VolumeInfo ACL record:
 - `acls.owner` — Head of Household (HoH) for a household; primary user for a family
-- `acls.partner[role=prime]` — Prime AI partner
+- `acls.prime` — Prime AI partner
 
 These slots fill on first add and block re-entry. Use `set_principal` to transfer them.
 
-**Partner = delegation authority.** `acls.partner[]` records who is authorized to delegate on an entity's behalf. This is a governance relationship, not a social one. No token is issued without an explicit allow — the link records who has delegation authority, it does not grant it automatically. Works for any entity pair (user↔user, user↔AI, AI↔AI).
+**The ACL record (v2).** Every cabinet's VolumeInfo carries `acls: {v: 2, owner, prime, partners, ops}`. Principals are cabinet GUIDs (the VolumeInfo `id`), never names or entity_ids. `ops` holds the access rules FileCabinet enforces (see [FileCabinet access control](zen_dojotools_filecabinet_readme.md#access-control-acl-v2)). Family membership lives in the `members` drawers, not in the ACL. Read the record only through `CABS.acl_record` / `acl_for` and `ID.principals`; Identity writes it through the admin door's `merge`, touching only the changed keys.
+
+**Partner = delegation authority.** `acls.partners` records who is authorized to delegate on an entity's behalf. This is a governance relationship, not a social one. No token is issued without an explicit allow — the link records who has delegation authority, it does not grant it automatically. Works for any entity pair (user↔user, user↔AI, AI↔AI).
 
 ```mermaid
 flowchart TD
@@ -77,15 +79,20 @@ flowchart TD
 | `set_principal` | Sets or replaces the HoH or prime AI slot for a household or family | Yes |
 | `family_add_member` | Adds a user, AI, or sub-family to a family; sets default family on first join | Yes |
 | `family_remove_member` | Removes a user, AI, or sub-family from a family | Yes |
-| `link_partners` | Writes `acls.partner[]` on both entities (bidirectional delegation link) | Yes |
-| `unlink_partners` | Removes each entity from the other's `acls.partner[]` | Yes |
+| `link_partners` | Adds each entity's GUID to the other's `acls.partners` (bidirectional delegation link) | Yes |
+| `unlink_partners` | Removes each entity from the other's `acls.partners` | Yes |
 | `set_default_family` | Patches `default_family_guid` on a member's VolumeInfo | Yes |
 | `membership` | Tree view for containers; reverse lookup for members | No |
 | `is_member` | Depth-2 boolean check — is entity A a member of container B? | No |
 | `provision_member` | Full orchestration — provision expansion slot, wire into family, rebuild manifest. Takes the first free slot (no user drawers, not an expansion slave), keeps `profile_payload` fields and the person link | Yes |
 | `resolve_caller_identity` | Platform-wide SP1 identity/cert-check chokepoint — delegates to `zen_root_authentik`, enforces the OS sim_mode policy, optionally runs a cert check on the caller's behalf | No |
-| `request_live_ack` (2026-08-15) | Single shared chokepoint for "get a live human yes/no" — fires an alert via AlertManager, polls for response, returns approved/declined/timeout | No |
+| `request_live_ack` (2026-08-15) | Single shared chokepoint for "get a live human yes/no" — fires an alert via AlertManager, polls for response, returns approved/declined/timeout. The console override approves at once | No |
 | `cert_list` (2026-08-15) | Combined static cert catalog + live-grant view — what could exist, and what's actually held right now | No |
+| `acl_migrate` | Brings every cabinet's VolumeInfo to the ACL v2 record and repairs bad identity data. Dry run by default | Yes |
+| `acl_set` | The owner changes `ops` on a cabinet's or a drawer's ACL | Yes |
+| `take_ownership` | Escape hatch: makes the caller the ACL owner (or rewrites a drawer's ops). Cert + live ack on every call, audited | Yes |
+
+**Schema gate.** `household_add_family`, `household_add_member`, `set_principal`, `family_add_member` and `provision_member` refuse with `code: acl_schema_upgrade_required` (with `cabinet`, `why` and `next_steps`) when their household or family is still on the old ACL schema. `force_action: true` upgrades that cabinet first, then continues; a failed upgrade answers `acl_schema_upgrade_failed`. Flynn passes `force_action`.
 
 A call with no mode and no input returns the tool's roots (`who`, `belongs`, `may`) and never acts; name `mode=resolve` explicitly.
 
@@ -107,10 +114,15 @@ A call with no mode and no input returns the tool's roots (`who`, `belongs`, `ma
 | `family_entity` | entity (sensor) | Family cabinet target (family ops, set_principal override) |
 | `ai_entity` | entity (sensor) | Entity B for link_partners / unlink_partners |
 | `household_entity` | entity (sensor) | Explicit household cabinet — overrides default resolver |
-| `confirm_action` | boolean | `set_principal` only. Required when the target HoH/prime slot is already occupied by a **different** entity than `member_entity`. Not required to fill an empty slot or re-set the same entity already occupying it. Default `false` |
+| `confirm_action` | boolean | `acl_migrate`: required (with `dry_run: false`) to apply. `set_principal`: required when the target HoH/prime slot is already occupied by a **different** entity than `member_entity`. Not required to fill an empty slot or re-set the same entity already occupying it. Default `false` |
 | `required_cert` | text | `resolve_caller_identity` only. Cert name to check on the caller's behalf (e.g. `infra_container_control`). When set, the mode runs the `cert_list` lookup itself against the resolved identity and returns `authorized: true/false` — the caller never touches `persona_editor` directly |
 | `required_cert_level` | number | `resolve_caller_identity` only. Minimum cert level needed when `required_cert` is set. Default `1` |
-| `target_entity` (2026-08-16) | text | `resolve_caller_identity` only, optional, pairs with `required_cert`. The specific entity the caller wants to act on. When passed, this mode resolves `scope_decision` (`allow`/`deny`/`default`) internally via the shared `cert_scope_check` macro against the held cert's `cert_scope` — consumers stop walking `cert_scope` themselves. Omit it and `scope_decision` is always `default`, unaffected for any existing caller that doesn't pass it. |
+| `dry_run` | boolean | `acl_migrate` only. `true` (default) plans and writes nothing |
+| `force_action` | boolean | Setup modes: upgrade an old-schema household or family first instead of refusing. Default `false` |
+| `drawer_key` | text | `acl_set` / `take_ownership`: a drawer in `target_entity` whose own ACL to change. Omit for the cabinet's ACL |
+| `acl_ops` | object | `acl_set` / `take_ownership`: `{r\|w\|d\|a: {who: [...], cert: 'name:level', ack: bool}}`. Each op named replaces that op; the others are kept |
+| `reason` | text | `take_ownership` (required) and `acl_set`: recorded in the audit event and shown in the live ack |
+| `target_entity` (2026-08-16) | text | `acl_migrate`: one cabinet (default every `zen_cabinet`). `acl_set` / `take_ownership`: the target cabinet. `resolve_caller_identity`: optional, pairs with `required_cert`. The specific entity the caller wants to act on. When passed, this mode resolves `scope_decision` (`allow`/`deny`/`default`) internally via the shared `cert_scope_check` macro against the held cert's `cert_scope` — consumers stop walking `cert_scope` themselves. Omit it and `scope_decision` is always `default`, unaffected for any existing caller that doesn't pass it. |
 
 **Resolution priority** (resolve/prompt modes):
 ```
@@ -245,7 +257,7 @@ zen_dojotools_identity:
 
 **First occupant behavior:**
 - First `user` → also fills `acls.owner` (Head of Household slot)
-- First `ai_user` → also fills `acls.partner[role=prime]`
+- First `ai_user` → also fills `acls.prime`
 
 **Occupied slot:** If the HoH or prime slot is already filled, add is blocked with `slot_occupied` error. Use `set_principal` to transfer the slot.
 
@@ -268,7 +280,7 @@ zen_dojotools_identity:
   member_type: user   # or ai_user
 ```
 
-Does **not** clear `acls.owner` or `acls.partner` slots — those require `set_principal`.
+Does **not** clear the `acls.owner` or `acls.prime` slots — those require `set_principal`.
 
 **Response includes** `principal_warning: hoh_slot_stale | prime_slot_stale | ''` — warns if the removed member held a principal slot.
 
@@ -285,7 +297,7 @@ zen_dojotools_identity:
   mode: set_principal
   member_entity: sensor.<cabinet>
   member_type: user      # user → fills/replaces acls.owner (HoH)
-                         # ai_user → fills/replaces acls.partner prime slot
+                         # ai_user → fills/replaces acls.prime
   # family_entity: sensor.<family_cabinet>  # optional — targets family instead of default household
   # confirm_action: true  # required only when replacing a DIFFERENT existing occupant
 ```
@@ -294,7 +306,7 @@ zen_dojotools_identity:
 
 **Takeover gate:** Filling an empty slot, or re-setting the same entity already occupying it, needs no confirmation. Replacing a slot already occupied by a **different** entity requires `confirm_action: true` — prevents a confused or compromised caller silently taking over an established household. Without it, the call errors with `code: confirm_required`.
 
-**Replacement:** Previous occupant of the slot is replaced. For prime AI slot, non-prime partner entries are preserved.
+**Replacement:** Previous occupant of the slot is replaced, and the new principal is dropped from `partners` if it was there. Other partners are preserved.
 
 **Members sync:** `set_principal` also adds `member_entity` to the target cabinet's `members` list if not already present (deduped) — keeping `members` and `acls` in sync the same way `household_add_member` does, so a caller using `set_principal` directly doesn't leave a principal pointer that a membership-based staleness check would wrongly flag as orphaned.
 
@@ -318,7 +330,7 @@ zen_dojotools_identity:
 
 **Sub-families:** `member_type: family` wires in a sub-family at depth 2. Sub-family members are extended family — not household residents.
 
-**Bidirectional sync:** Also writes `acls.family[]` on the member's VolumeInfo.
+Membership lives in the family's `members` drawer; nothing is written to the member's ACL.
 
 **Event fired:** `zen_event kind: family_member_joined` with `prompt_profile_update: true`
 
@@ -338,7 +350,6 @@ zen_dojotools_identity:
 
 **Default family cleanup:** If the removed family was the member's `default_family_guid`, that field is cleared. The member must explicitly set a new default via `set_default_family`.
 
-**Bidirectional sync:** Scrubs `acls.family[]` entry by GUID on the member's VolumeInfo.
 
 **Response includes** `principal_warning` and `was_default_family` fields.
 
@@ -348,7 +359,7 @@ zen_dojotools_identity:
 
 ### `link_partners`
 
-Writes `acls.partner[]` on **both** entities. Works for any entity pair (user↔user, user↔AI, AI↔AI).
+Adds each entity's GUID to the other's `acls.partners`. Works for any entity pair (user↔user, user↔AI, AI↔AI).
 
 ```yaml
 zen_dojotools_identity:
@@ -356,8 +367,6 @@ zen_dojotools_identity:
   member_entity: sensor.<cabinet_a>   # any type: user, ai_user
   ai_entity: sensor.<cabinet_b>       # any type: user, ai_user
 ```
-
-Each entry carries `{guid, entity_id, cab_type, role: partner, sid}`.
 
 Idempotent — re-running does not create duplicate entries.
 
@@ -367,7 +376,7 @@ Idempotent — re-running does not create duplicate entries.
 
 ### `unlink_partners`
 
-Removes each entity from the other's `acls.partner[]`. Symmetric.
+Removes each entity from the other's `acls.partners`. Symmetric.
 
 ```yaml
 zen_dojotools_identity:
@@ -567,7 +576,59 @@ zen_dojotools_identity:
 }
 ```
 
-`reason` is one of `approved`, `declined`, `timeout`, or `dispatch_failed` (alert never fired — `approved: false`, `waited_seconds: 0`, no polling attempted).
+`reason` is one of `approved`, `declined`, `timeout`, `dispatch_failed` (alert never fired — `approved: false`, `waited_seconds: 0`, no polling attempted), or `console_bypass`.
+
+**Console override.** While the `cert_admin_console_bypass` drawer on the system cabinet is thrown (only by hand, from the console), every live ack answers at once: `approved: true`, `reason: console_bypass`, `waited_seconds: 0`. Every caller that asks for a live ack (hammer, reset, reset_all, take_ownership and the rest) follows it, because this is the one place it is applied. Each use is audited (`zen_event live_ack_console_bypass` and a system_log warning). On an offline install it is the only approval there is. A cabinet wipe clears it.
+
+### `acl_migrate` — Bring Every Cabinet to ACL v2
+
+```yaml
+zen_dojotools_identity:
+  mode: acl_migrate
+  # target_entity: sensor.my_cabinet   # optional, default every zen_cabinet
+  # dry_run: false                     # default true
+  # confirm_action: true               # required to apply
+```
+
+Run it as a dry run first and review the plan, then apply it. Apply re-reads every cabinet it touched; a second run should report 0 changes. Flynn's bootstrap runs it on its own, and identity setup needs it (see the schema gate above).
+
+What it repairs:
+- a missing `id` (a legacy `guid` field becomes the id)
+- v1 owner and partner lists, converted to GUIDs
+- `acls.family` and "default-guid" placeholders, dropped
+- missing `flags` or `friendly_name`
+- `members` entries whose guid isn't their cabinet's
+- stray VolumeInfo copies (`ai_cabinet_volumeinfo`, `_ai_cabinet_volumeinfo`): a copy holding an id fills what's missing, and every copy is removed
+
+Answer fields: `status` (`dry_run` / `ok` / `error`), `scanned`, `changed`, `changes` (each `{cabinet, patch, unset, remove, members, notes}`), `clean`, `dangling` (`{cabinet, guid}` principals that resolve to no cabinet, reported and never dropped), `skipped` (cabinets that can't be read) and `remaining` (cabinets still failing the schema check after apply).
+
+### `acl_set` — Change a Cabinet's or Drawer's Ops (owner only)
+
+```yaml
+zen_dojotools_identity:
+  mode: acl_set
+  target_entity: sensor.my_cabinet
+  # drawer_key: some_drawer            # omit for the cabinet's ACL
+  acl_ops: {"w": {"who": ["@owner"], "cert": "", "ack": false}}
+  reason: "lock writes to the owner"
+```
+
+Only the cabinet's owner may call it. Refusal codes: `invalid_request`, `caller_unresolved`, `not_owner`. Audited as `zen_event acl_changed` with the old and new ACL.
+
+### `take_ownership` — The Escape Hatch
+
+```yaml
+zen_dojotools_identity:
+  mode: take_ownership
+  target_entity: sensor.my_cabinet
+  reason: "previous owner is gone"     # required
+  # drawer_key: some_drawer
+  # acl_ops: {...}
+```
+
+Needs cert `zenos.identity.acl_take_ownership` and a live ack on every call (the console override stands in for the ack). On a cabinet, the caller becomes the ACL owner and `acl_ops` replaces the named ops. On a drawer, the drawer's ops become `acl_ops`; empty means inherit from the cabinet. Only the ACL is rewritten, never the value.
+
+Answer fields: `status`, `target`, `old_acl`, `new_acl`, `approver` (`live_ack`, `console_bypass` or `owner`). Refusal codes: `invalid_request`, `caller_unresolved`, `cert_required`, `ack_declined`, `ack_not_approved`. Audited as `zen_event acl_ownership_taken`.
 
 ### `cert_list` — Combined Cert Catalog + Live-Grant View (2026-08-15)
 
@@ -607,19 +668,19 @@ A valid identity is more than a profile drawer. It requires a cabinet role, prof
 
 | Identity Kind | Must Have | Written By |
 |---|---|---|
-| Person/User | User cabinet role label, `_user_profile`, optional HA `person.*`, family ACL when joined | Provisioner, Profile Editor, Identity |
+| Person/User | User cabinet role label, `_user_profile`, optional HA `person.*`, family membership when joined | Provisioner, Profile Editor, Identity |
 | Family | Family cabinet role label, optional `_family_profile`, `members` drawer | Provisioner, Profile Editor, Identity |
 | Household | Household cabinet role label, `_household_profile`, `members` drawer, HoH owner, prime AI partner | Flynn, Profile Editor, Identity |
-| AI User | AI user cabinet role label, `zenai_essence`, optional family/partner ACLs | Provisioner, Profile Editor, Identity |
+| AI User | AI user cabinet role label, `zenai_essence`, optional family membership and partners | Provisioner, Profile Editor, Identity |
 
 The membership graph is valid when:
 
 - household `members.families[]` contains the family cabinets that belong to the household
 - family `members.users[]`, `members.ai_users[]`, and `members.families[]` reflect current membership
-- member VolumeInfo `acls.family[]` mirrors family membership
+- every cabinet's VolumeInfo has an `id` and an ACL v2 record (`acl_migrate` reports 0 changes)
 - member VolumeInfo `default_family_guid` is set when a default family exists
-- household VolumeInfo `acls.owner` identifies the Head of Household
-- household VolumeInfo `acls.partner[]` includes one `role: prime` AI partner
+- household VolumeInfo `acls.owner` holds the Head of Household's GUID
+- household VolumeInfo `acls.prime` holds the prime AI's GUID
 - `zen_identity_manifest` has been rebuilt after membership changes
 
 See [Cabinet Specification](../cabinets/cabinet_spec.md#101-valid-identity-cabinet-shapes) for the drawer-level shapes and [Profile Editor](zen_dojotools_profile_readme.md#valid-profile-structures) for the profile writer.
@@ -667,6 +728,15 @@ A Jinja2-callable identity resolver lives at `custom_templates/zenos_ai/zen_iden
 
 **Always call `| from_json`** — the macro returns a tojson string, not a native dict.
 
+Other macros (v1.5.0):
+
+| Macro | Returns |
+|---|---|
+| `principals(cab)` | `{hoh, prime}`, each `{guid, entity_id}` or null, read from the ACL record |
+| `caller(required_cert='', required_level=1)` | `{entity_id, guid, policy_status, cert_checked, cert_ok, cert_level, cert_satisfied_by}`: Identity's caller answer and cert check without a script call. Follows `sim_mode_allowed` |
+| `console_override()` | `'true'` or `'false'` |
+| `member_index` | Membership index; roles match by GUID |
+
 **Mobile note:** On the template surface, the `mobile` block returns `zone` and `battery` only. `entity_id`, `configured`, and `battery_entity` are available on the script surface only (require `state_attr` access not available in all Jinja2 contexts).
 
 **When to use which surface:**
@@ -695,10 +765,12 @@ A Jinja2-callable identity resolver lives at `custom_templates/zenos_ai/zen_iden
 | `zen_os_1.jinja` → `identity_resolve_source()` | Full identity resolution pipeline — resolve/prompt modes |
 | `zen_os_1.jinja` → `identity_roster()` | Full household roster — build_identity_manifest |
 | `zen_os_1.jinja` → `identity_manifest_loader()` | Reads `zen_identity_manifest` from household cabinet |
-| `zen_dojotools_filecabinet` | All cabinet reads and writes |
-| `zen_identity.jinja` | Template surface (Jinja2 contexts) — v1.1.0 |
+| `zen_dojotools_filecabinet` | Drawer reads and writes |
+| `zen_admintools_cabinet_writer` | VolumeInfo writes (`merge`, only the changed keys) |
+| `zenos_cabinets.jinja` | `acl_record`, `acl_schema_check`, `volumeinfo_copies` |
+| `zen_identity.jinja` | Template surface (Jinja2 contexts) — v1.5.0 |
 | Household Cabinet | `members` drawer, `AI_Cabinet_VolumeInfo`, `zen_identity_manifest` |
-| User / AI User / Family Cabinets | `AI_Cabinet_VolumeInfo.acls` — partner, family, owner entries |
+| User / AI User / Family Cabinets | `AI_Cabinet_VolumeInfo.acls` — the v2 record |
 
 ---
 
