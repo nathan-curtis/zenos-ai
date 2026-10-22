@@ -361,7 +361,7 @@ Human-confirmed passthrough to versioned one-time maintenance scripts. Each repa
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `repair_action` | select | — | Which repair to run. See table below. |
-| `entity_id` | text | — | Cabinet entity ID. Required for `stamp_cab_guid_4_5_6` only. |
+| `entity_id` | text | — | Optional. `acl_migrate` repairs only this cabinet (default every zen_cabinet). |
 | `confirm_action` | boolean | `false` | Must be `true` — refuses without it. |
 | `caller_token` | text | — | Opaque correlation token (echoed in response). |
 
@@ -369,13 +369,11 @@ Human-confirmed passthrough to versioned one-time maintenance scripts. Each repa
 
 | Action | What It Does |
 |---|---|
-| `identity_family_repair_4_5_6` | Wire the default family cabinet into the household graph. Targets pre-4.5.6 installs missing the family link. |
-| `stamp_cab_guid_4_5_6` | Stamp a GUID onto a single cabinet. Requires `entity_id`. Targets installs where a cabinet was created without a GUID. |
-| `roster_guid_repair_4_5_6` | Stamp GUIDs and re-wire all default cabinet roster entries. Targets pre-provisioner installs only — destructive on live provisioner installs. |
+| `acl_migrate` | Identity's cabinet repair: stamps missing ids (a legacy `guid` field becomes the id), converts ACLs to v2, fixes members guids, restores VolumeInfo from and removes stray copies (`ai_cabinet_volumeinfo`, `_ai_cabinet_volumeinfo`). Dry run it first with `zen_dojotools_identity mode: acl_migrate`. |
 
 ### When to Use
 
-Run only when directed by an upgrade path document or a Nyx UAT report. These scripts are not idempotent in the general case — they were designed for specific transition states. If uncertain, run `identity_family_repair_4_5_6` with `dry_run` first if the script supports it; otherwise inspect the target cabinet with `cabinetadmin mode: inspect` before committing.
+Run when a cabinet fails identity's ACL schema check (identity answers `acl_schema_upgrade_required`) or when an upgrade note says to. `acl_migrate` is idempotent: a clean cabinet plans nothing. Dry run it first with `zen_dojotools_identity mode: acl_migrate` to see the plan; this passthrough applies it.
 
 ---
 

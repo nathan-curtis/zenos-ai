@@ -1,7 +1,15 @@
 ###############################################################################
 # ZenOS-AI: FileCabinet DojoTool + FileCabinet Sutra
 # File: dojotools_filecabinet.yaml
-# Version: 6.24.0 -- every dispatch branch is single-exit: a refusal sets result and
+# Version: 6.26.0 -- ACL gate, audit only (#10626/#10633): the resolved target's ACL
+#   (drawer -> cabinet -> default per op; move/copy also check w on the
+#   destination) against the caller (ID.caller, only when a rule needs it).
+#   A would-deny or would-ack is logged (fc_acl_audit) and answered as
+#   acl_audit; nothing is refused yet.
+# 6.25.0 -- the target resolves once, before the gate (CABS.fc_resolve, #10626):
+#   get and the writes follow the whole mount chain (writes followed one hop);
+#   a chain that loops, runs too deep or has no target refuses before dispatch.
+# 6.24.0 -- every dispatch branch is single-exit: a refusal sets result and
 #   the rest of its sequence runs only while nothing has answered; the engine has
 #   one exit at the bottom.
 # 6.23.0 -- the pre-dispatch guards fall through (each sets result and
@@ -764,6 +772,93 @@ script:
                 }
               }}
 
+    # ── Target (#10626): the real cabinet and drawer behind the key, resolved
+    #    once, before the gate (CABS.fc_resolve). get/create/update/upsert act
+    #    on it; delete/move/copy/relabel/mounts act on the pointer itself. A
+    #    mount chain that cannot resolve refuses here for those four.
+    - variables:
+        _t: >-
+          {%- if result is not defined and _vol != '' and _key != '' -%}
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {{- CABS.fc_resolve(_vol, _key) | from_json -}}
+          {%- else -%}
+            {{- {'status': 'none', 'vol': _vol, 'key': _key, 'depth': 0, 'visited': [], 'reason': '', 'loop_at': '', 'fc_args': none, 'entry': none} -}}
+          {%- endif -%}
+    - if: >-
+        {{ result is not defined and _action in ['get', 'create', 'update', 'upsert']
+           and _t.status in ['loop_detected', 'depth_limit_exceeded', 'unresolvable']
+           or (result is not defined and _action == 'get' and _t.status == 'not_found_in_target') }}
+      then:
+        - variables:
+            result:
+              status: error
+              tool: zen_sutra_filecabinet
+              action: "{{ _action }}"
+              key: "{{ _key }}"
+              volume: "{{ _vol }}"
+              mount_traversal:
+                status: "{{ _t.status }}"
+                reason: "{{ _t.reason }}"
+                loop_at: "{{ _t.loop_at }}"
+                depth: "{{ _t.depth }}"
+                visited: "{{ _t.visited }}"
+              trace:
+                caller_token: "{{ _caller_token }}"
+
+    # ── ACL gate (#10626), AUDIT ONLY (#10633) ─────────────────────────────
+    #    The target's ACL decides: CABS.acl_for on the resolved target (reads
+    #    and writes go through a mount; delete/move/copy/relabel/mounts act on
+    #    the pointer), each op inheriting drawer -> cabinet -> default; move and
+    #    copy also need w on the destination. The caller (ID.caller, no script
+    #    call) is looked up only when a rule names principals or a cert. Audit
+    #    only: nothing is refused here yet; a would-deny or would-ack is logged
+    #    (zen_event fc_acl_audit + system_log) and rides on the answer as
+    #    acl_audit.
+    - variables:
+        _g: >-
+          {%- if result is not defined and _vol != '' and _action in ['get', 'list', 'search', 'create', 'update', 'upsert', 'delete', 'move', 'copy',
+                                                                      'relabel', 'set_mount', 'remove_mount', 'mount_cabinet', 'dismount_cabinet', 'set_cabinet_ro'] -%}
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+            {%- set _through = _action in ['get', 'create', 'update', 'upsert'] and _t.status in ['direct', 'resolved', 'live', 'not_found_in_target'] -%}
+            {%- set _checks = [{'op': CABS.acl_op_class(_action) | trim, 'vol': (_t.vol if _through else _vol), 'key': _key}]
+                            + ([{'op': 'w', 'vol': (_dest_vol if _dest_vol != '' else _vol), 'key': _dest}] if _action in ['move', 'copy'] and _dest != '' else []) -%}
+            {%- set ns = namespace(out=[], deny=[], ack=false, who=none) -%}
+            {%- for c in _checks -%}
+              {%- set _acl = CABS.acl_for(c.vol, c.key) | from_json -%}
+              {%- set _rule = _acl.ops[c.op] -%}
+              {%- set _cert = (_rule.get('cert') or '') | string | trim -%}
+              {%- set _need = ('*' not in (_rule.get('who') or [])) or _cert != '' -%}
+              {%- set _cname = _cert | regex_replace(':[0-9]+$', '') -%}
+              {%- set _clvl = (_cert | regex_findall(':([0-9]+)$') | first | default('1')) | int(1) -%}
+              {%- set _who = (ID.caller(_cname, _clvl) | from_json) if _need else {'guid': '', 'cert_ok': true} -%}
+              {%- set _chk = CABS.acl_check(_acl, c.op, _who.guid) | from_json -%}
+              {%- set _why = ([_chk.reason] if not _chk.who_ok else []) + (['cert ' ~ _cert ~ ' not held'] if _cert != '' and not _who.cert_ok else []) -%}
+              {%- set ns.deny = ns.deny + _why -%}
+              {%- set ns.ack = ns.ack or (_rule.get('ack', false) | bool) -%}
+              {%- set ns.out = ns.out + [{'op': c.op, 'target': c.vol ~ ('/' ~ c.key if c.key else ''), 'source': _chk.source, 'why': _why}] -%}
+            {%- endfor -%}
+            {{- {'mode': 'audit', 'action': _action, 'checks': ns.out, 'would_deny': ns.deny | count > 0, 'reasons': ns.deny, 'would_ack': ns.ack} -}}
+          {%- else -%}
+            {{- none -}}
+          {%- endif -%}
+    - if: "{{ _g is mapping and (_g.would_deny or _g.would_ack) }}"
+      then:
+        - event: zen_event
+          event_data:
+            event:
+              timestamp: "{{ now().isoformat() }}"
+              component: zen_sutra_filecabinet
+              severity: warning
+              kind: fc_acl_audit
+              summary: "{{ _action }} {{ _vol }}{{ ('/' ~ _key) if _key else '' }}: {{ 'would deny (' ~ (_g.reasons | join('; ')) ~ ')' if _g.would_deny else 'would ask for a live ack' }}"
+              metadata: "{{ _g }}"
+        - action: system_log.write
+          data:
+            level: warning
+            logger: zen_sutra_filecabinet
+            message: "fc_acl_audit action={{ _action }} volume={{ _vol }} key={{ _key }} would_deny={{ _g.would_deny }} would_ack={{ _g.would_ack }} reasons={{ _g.reasons | join('; ') }}"
+
     # ── Gate (#10561 / #10637): the one place a call is refused before
     #    dispatch (aliases are resolved above, before the guards). A refusal sets result and every dispatch below is
     #    skipped (result is not defined); the single exit at the bottom returns
@@ -986,91 +1081,44 @@ script:
             _g_vol0: "{{ state_attr(_vol, 'variables') | default({}, true) }}"
         - variables:
             _g_trav: >-
-              {%- set _max = 8 -%}
-              {%- set _v0 = _g_vol0 if _g_vol0 is mapping else {} -%}
-              {%- if _key not in _v0 -%}
+              {%- set _t0 = _t if _t is mapping else {} -%}
+              {%- set _st = _t0.get('status', 'absent') -%}
+              {%- if _st == 'absent' -%}
                 {{- {'status': 'absent'} -}}
-              {%- else -%}
-                {%- set ns = namespace(entity=_vol, key=_key, vol=_v0, depth=0, visited=[_vol ~ '/' ~ _key], done=false, entry=none, status='', reason='', loop_at='', fc=none) -%}
-                {%- for _ in range(_max) -%}
-                  {%- if not ns.done -%}
-                    {%- set _cur = ns.vol.get(ns.key) -%}
-                    {%- set _cv_s = (_cur.get('value') or none) if _cur is mapping else none -%}
-                    {%- set _cv = _cv_s if _cv_s is mapping else (_cv_s | from_json(none) if _cv_s is string and _cv_s | trim not in ['', 'null', 'None'] else none) -%}
-                    {%- set _is_mount = _cv is mapping and _cv.get('mount_point', false) == true -%}
-                    {%- if not _is_mount -%}
-                      {%- set ns.entry = _cur -%}
-                      {%- set ns.status = 'resolved' if ns.depth > 0 else 'direct' -%}
-                      {%- set ns.done = true -%}
-                    {%- elif _cv.get('fc_args') is not none -%}
-                      {%- set _wl_vars = state_attr('sensor.zenos_system_cabinet', 'variables') | default({}, true) -%}
-                      {%- set _wl_raw = (_wl_vars.get('fc_mount_callout_whitelist') or {}) if _wl_vars is mapping else {} -%}
-                      {%- set _wl_val = (_wl_raw.get('value') or {}) if _wl_raw is mapping else {} -%}
-                      {%- set _hard_wl = ['zen_dojotools_index:*', 'zen_dojotools_inspect:*', 'zen_dojotools_query:*', 'zen_dojotools_room_manager:*', 'zen_dojotools_manifest:*', 'zen_dojotools_inventory:*', 'zen_dojotools_filecabinet:*', 'zen_dojotools_finance:kfc_manifest', 'zen_dojotools_finance:report', 'zen_dojotools_autovac:kfc_manifest', 'zen_dojotools_autovac:register', 'zen_dojotools_autovac:unregister'] -%}
-                      {%- set _syscab_wl = (_wl_val.get('allowed_action_types', []) if _wl_val is mapping else []) -%}
-                      {%- set _allowed = (_hard_wl + _syscab_wl) | unique | list -%}
-                      {%- set _fa = _cv.get('fc_args') -%}
-                      {%- set _act = (_fa.get('action_type') or _fa.get('tool', '')) if _fa is mapping else '' -%}
-                      {%- set _call_mode = ((_fa.get('params') or {}).get('mode', '') if _fa is mapping else '') | lower | trim -%}
-                      {%- set ns_wl = namespace(ok=false) -%}
-                      {%- for entry in _allowed -%}
-                        {%- if ':' in entry -%}
-                          {%- set parts = entry | regex_findall('[^:]+') -%}
-                          {%- set etool = parts[0] | default('') -%}
-                          {%- set emode = parts[1] | default('') -%}
-                          {%- if etool == _act and (emode == '*' or emode == _call_mode) -%}{%- set ns_wl.ok = true -%}{%- endif -%}
-                        {%- else -%}
-                          {%- if entry == _act -%}{%- set ns_wl.ok = true -%}{%- endif -%}
-                        {%- endif -%}
-                      {%- endfor -%}
-                      {%- if ns_wl.ok -%}
-                        {%- set ns.entry = _cur -%}
-                        {%- set ns.fc = _fa -%}
-                        {%- set ns.status = 'tool_call_required' -%}
-                      {%- else -%}
-                        {%- set ns.status = 'tool_call_blocked' -%}
-                        {%- set ns.reason = 'action_type not in fc_mount_callout_whitelist — blocked by: ' ~ ('system_cabinet_whitelist' if _wl_val is mapping and _wl_val.get('allowed_action_types') else 'hardcode_default') ~ ' (missing: ' ~ _act ~ ((':' ~ _call_mode) if _call_mode != '' else '') ~ ')' -%}
-                      {%- endif -%}
-                      {%- set ns.done = true -%}
-                    {%- else -%}
-                      {%- set _target = _cv.get('target_entity_id', _cv.get('target_volume_id', '')) -%}
-                      {%- set _next = _target ~ '/' ~ ns.key -%}
-                      {%- if _target == '' -%}
-                        {%- set ns.status = 'unresolvable' -%}
-                        {%- set ns.reason = 'mount has no target_entity_id' -%}
-                        {%- set ns.done = true -%}
-                      {%- elif ns.depth >= _max - 1 -%}
-                        {%- set ns.status = 'depth_limit_exceeded' -%}
-                        {%- set ns.done = true -%}
-                      {%- elif _next in ns.visited -%}
-                        {%- set ns.status = 'loop_detected' -%}
-                        {%- set ns.loop_at = _next -%}
-                        {%- set ns.done = true -%}
-                      {%- else -%}
-                        {%- set ns.visited = ns.visited + [_next] -%}
-                        {%- set ns.entity = _target -%}
-                        {%- set ns.vol = state_attr(_target, 'variables') | default({}, true) -%}
-                        {%- set ns.depth = ns.depth + 1 -%}
-                        {%- if ns.key not in ns.vol -%}
-                          {%- set ns.status = 'not_found_in_target' -%}
-                          {%- set ns.reason = 'key not found in target volume: ' ~ _target -%}
-                          {%- set ns.done = true -%}
-                        {%- endif -%}
-                      {%- endif -%}
-                    {%- endif -%}
+              {%- elif _st == 'live' -%}
+                {%- set _wl_vars = state_attr('sensor.zenos_system_cabinet', 'variables') | default({}, true) -%}
+                {%- set _wl_raw = (_wl_vars.get('fc_mount_callout_whitelist') or {}) if _wl_vars is mapping else {} -%}
+                {%- set _wl_val = (_wl_raw.get('value') or {}) if _wl_raw is mapping else {} -%}
+                {%- set _hard_wl = ['zen_dojotools_index:*', 'zen_dojotools_inspect:*', 'zen_dojotools_query:*', 'zen_dojotools_room_manager:*', 'zen_dojotools_manifest:*', 'zen_dojotools_inventory:*', 'zen_dojotools_filecabinet:*', 'zen_dojotools_finance:kfc_manifest', 'zen_dojotools_finance:report', 'zen_dojotools_autovac:kfc_manifest', 'zen_dojotools_autovac:register', 'zen_dojotools_autovac:unregister'] -%}
+                {%- set _syscab_wl = (_wl_val.get('allowed_action_types', []) if _wl_val is mapping else []) -%}
+                {%- set _allowed = (_hard_wl + _syscab_wl) | unique | list -%}
+                {%- set _fa = _t0.get('fc_args') -%}
+                {%- set _act = (_fa.get('action_type') or _fa.get('tool', '')) if _fa is mapping else '' -%}
+                {%- set _call_mode = ((_fa.get('params') or {}).get('mode', '') if _fa is mapping else '') | lower | trim -%}
+                {%- set ns_wl = namespace(ok=false) -%}
+                {%- for entry in _allowed -%}
+                  {%- if ':' in entry -%}
+                    {%- set parts = entry | regex_findall('[^:]+') -%}
+                    {%- if (parts[0] | default('')) == _act and ((parts[1] | default('')) == '*' or (parts[1] | default('')) == _call_mode) -%}{%- set ns_wl.ok = true -%}{%- endif -%}
+                  {%- elif entry == _act -%}{%- set ns_wl.ok = true -%}
                   {%- endif -%}
                 {%- endfor -%}
-                {{- {'status': ns.status, 'entry': ns.entry, 'depth': ns.depth, 'visited': ns.visited,
-                     'entity': ns.entity, 'reason': ns.reason, 'loop_at': ns.loop_at, 'fc_args': ns.fc} -}}
+                {{- {'status': 'tool_call_required' if ns_wl.ok else 'tool_call_blocked',
+                     'reason': '' if ns_wl.ok else ('action_type not in fc_mount_callout_whitelist — blocked by: ' ~ ('system_cabinet_whitelist' if _wl_val is mapping and _wl_val.get('allowed_action_types') else 'hardcode_default') ~ ' (missing: ' ~ _act ~ ((':' ~ _call_mode) if _call_mode != '' else '') ~ ')'),
+                     'entry': _t0.get('entry'), 'fc_args': _fa if ns_wl.ok else none, 'depth': _t0.get('depth', 0),
+                     'visited': _t0.get('visited', []), 'entity': _t0.get('vol', _vol), 'loop_at': ''} -}}
+              {%- else -%}
+                {{- {'status': _st, 'entry': _t0.get('entry'), 'depth': _t0.get('depth', 0), 'visited': _t0.get('visited', []),
+                     'entity': _t0.get('vol', _vol), 'reason': _t0.get('reason', ''), 'loop_at': _t0.get('loop_at', ''), 'fc_args': none} -}}
               {%- endif -%}
         - choose:
           - conditions:
             - condition: template
-              value_template: "{{ _g_trav is mapping and _g_trav.get('status') in ['loop_detected', 'depth_limit_exceeded', 'unresolvable', 'not_found_in_target', 'tool_call_blocked'] }}"
+              value_template: "{{ _g_trav is mapping and _g_trav.get('status') == 'tool_call_blocked' }}"
             sequence:
             - variables:
                 result: >-
-                  {%- set _t = _g_trav -%}
+                  {%- set _t1 = _g_trav -%}
                   {{
                     {
                       'status': 'error',
@@ -1079,11 +1127,11 @@ script:
                       'key': _key,
                       'volume': _vol,
                       'mount_traversal': {
-                        'status': _t.get('status'),
-                        'reason': _t.get('reason', ''),
-                        'loop_at': _t.get('loop_at', ''),
-                        'depth': _t.get('depth', 0),
-                        'visited': _t.get('visited', [])
+                        'status': _t1.get('status'),
+                        'reason': _t1.get('reason', ''),
+                        'loop_at': '',
+                        'depth': _t1.get('depth', 0),
+                        'visited': _t1.get('visited', [])
                       },
                       'trace': {'caller_token': _caller_token}
                     }
@@ -1499,16 +1547,9 @@ script:
           - if: "{{ result is not defined }}"
             then:
             - variables:
-                _w_vol: >-
-                  {%- set _dr = (state_attr(_vol, 'variables') or {}).get(_key) -%}
-                  {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                  {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string and _dv_s | trim not in ['', 'null', 'None'] else none) -%}
-                  {{ _dv.get('target_entity_id', _vol) if (_dv is mapping and _dv.get('mount_point', false) == true and _dv.get('target_entity_id', '') != '') else _vol }}
-                _w_is_mount: >-
-                  {%- set _dr = (state_attr(_vol, 'variables') or {}).get(_key) -%}
-                  {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                  {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string and _dv_s | trim not in ['', 'null', 'None'] else none) -%}
-                  {{ _dv is mapping and _dv.get('mount_point', false) == true and _dv.get('target_entity_id', '') != '' }}
+                # The resolved target (_t, above the gate): every hop of a mount chain.
+                _w_vol: "{{ _t.vol if (_t.depth | int(0)) > 0 else _vol }}"
+                _w_is_mount: "{{ (_t.depth | int(0)) > 0 }}"
             - variables:
                 _exists: >-
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -1658,16 +1699,9 @@ script:
         - if: "{{ result is not defined }}"
           then:
           - variables:
-              _w_vol: >-
-                {%- set _dr = (state_attr(_vol, 'variables') or {}).get(_key) -%}
-                {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string and _dv_s | trim not in ['', 'null', 'None'] else none) -%}
-                {{ _dv.get('target_entity_id', _vol) if (_dv is mapping and _dv.get('mount_point', false) == true and _dv.get('target_entity_id', '') != '') else _vol }}
-              _w_is_mount: >-
-                {%- set _dr = (state_attr(_vol, 'variables') or {}).get(_key) -%}
-                {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string and _dv_s | trim not in ['', 'null', 'None'] else none) -%}
-                {{ _dv is mapping and _dv.get('mount_point', false) == true and _dv.get('target_entity_id', '') != '' }}
+              # The resolved target (_t, above the gate): every hop of a mount chain.
+              _w_vol: "{{ _t.vol if (_t.depth | int(0)) > 0 else _vol }}"
+              _w_is_mount: "{{ (_t.depth | int(0)) > 0 }}"
           - variables:
               _upd_raw: >-
                 {{ (state_attr(_w_vol, 'variables') or {}).get(_key) }}
@@ -1853,16 +1887,9 @@ script:
         - if: "{{ result is not defined }}"
           then:
           - variables:
-              _w_vol: >-
-                {%- set _dr = (state_attr(_vol, 'variables') or {}).get(_key) -%}
-                {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string and _dv_s | trim not in ['', 'null', 'None'] else none) -%}
-                {{ _dv.get('target_entity_id', _vol) if (_dv is mapping and _dv.get('mount_point', false) == true and _dv.get('target_entity_id', '') != '') else _vol }}
-              _w_is_mount: >-
-                {%- set _dr = (state_attr(_vol, 'variables') or {}).get(_key) -%}
-                {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string and _dv_s | trim not in ['', 'null', 'None'] else none) -%}
-                {{ _dv is mapping and _dv.get('mount_point', false) == true and _dv.get('target_entity_id', '') != '' }}
+              # The resolved target (_t, above the gate): every hop of a mount chain.
+              _w_vol: "{{ _t.vol if (_t.depth | int(0)) > 0 else _vol }}"
+              _w_is_mount: "{{ (_t.depth | int(0)) > 0 }}"
           - variables:
               _ups_raw: >-
                 {{ (state_attr(_w_vol, 'variables') or {}).get(_key) }}
@@ -4087,6 +4114,11 @@ script:
               stacks_by_anchor|register|unregister|inspect|health (no volume = system status)|audit.
 
     # -- Single exit. Converted branches and the gate fall through to here.
+    # The ACL gate's audit rides on the answer when it would deny or ask.
+    - if: "{{ _g is mapping and (_g.would_deny or _g.would_ack) and result is mapping }}"
+      then:
+        - variables:
+            result: "{{ dict(result, **{'acl_audit': _g}) }}"
     - stop: filecabinet sutra done
       response_variable: result
 
@@ -4488,7 +4520,7 @@ script:
                 tool='zen_dojotools_filecabinet',
                 display_name='FileCabinet — Knowledge Stack Surface',
                 tier='dojotools',
-                version='6.15.3',
+                version='6.26.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['cabinet', 'wiki_js', 'knowledge', 'documents'],
@@ -4535,7 +4567,7 @@ script:
               {{-
                 {
                   "tool": "zen_dojotools_filecabinet",
-                  "version": "6.15.3",
+                  "version": "6.26.0",
                   "intent": "Stack-agnostic knowledge surface. stack=cabinet is always available (built-in FileCabinet key-value store). stack=wiki is optional — requires zen_sutra_wikijs installed and registered; returns stack_not_available if missing. HA Labels are the shared tag/anchor system across both stacks.",
                   "you_should_use_this_tool_when": [
                     "You need to read, write, or manage key-value knowledge drawers in a FileCabinet volume (stack=cabinet — always available).",

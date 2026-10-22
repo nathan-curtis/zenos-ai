@@ -1,5 +1,5 @@
 ###############################################################################
-# ZENOS-AI ADMINTOOL: CABINET WRITER, the admin door (v1.4.0)
+# ZENOS-AI ADMINTOOL: CABINET WRITER, the admin door (v1.6.0)
 #
 # The one place admin-plane cabinet writes fire (#10637, epic #10626). The
 # agent-facing door is zen_dojotools_filecabinet; this is the other door, for
@@ -28,11 +28,22 @@
 #   (content_verified); a changed value is an error. Proven lossless for the
 #   prompt_loader brain strings, which now come through here.
 # v1.4.0: optional meta/acl pass through to the drawer envelope.
+# v1.5.0: mode merge (#10626): the door reads the stored value when it writes,
+#   lays the given keys over it and drops the keys named in unset. A caller
+#   sends only what it changes, so a partial value can never replace the whole
+#   drawer (an empty read-modify-write cut VolumeInfo down to acls), and the
+#   queued door serializes concurrent merges.
+# v1.6.0: door gate, audit only (#10626/#10632/#10633). A write chain with no
+#   user session (boot, Flynn's bootstrap, automations) is exempt; an agent or
+#   console write needs cert zenos.system.cabinet_admin and would ask a live
+#   human. Logged (zen_event door_gate_audit, system_log) and answered as
+#   gate_audit; nothing is refused yet.
 #
 # Modes:
 #   help (default, also any unknown mode): this reference, never a write.
 #   tool_manifest: self-description.
 #   set     volume_entity key value caller [force] [bootstrap]
+#   merge   volume_entity key value(mapping) caller [unset] [force] [bootstrap]
 #   remove  volume_entity key caller
 #   clear   volume_entity caller confirm=true (wipes every drawer)
 ###############################################################################
@@ -49,11 +60,11 @@ script:
     icon: mdi:door-closed-lock
     fields:
       mode:
-        description: "help (default) | tool_manifest | set | remove | clear"
+        description: "help (default) | tool_manifest | set | merge | remove | clear"
         required: false
         selector:
           select:
-            options: [help, tool_manifest, set, remove, clear]
+            options: [help, tool_manifest, set, merge, remove, clear]
       volume_entity:
         description: Cabinet sensor entity_id to write.
         required: false
@@ -89,6 +100,11 @@ script:
         required: false
         selector:
           boolean:
+      unset:
+        description: merge only. Top-level keys to drop from the stored value.
+        required: false
+        selector:
+          object:
       meta:
         description: Drawer envelope meta (expiry etc.); merged over the stored meta.
         required: false
@@ -134,7 +150,7 @@ script:
                     or ((bootstrap | default(false) | bool) and states(_vol) == 'unknown')) }}
 
       # ── help (default, and any unknown mode) ─────────────────────────────
-      - if: "{{ _mode not in ['tool_manifest', 'set', 'remove', 'clear'] }}"
+      - if: "{{ _mode not in ['tool_manifest', 'set', 'merge', 'remove', 'clear'] }}"
         then:
           - variables:
               result:
@@ -145,6 +161,7 @@ script:
                   Agents use zen_dojotools_filecabinet instead.
                 modes:
                   set: "volume_entity key value caller [reason] [force] [bootstrap]"
+                  merge: "volume_entity key value(mapping) caller [unset] [reason] [force] [bootstrap]: the given keys over the stored value"
                   remove: "volume_entity key caller [reason]"
                   clear: "volume_entity caller confirm=true [reason] (wipes every drawer)"
                   tool_manifest: self-description
@@ -165,18 +182,28 @@ script:
                   tool='zen_admintools_cabinet_writer',
                   display_name='Cabinet Writer (admin door)',
                   tier='admintools',
-                  version='1.4.0',
+                  version='1.6.0',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['zen_cabinet'],
                   consumes=['volume_entity', 'key', 'value'],
                   returns=['write_ack'],
                   failure_policy='hard',
-                  modes={'help': 'help', 'manifest': 'tool_manifest', 'set': 'set', 'remove': 'remove', 'clear': 'clear'},
+                  modes={'help': 'help', 'manifest': 'tool_manifest', 'set': 'set', 'merge': 'merge', 'remove': 'remove', 'clear': 'clear'},
                   icon='mdi:door-closed-lock',
                   color='deep-orange',
                   mcp_exposed=false,
                   caller_token=_token
-                ) | from_json -}}
+                ) | from_json | combine({
+                  'certs_required': [{
+                    'cert': 'zenos.system.cabinet_admin',
+                    'display_name': 'Cabinet admin (admin door)',
+                    'description': 'Structural, system-cabinet and vault writes through the admin door when an agent or console session starts them. Each such write also asks a live human. Boot and automation writes (no user session) do not need it.',
+                    'max_level': 1,
+                    'gates': ['set', 'merge', 'remove', 'clear'],
+                    'live_ack_required_for': ['set', 'merge', 'remove', 'clear'],
+                    'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.system.cabinet_admin'
+                  }]
+                }) -}}
 
       # ── validation for writes ─────────────────────────────────────────────
       - if: "{{ result is not defined }}"
@@ -185,8 +212,9 @@ script:
               _err: >-
                 {%- if _caller == '' -%}caller is required on every admin write
                 {%- elif not _is_cabinet -%}volume_entity '{{ _vol }}' is not an online zen_cabinet
-                {%- elif _mode in ['set', 'remove'] and _key == '' -%}key is required for {{ _mode }}
+                {%- elif _mode in ['set', 'merge', 'remove'] and _key == '' -%}key is required for {{ _mode }}
                 {%- elif _mode == 'set' and value is not defined -%}value is required for set
+                {%- elif _mode == 'merge' and not (value is defined and value is mapping) -%}merge needs value as a mapping
                 {%- elif _mode == 'clear' and not (confirm | default(false) | bool) -%}clear wipes every drawer; pass confirm=true
                 {%- else -%}{%- endif -%}
           - if: "{{ _err != '' }}"
@@ -199,6 +227,46 @@ script:
                     message: "guarded: {{ _err }}"
                     caller_token: "{{ _token }}"
 
+      # ── door gate (#10626 / #10632), AUDIT ONLY (#10633) ─────────────────
+      # A write chain no user started (boot, Flynn's bootstrap, automations:
+      # context.user_id empty) is exempt. Anything else (an agent's MCP call,
+      # a console session: HA cannot tell them apart) needs cert
+      # zenos.system.cabinet_admin and would ask a live human. Audit only:
+      # nothing is refused yet; the decision is logged and answered as
+      # gate_audit.
+      - variables:
+          _dg: >-
+            {%- if result is not defined -%}
+              {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+              {%- set _uid = (context.user_id | default('', true) | string | trim) if context is defined else '' -%}
+              {%- if _uid == '' -%}
+                {{- {'mode': 'audit', 'exempt': true, 'why': 'no user session (boot, automation)', 'would_deny': false, 'would_ack': false} -}}
+              {%- else -%}
+                {%- set _c = ID.caller('zenos.system.cabinet_admin', 1) | from_json -%}
+                {{- {'mode': 'audit', 'exempt': false, 'caller_guid': _c.guid, 'cert': 'zenos.system.cabinet_admin:1',
+                     'would_deny': not _c.cert_ok, 'reasons': ([] if _c.cert_ok else ['cert zenos.system.cabinet_admin:1 not held']),
+                     'would_ack': true} -}}
+              {%- endif -%}
+            {%- else -%}
+              {{- none -}}
+            {%- endif -%}
+      - if: "{{ _dg is mapping and not _dg.exempt }}"
+        then:
+          - event: zen_event
+            event_data:
+              event:
+                timestamp: "{{ now().isoformat() }}"
+                component: zen_admintools_cabinet_writer
+                severity: "{{ 'warning' if _dg.would_deny else 'info' }}"
+                kind: door_gate_audit
+                summary: "{{ _caller }} {{ _mode }} {{ _vol }}{{ (' ' ~ _key) if _key else '' }}: {{ 'would deny (' ~ (_dg.reasons | join('; ')) ~ ')' if _dg.would_deny else 'would ask for a live ack' }}"
+                metadata: "{{ _dg }}"
+          - action: system_log.write
+            data:
+              level: "{{ 'warning' if _dg.would_deny else 'info' }}"
+              logger: zen_admintools_cabinet_writer
+              message: "door_gate_audit caller={{ _caller }} op={{ _mode }} volume={{ _vol }} key={{ _key }} would_deny={{ _dg.would_deny }} would_ack={{ _dg.would_ack }}"
+
       # ── write + log ───────────────────────────────────────────────────────
       - if: "{{ result is not defined }}"
         then:
@@ -206,18 +274,33 @@ script:
               _now: "{{ now().isoformat() }}"
               _force: "{{ force | default(false) | bool }}"
               _boot: "{{ bootstrap | default(false) | bool }}"
+              # merge: the stored value (a mapping, or a JSON string of one)
+              # with the given keys laid over it and the unset keys dropped.
+              _value: >-
+                {%- if _mode == 'merge' -%}
+                  {%- set d = (state_attr(_vol, 'variables') or {}).get(_key) -%}
+                  {%- set cur = d.get('value') if d is mapping else none -%}
+                  {%- set cur = (cur | from_json(none)) if cur is string else cur -%}
+                  {%- set cur = cur if cur is mapping else {} -%}
+                  {%- set drop = unset if (unset is defined and unset is iterable and unset is not string and unset is not mapping) else [] -%}
+                  {%- set ns = namespace(o={}) -%}
+                  {%- for k, v in cur.items() if k not in drop and k not in value -%}{%- set ns.o = dict(ns.o, **{k: v}) -%}{%- endfor -%}
+                  {{ dict(ns.o, **value) }}
+                {%- else -%}
+                  {{ value if value is defined else none }}
+                {%- endif -%}
           # Each write waits until the cabinet shows it before the door
           # answers: callers read-modify-write VolumeInfo, and an answer that
           # comes back before the drawer updates lets the next call read the
           # old value and overwrite this one.
           - choose:
-              - conditions: "{{ _mode == 'set' }}"
+              - conditions: "{{ _mode in ['set', 'merge'] }}"
                 sequence:
                   - event: set_variable_legacy
                     event_data:
                       volume_entity: "{{ _vol }}"
                       key: "{{ _key }}"
-                      value: "{{ value }}"
+                      value: "{{ _value }}"
                       meta: "{{ meta if meta is defined else none }}"
                       acl: "{{ acl if acl is defined else none }}"
                       set_timestamp: true
@@ -255,11 +338,11 @@ script:
           # value is a failed write, not a success.
           - variables:
               _content_ok: >-
-                {%- if _mode != 'set' -%}true
+                {%- if _mode not in ['set', 'merge'] -%}true
                 {%- else -%}
                   {%- set d = (state_attr(_vol, 'variables') or {}).get(_key, {}) -%}
                   {%- set got = d.get('value') if d is mapping else none -%}
-                  {{ (got | tojson) == (value | tojson) }}
+                  {{ (got | tojson) == (_value | tojson) }}
                 {%- endif -%}
           - event: zen_event
             event_data:
@@ -289,6 +372,7 @@ script:
                 caller: "{{ _caller }}"
                 write_verified: "{{ _verified }}"
                 content_verified: "{{ _content_ok }}"
+                gate_audit: "{{ _dg if (_dg is mapping and not _dg.exempt) else none }}"
                 message: >-
                   {{ 'write not visible on the cabinet within 10s' if not _verified
                      else ('stored value differs from the value sent' if not _content_ok else '') }}

@@ -1,6 +1,45 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Identity
-# Version: 5.5.8
+# Version: 5.8.0
+# v5.8.0: request_live_ack honors the console override (cert_admin_console_bypass,
+#   thrown only by hand from the console) for EVERY live ack: the one
+#   chokepoint, so hammer, reset, reset_all, take_ownership and every other ack
+#   follow it and cannot drift. On an offline install it is the only approval
+#   there is. Each use is audited (zen_event live_ack_console_bypass, system_log
+#   warning). take_ownership's own copy of the check is retired; its approver
+#   comes from the ack's answer.
+# v5.7.1: take_ownership honors the console override (cert_admin_console_bypass
+#   + a console session, the same condition as cert grants) in place of the
+#   phone ack; the audit records approver console_bypass with the user id.
+# v5.7.0: ACL writers (#10626). acl_set (owner only) changes ops in a cabinet or
+#   drawer ACL; take_ownership is the escape hatch: cert
+#   zenos.identity.acl_take_ownership + a live human ack on every call, naming
+#   target, current and proposed ACL; only the ACL is rewritten, never the
+#   value. Both audited (zen_event acl_changed / acl_ownership_taken with old
+#   and new ACL, system_log). New fields drawer_key, acl_ops, reason.
+# v5.6.3: acl_migrate also repairs stray VolumeInfo copies (the busted-key case
+#   zen_repair_fam_cab_volumeinfo handled for one cabinet, now for every
+#   cabinet): a copy that carries an id fills what VolumeInfo lost, and every
+#   copy is removed through the admin door.
+# v5.6.2: ACL schema gate (#10626). household_add_family, household_add_member,
+#   set_principal, family_add_member and provision_member refuse
+#   (acl_schema_upgrade_required, with the fix) when their household or family
+#   is on the old ACL schema; force_action upgrades it first (acl_migrate on
+#   that cabinet), re-checks, and continues. acl_migrate's re-check uses the
+#   same CABS.acl_schema_check.
+# v5.6.1: mode acl_migrate (#10626): brings every cabinet's VolumeInfo to the
+#   ACL v2 record and fixes bad identity data (missing id, legacy guid field,
+#   v1 lists, acls.family, a VolumeInfo cut down to acls, members entries with
+#   the wrong guid). dry_run by default; apply needs confirm_action and is
+#   verified by re-reading each cabinet. Flynn's bootstrap runs it.
+# v5.6.0: ACL v2 (#10626). Every identity ACL read goes through the shared
+#   record (CABS.acl_record / ID.principals) and every write stores v2:
+#   {v: 2, owner, prime, partners, ops} with cabinet GUIDs as principals.
+#   VolumeInfo writes go through the admin door's merge with only the changed
+#   keys, so a read that comes back empty can never replace the whole drawer.
+#   acls.family
+#   is no longer written (family membership lives in the members drawers); a
+#   cabinet with no GUID gets an id (never 'guid') before it becomes a principal.
 # v5.5.8: resolve area_labels holds only labels that are real HA areas; data-
 #   routing labels (medical, context, user_cabinet, ...) no longer leak into
 #   a who answer. The person-slug label walk is unchanged.
@@ -133,9 +172,9 @@
 #   mode: family_add_member       — add user/ai_user/family to a family; fires join event
 #   mode: family_remove_member    — remove member; fires leave event; warns if removed entity is HoH/prime
 #   mode: link_partners            — bidirectional delegation link (any entity pair: user↔user,
-#                                    user↔ai_user, ai_user↔ai_user). Writes acls.partner on both sides.
+#                                    user↔ai_user, ai_user↔ai_user). Lists each in the other's ACL partners.
 #                                    Partner = authorized to delegate on your behalf (governance, not social).
-#   mode: unlink_partners          — sever delegation link; removes each from the other's acls.partner
+#   mode: unlink_partners          — sever delegation link; removes each from the other's ACL partners
 #   mode: set_default_family      — change which family is the user's default (first = default)
 #   mode: membership              — full tree view (principals + members + sub-families to depth 2)
 #                                    or reverse lookup (which groups is this member in?)
@@ -209,6 +248,9 @@ script:
               - link_partners
               - unlink_partners
               - set_default_family
+              - acl_migrate
+              - acl_set
+              - take_ownership
               - membership
               - is_member
               - provision_member
@@ -361,6 +403,48 @@ script:
         default: ''
         selector:
           text:
+      drawer_key:
+        name: Drawer Key
+        description: >-
+          acl_set / take_ownership: a drawer in target_entity whose own ACL
+          (the envelope acl) to change. Omit for the cabinet's ACL.
+        required: false
+        selector:
+          text:
+      acl_ops:
+        name: ACL Ops
+        description: >-
+          acl_set / take_ownership: ops to set, e.g. {"w": {"who": ["*"],
+          "cert": "zenos.fc.write:1", "ack": false}}. Only r, w, d, a; each op
+          named here replaces that op, the others keep what they had.
+        required: false
+        selector:
+          object:
+      reason:
+        name: Reason
+        description: "take_ownership (required) and acl_set: why, recorded in the audit event and shown in the live ack."
+        required: false
+        selector:
+          text:
+      dry_run:
+        name: Dry Run
+        description: >-
+          acl_migrate only. true (default) reports what would change and writes
+          nothing; false writes it (also needs confirm_action=true).
+        selector:
+          boolean:
+      force_action:
+        name: Force Action
+        description: >-
+          Setup modes (household_add_family, household_add_member,
+          set_principal, family_add_member, provision_member): when the
+          household or family is on the old ACL schema, upgrade it first
+          (acl_migrate on that cabinet), then continue. Without it those modes
+          refuse with acl_schema_upgrade_required.
+        required: false
+        default: false
+        selector:
+          boolean:
       confirm_action:
         name: Confirm Action
         description: >-
@@ -515,6 +599,14 @@ script:
                   'live_ack_required_for': [],
                   'grant_via': 'flynn_oobe.yaml mode=complete requests it (live ack); or persona_editor mode=cert_req_grant cert_component=zenos.agent.basic',
                   'bundle': ['zenos_agent_basic']
+                }, {
+                  'cert': 'zenos.identity.acl_take_ownership',
+                  'display_name': 'ACL take-ownership',
+                  'description': 'Take ownership of a cabinet or drawer ACL (identity mode=take_ownership): the escape hatch when an ACL locks out what it should not. Every use also asks a live human (the ask names the target, the current and the proposed ACL) and is audited with the old and new ACL.',
+                  'max_level': 1,
+                  'gates': ['take_ownership'],
+                  'live_ack_required_for': ['take_ownership'],
+                  'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.identity.acl_take_ownership'
                 }]
             }) -}}
       - if: "{{ _id_bare }}"
@@ -543,9 +635,12 @@ script:
               set_principal: "Set or replace the HoH (member_type=user) or prime AI partner (member_type=ai_user) on any container cabinet. Single-occupant slot -- previous occupant replaced."
               family_add_member: "Add a user/ai_user/family to a family. Nesting allowed, resolver caps at depth 2."
               family_remove_member: "Remove a member from a family. Warns if the removed entity is HoH/prime."
-              link_partners: "Bidirectional delegation link between any two entities. Writes acls.partner on both sides -- authorizes delegation, not a social label."
-              unlink_partners: "Sever a delegation link. Removes each entity from the other's acls.partner list."
+              link_partners: "Bidirectional delegation link between any two entities. Lists each in the other's ACL partners (by GUID) -- authorizes delegation, not a social label."
+              unlink_partners: "Sever a delegation link. Removes each entity from the other's ACL partners."
               set_default_family: "Change a user's default family (first family joined is default otherwise)."
+              acl_set: "Owner only. Changes ops in a cabinet's ACL (target_entity) or one drawer's own ACL (+ drawer_key): acl_ops {r|w|d|a: {who, cert, ack}}. The caller must be the cabinet's ACL owner; anyone else is refused (take_ownership is the escape hatch). Audited (zen_event acl_changed)."
+              take_ownership: "The auditable escape hatch for a bad or locked ACL. target_entity (+ drawer_key), reason (required), acl_ops optional. Needs cert zenos.identity.acl_take_ownership and a live human ack on EVERY call (the ask names the target, the current and the proposed ACL); the console override stands in for the ack (request_live_ack honors it for every ack), and the audit says so. Cabinet: the caller becomes the ACL owner, acl_ops replace the named ops. Drawer: its own ACL ops become acl_ops (empty = inherit the cabinet). Rewrites only the ACL, never the value. Audited (zen_event acl_ownership_taken with old and new ACL)."
+              acl_migrate: "Brings every cabinet's VolumeInfo to the ACL v2 record and fixes bad identity data: a missing id is stamped (a legacy guid field becomes the id), v1 owner/partner lists become GUIDs, acls.family and placeholders go, a missing flags/friendly_name is restored, members entries get their cabinet's GUID, stray VolumeInfo copies (ai_cabinet_volumeinfo, _ai_cabinet_volumeinfo) fill what VolumeInfo lost and are removed. dry_run (default true) only reports; dry_run=false + confirm_action=true writes, then re-reads each cabinet (remaining lists any it could not fix). target_entity scopes it to one cabinet. Dangling GUIDs (no cabinet has them) are reported, never dropped. Idempotent: a clean install plans nothing. Flynn's bootstrap runs it."
               membership: "Full tree view: principals, members, sub-families to depth 2. If member_entity is a user/ai_user instead of a container, returns their groups + role in each. Omit both for the default household tree."
               is_member: "Depth-2 membership check. member_entity=subject, family_entity=container. Returns {is_member, depth: 1|2|null}."
               provision_member: "Full orchestration for a new family member with no HA person entity: finds a free expansion slot, provisions it, wires into the target family, rebuilds the manifest. Requires member_name. Hard-stops if all 5 expansion slots are occupied."
@@ -559,6 +654,9 @@ script:
               ack_message: "request_live_ack: required, the yes/no prompt text shown to the household admin."
               ack_key: "request_live_ack: optional dedup key, auto-generated if omitted."
               required_cert: "resolve_caller_identity: optional cert component to check on the caller's behalf."
+              force_action: "household_add_family, household_add_member, set_principal, family_add_member, provision_member: these refuse (code acl_schema_upgrade_required) when their household or family is on the old ACL schema. Fix with acl_migrate, or retry with force_action=true: identity upgrades that cabinet, checks it, and continues (error only if the upgrade fails)."
+              dry_run: "acl_migrate: true (default) reports the plan; false writes it (needs confirm_action=true)."
+              target_entity: "resolve_caller_identity: the entity the caller acts on. acl_migrate: one cabinet to migrate (default every zen_cabinet)."
             caller_token: "{{ caller_token | default('') }}"
       - variables:
           _id_help_message: >-
@@ -593,6 +691,47 @@ script:
               status: error
               error: ack_message_required
               detail: "request_live_ack requires ack_message."
+              caller_token: "{{ caller_token | default('') }}"
+    # ── Console override (cert_admin_console_bypass). Thrown only by hand, from
+    # the console (prompt_loader mode=cert_bypass, never reachable by an agent).
+    # Whoever throws it takes the responsibility a live ack would: on an
+    # offline install (no agent, no Postman) it is the only approval there is.
+    # Every live ack honors it here, the one chokepoint (hammer, reset,
+    # reset_all, take_ownership, cert grants, ...), so no caller can drift. Each
+    # use is audited (zen_event live_ack_console_bypass + system_log warning).
+    - if: "{{ response is not defined and (mode | default('') | lower) == 'request_live_ack' }}"
+      then:
+      - variables:
+          _rla_override: >-
+            {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+            {{- ID.console_override() | trim == 'true' -}}
+          _rla_uid: "{{ (context.user_id | default('', true) | string | trim) if context is defined else '' }}"
+      - if: "{{ _rla_override | bool }}"
+        then:
+        - event: zen_event
+          event_data:
+            event:
+              timestamp: "{{ now().isoformat() }}"
+              component: zen_dojotools_identity
+              severity: warning
+              kind: live_ack_console_bypass
+              summary: "Live ack approved by the console override: {{ _rla_message[:200] }}"
+              metadata:
+                ack_message: "{{ _rla_message }}"
+                user_id: "{{ _rla_uid }}"
+        - action: system_log.write
+          data:
+            level: warning
+            logger: zen_dojotools_identity
+            message: "live_ack_console_bypass user_id={{ _rla_uid }} ack={{ _rla_message[:300] }}"
+        - variables:
+            response:
+              status: ok
+              mode: request_live_ack
+              approved: true
+              reason: console_bypass
+              user_id: "{{ _rla_uid }}"
+              waited_seconds: 0
               caller_token: "{{ caller_token | default('') }}"
     - if: "{{ response is not defined and (mode | default('') | lower) == 'request_live_ack' }}"
       then:
@@ -1275,21 +1414,14 @@ script:
                   {%- set _vi = _hh_vi_raw -%}
                   {%- set _m = _hh_members_raw -%}
                   {%- set _hp = _hh_profile_raw -%}
-                  {%- set _acls = _vi.get('acls', {}) -%}
-                  {%- set _acls = _acls if _acls is mapping else {} -%}
-                  {%- set _owners = _acls.get('owner', []) -%}
-                  {%- set _partners = _acls.get('partner', []) -%}
-                  {%- set _prime = _partners | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | list -%}
+                  {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                  {%- set _pr = ID.principals(_hh_cab) | from_json -%}
                   {%- set _ns = namespace(fams=[]) -%}{# FG-25: namespace required for list mutation inside for-loop #}
                   {%- for fam in _m.get('families', []) -%}
                     {%- set _fc_entity_id = fam.get('entity_id', '') -%}
                     {%- set _fvi = CABS.cabinet_drawer_value(_fc_entity_id, 'AI_Cabinet_VolumeInfo', {}) | from_json() -%}
                     {%- set _fm = CABS.cabinet_drawer_value(_fc_entity_id, 'members', {}) | from_json() -%}
-                    {%- set _facls = _fvi.get('acls', {}) | default({}, true) -%}
-                    {%- set _facls = _facls if _facls is mapping else {} -%}
-                    {%- set _fowners = _facls.get('owner', []) -%}
-                    {%- set _fpartners = _facls.get('partner', []) -%}
-                    {%- set _fprime = _fpartners | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | list -%}
+                    {%- set _fpr = ID.principals(_fc_entity_id) | from_json -%}
                     {%- set _nsf = namespace(subfams=[]) -%}{# FG-25: namespace required for list mutation inside for-loop #}
                     {%- for sf in _fm.get('families', []) -%}
                       {%- set _sf_entity_id = sf.get('entity_id', '') -%}
@@ -1308,7 +1440,7 @@ script:
                       'guid': _fvi.get('id', _fvi.get('guid', '')),
                       'name': fam.get('name', _fvi.get('friendly_name', _fvi.get('name', _fc_entity_id))),
                       'depth': fam.get('depth', 1),
-                      'principals': {'hoh': _fowners[0] if _fowners | count > 0 else none, 'prime': _fprime[0] if _fprime | count > 0 else none},
+                      'principals': _fpr,
                       'members': {'users': _fm.get('users', []), 'ai_users': _fm.get('ai_users', []), 'families': _nsf.subfams}
                     }] -%}
                   {%- endfor -%}
@@ -1317,7 +1449,7 @@ script:
                       'entity_id': _hh_cab,
                       'guid': _vi.get('id', _vi.get('guid', '')),
                       'name': _hp.get('friendly_name', _hp.get('name', _vi.get('friendly_name', _vi.get('name', _hh_cab)))),
-                      'principals': {'hoh': _owners[0] if _owners | count > 0 else none, 'prime': _prime[0] if _prime | count > 0 else none},
+                      'principals': _pr,
                       'members': {'users': _m.get('users', []), 'ai_users': _m.get('ai_users', []), 'families': _ns.fams}
                     } | tojson
                   }}
@@ -1360,6 +1492,69 @@ script:
                   component: zen_dojotools_identity
                   severity: info
                   summary: Manifest rebuild triggered by build_identity_manifest.
+
+    # ── ACL schema gate (#10626) ────────────────────────────────────────────
+    # Identity sets up households and families on the ACL v2 record. A setup
+    # mode whose container (household or family) is still on the old schema
+    # refuses with acl_schema_upgrade_required and the path to fix it; with
+    # force_action it upgrades that cabinet first (acl_migrate), checks it
+    # again, and continues. It answers an error only if the upgrade fails.
+    - if: >-
+        {{- response is not defined and _mode in ['household_add_family', 'household_add_member',
+            'set_principal', 'family_add_member', 'provision_member'] -}}
+      then:
+        - variables:
+            _sg_cab: >-
+              {%- if _mode in ['household_add_family', 'household_add_member'] -%}{{- _hh_target -}}
+              {%- elif _mode == 'set_principal' -%}{{- (family_entity | default('', true) | trim) or _hh_target -}}
+              {%- elif _mode == 'family_add_member' -%}{{- family_entity | default('', true) | trim -}}
+              {%- else -%}{{- (family_entity | default('', true) | trim) or states('sensor.zen_default_family_cabinet_resolved') -}}
+              {%- endif -%}
+        - variables:
+            _sg_check: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{- CABS.acl_schema_check(_sg_cab) | from_json if _sg_cab not in ['', 'unknown', 'unavailable'] else {'ok': true, 'why': []} -}}
+        - if: "{{- not _sg_check.ok and not (force_action | default(false) | bool) -}}"
+          then:
+            - variables:
+                response:
+                  mode: "{{ _mode }}"
+                  status: error
+                  code: acl_schema_upgrade_required
+                  cabinet: "{{ _sg_cab }}"
+                  why: "{{ _sg_check.why }}"
+                  message: >-
+                    {{ _sg_cab }} is on the old ACL schema ({{ _sg_check.why | join(', ') }}); nothing was set up.
+                    Upgrade it with mode=acl_migrate (dry_run first to see the plan), or retry this call with
+                    force_action=true to upgrade it and continue.
+                  next_steps: ["acl_migrate target_entity={{ _sg_cab }} (dry_run)", "retry with force_action=true"]
+                  timestamp: "{{ now().isoformat() }}"
+        - if: "{{- not _sg_check.ok and (force_action | default(false) | bool) -}}"
+          then:
+            - action: script.zen_dojotools_identity
+              response_variable: _sg_up
+              continue_on_error: true
+              data:
+                mode: acl_migrate
+                target_entity: "{{ _sg_cab }}"
+                dry_run: false
+                confirm_action: true
+            - variables:
+                _sg_after: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {{- CABS.acl_schema_check(_sg_cab) | from_json -}}
+            - if: "{{- not _sg_after.ok -}}"
+              then:
+                - variables:
+                    response:
+                      mode: "{{ _mode }}"
+                      status: error
+                      code: acl_schema_upgrade_failed
+                      cabinet: "{{ _sg_cab }}"
+                      why: "{{ _sg_after.why }}"
+                      upgrade: "{{ _sg_up if _sg_up is defined else {} }}"
+                      message: "{{ _sg_cab }} could not be upgraded to the ACL v2 schema ({{ _sg_after.why | join(', ') }}); nothing was set up."
+                      timestamp: "{{ now().isoformat() }}"
 
     # ── Step 3d: mode = household_add_family ────────────────────────────────
     - if: "{{- response is not defined and _mode == 'household_add_family' -}}"
@@ -1419,18 +1614,14 @@ script:
                 _hh_members: "{{- _hh_members_raw | from_json if _hh_members_raw is string else _hh_members_raw -}}"
             - if: "{{- _fam_guid_is_new | bool -}}"
               then:
-                - variables:
-                    _fam_vi_stamped: >-
-                      {%- set _vi = _fam_vi_raw | from_json if _fam_vi_raw is string else _fam_vi_raw -%}
-                      {%- set _vi = _vi if _vi is mapping else {} -%}
-                      {{- dict(_vi, **{'guid': _fam_guid}) -}}
                 # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+                # merge: only the new id lands; the rest of VolumeInfo stays as stored.
                 - action: script.zen_admintools_cabinet_writer
                   data:
-                    mode: set
+                    mode: merge
                     volume_entity: "{{- family_entity -}}"
                     key: AI_Cabinet_VolumeInfo
-                    value: "{{- _fam_vi_stamped -}}"
+                    value: "{{- {'id': _fam_guid} -}}"
                     set_timestamp: true
                     caller: zen_dojotools_identity
                     reason: "identity {{ mode | default('', true) }}"
@@ -1614,10 +1805,6 @@ script:
             - variables:
                 _hh_vi: "{{- _hh_vi_raw | from_json if _hh_vi_raw is string else (_hh_vi_raw if _hh_vi_raw is mapping else {}) -}}"
                 _mem_vi: "{{- _mem_vi_raw | from_json if _mem_vi_raw is string else (_mem_vi_raw if _mem_vi_raw is mapping else {}) -}}"
-                _hh_acls: >-
-                  {%- set _vi = _hh_vi_raw | from_json if _hh_vi_raw is string else _hh_vi_raw -%}
-                  {%- set _vi = _vi if _vi is mapping else {} -%}
-                  {{- _vi.get('acls', {}) | tojson -}}
                 _mem_guid: >-
                   {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
                   {%- set _vi = _vi if _vi is mapping else {} -%}
@@ -1646,33 +1833,24 @@ script:
                   {{- _d if _d != '' else _vi.get('friendly_name', member_entity) -}}
             - if: "{{- _mem_guid_is_new | bool -}}"
               then:
-                - variables:
-                    _mem_vi_guid_stamped: >-
-                      {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
-                      {%- set _vi = _vi if _vi is mapping else {} -%}
-                      {{- dict(_vi, **{'guid': _mem_guid}) -}}
                 # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
                 - action: script.zen_admintools_cabinet_writer
                   data:
-                    mode: set
+                    mode: merge
                     volume_entity: "{{- member_entity -}}"
                     key: AI_Cabinet_VolumeInfo
-                    value: "{{- _mem_vi_guid_stamped -}}"
+                    value: "{{- {'id': _mem_guid} -}}"
                     set_timestamp: true
                     caller: zen_dojotools_identity
                     reason: "identity {{ mode | default('', true) }}"
+            # The household's ACL (#10626): owner = HoH, prime = prime AI, by GUID.
             - variables:
-                _acls: "{{- _hh_acls | from_json if _hh_acls is string else (_hh_acls if _hh_acls is mapping else {}) -}}"
-                _prime_occupied: >-
-                  {%- set _a = _hh_acls | from_json if _hh_acls is string else _hh_acls -%}
-                  {%- set _a = _a if _a is mapping else {} -%}
-                  {%- set _partners = _a.get('partner', []) -%}
-                  {%- set _partners = _partners if _partners is iterable and _partners is not string else [] -%}
-                  {{- _partners | selectattr('role', 'equalto', 'prime') | list | count > 0 -}}
-                _hoh_occupied: >-
-                  {%- set _a = _hh_acls | from_json if _hh_acls is string else _hh_acls -%}
-                  {%- set _a = _a if _a is mapping else {} -%}
-                  {{- _a.get('owner', []) | list | count > 0 -}}
+                _acl_rec: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {{- CABS.acl_record(_hh_cab) | from_json -}}
+            - variables:
+                _prime_occupied: "{{- _acl_rec.prime != '' -}}"
+                _hoh_occupied: "{{- _acl_rec.owner != '' -}}"
                 # "occupied" alone wrongly blocked a member
                 # retrying its OWN already-filled slot (e.g. to backfill a
                 # missing person_entity_id on the membership-list entry) --
@@ -1681,19 +1859,8 @@ script:
                 # falls through harmlessly (the slot-fill step further down
                 # is itself already a no-op when not _hoh_occupied/
                 # _prime_occupied is false, so this never double-fills).
-                _prime_occupied_by_other: >-
-                  {%- set _a = _hh_acls | from_json if _hh_acls is string else _hh_acls -%}
-                  {%- set _a = _a if _a is mapping else {} -%}
-                  {%- set _partners = _a.get('partner', []) -%}
-                  {%- set _partners = _partners if _partners is iterable and _partners is not string else [] -%}
-                  {{- _partners | selectattr('role', 'equalto', 'prime')
-                                 | rejectattr('entity_id', 'equalto', member_entity) | list | count > 0 -}}
-                _hoh_occupied_by_other: >-
-                  {%- set _a = _hh_acls | from_json if _hh_acls is string else _hh_acls -%}
-                  {%- set _a = _a if _a is mapping else {} -%}
-                  {%- set _owners = _a.get('owner', []) -%}
-                  {%- set _owners = _owners if _owners is iterable and _owners is not string else [] -%}
-                  {{- _owners | rejectattr('entity_id', 'equalto', member_entity) | list | count > 0 -}}
+                _prime_occupied_by_other: "{{- _acl_rec.prime not in ['', _mem_guid] -}}"
+                _hoh_occupied_by_other: "{{- _acl_rec.owner not in ['', _mem_guid] -}}"
             - if: >-
                 {{- (member_type == 'ai_user' and _prime_occupied_by_other | bool)
                    or (member_type == 'user' and _hoh_occupied_by_other | bool) -}}
@@ -1810,38 +1977,27 @@ script:
                       - "{{- _hh_cab -}}"
                     key: members
                     value: "{{- _backfilled_members -}}"
-            # — first occupant fills the prime/HoH slot in VolumeInfo.acls —
+            # First occupant fills the prime/HoH slot in the household ACL (v2).
             - variables:
                 _slot_filled: >-
                   {{- (member_type == 'user' and not _hoh_occupied | bool)
                      or (member_type == 'ai_user' and not _prime_occupied | bool) -}}
-                _hh_vi_updated: >-
-                  {%- if (member_type == 'user' and not _hoh_occupied | bool)
-                         or (member_type == 'ai_user' and not _prime_occupied | bool) -%}
-                    {%- set _vi = _hh_vi_raw | from_json if _hh_vi_raw is string else _hh_vi_raw -%}
-                    {%- set _vi = _vi if _vi is mapping else {} -%}
-                    {%- set _acls = _vi.get('acls', {}) -%}
-                    {%- set _acls = _acls if _acls is mapping else {} -%}
-                    {%- if member_type == 'user' -%}
-                      {%- set _owner = _acls.get('owner', []) + [{'guid': _mem_guid, 'entity_id': member_entity}] -%}
-                      {%- set _acls = dict(_acls, **{'owner': _owner}) -%}
-                    {%- else -%}
-                      {%- set _partners = _acls.get('partner', []) + [{'guid': _mem_guid, 'entity_id': member_entity, 'role': 'prime'}] -%}
-                      {%- set _acls = dict(_acls, **{'partner': _partners}) -%}
-                    {%- endif -%}
-                    {{- dict(_vi, **{'acls': _acls}) -}}
-                  {%- else -%}
-                    {{- '' -}}
-                  {%- endif -%}
-            - if: "{{- _slot_filled | bool and _hh_vi_updated | trim != '' -}}"
+                _hh_acl_updated: >-
+                  {%- set r = _acl_rec -%}
+                  {{- {'v': 2,
+                       'owner': _mem_guid if member_type == 'user' else r.owner,
+                       'prime': _mem_guid if member_type == 'ai_user' else r.prime,
+                       'partners': r.partners | reject('equalto', _mem_guid) | list,
+                       'ops': r.ops_stored} -}}
+            - if: "{{- _slot_filled | bool -}}"
               then:
                 # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
                 - action: script.zen_admintools_cabinet_writer
                   data:
-                    mode: set
+                    mode: merge
                     volume_entity: "{{- _hh_cab -}}"
                     key: AI_Cabinet_VolumeInfo
-                    value: "{{- _hh_vi_updated -}}"
+                    value: "{{- {'acls': _hh_acl_updated} -}}"
                     set_timestamp: true
                     caller: zen_dojotools_identity
                     reason: "identity {{ mode | default('', true) }}"
@@ -1909,10 +2065,6 @@ script:
                   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
                   {%- set _m = CABS.cabinet_drawer_value(_hh_cab, 'members', {}) | from_json() -%}
                   {{- _m | tojson -}}
-                _hh_vi_raw: >-
-                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                  {%- set _vi = CABS.cabinet_drawer_value(_hh_cab, 'AI_Cabinet_VolumeInfo', {}) | from_json() -%}
-                  {{- _vi | tojson -}}
             # The members drawer is the truth on remove: match the entity in
             # whichever list holds it, so an omitted member_type cannot miss.
             - variables:
@@ -1956,16 +2108,11 @@ script:
                       {%- set _filtered = _lst | rejectattr('entity_id', 'equalto', member_entity) | list -%}
                       {{- dict(_m, **{_found_key: _filtered}) | tojson -}}
                     _principal_warning: >-
-                      {%- set _vi = _hh_vi_raw | from_json if _hh_vi_raw is string else _hh_vi_raw -%}
-                      {%- set _vi = _vi if _vi is mapping else {} -%}
-                      {%- set _acls = _vi.get('acls', {}) -%}
-                      {%- set _acls = _acls if _acls is mapping else {} -%}
-                      {%- set _own = _acls.get('owner', []) -%}
-                      {%- set _prt = _acls.get('partner', []) -%}
-                      {%- set _is_hoh = _own | selectattr('entity_id', 'equalto', member_entity) | list | count > 0 -%}
-                      {%- set _is_prime = _prt | selectattr('entity_id', 'equalto', member_entity) | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | list | count > 0 -%}
-                      {%- if _is_hoh -%}hoh_slot_stale
-                      {%- elif _is_prime -%}prime_slot_stale
+                      {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                      {%- set r = CABS.acl_record(_hh_cab) | from_json -%}
+                      {%- set g = CABS.acl_guid_of(member_entity) | trim -%}
+                      {%- if g != '' and g == r.owner -%}hoh_slot_stale
+                      {%- elif g != '' and g == r.prime -%}prime_slot_stale
                       {%- else -%}{%- endif -%}
                 - action: script.zen_sutra_filecabinet
                   data:
@@ -2040,9 +2187,13 @@ script:
                   {%- set _vi = CABS.cabinet_drawer_value(member_entity, 'AI_Cabinet_VolumeInfo', {}) | from_json() -%}
                   {{- _vi | tojson -}}
             - variables:
+                # A member with no GUID gets one: an ACL principal is a GUID.
                 _mem_guid: >-
-                  {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
-                  {{- (_vi if _vi is mapping else {}).get('id', (_vi if _vi is mapping else {}).get('guid', '')) -}}
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {{- (CABS.acl_guid_of(member_entity) | trim) or (CABS.cabinet_guid_new() | trim) -}}
+                _mem_guid_is_new: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {{- CABS.acl_guid_of(member_entity) | trim == '' -}}
                 # @todo - need to modify CABS.cabinet_drawer_value() so it can take a list of keys and return the first one that exists
                 _mem_name: >-
                   {%- set _mv = state_attr(member_entity, 'variables') | default({}, true) -%}
@@ -2056,27 +2207,19 @@ script:
                   {%- set _d = _pn if _pn != '' else ((_fn + ' ' + _ln) | trim) -%}
                   {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
                   {{- _d if _d != '' else (_vi if _vi is mapping else {}).get('friendly_name', member_entity) -}}
-                _sp_acls_check: >-
-                  {%- set _vi = _hh_vi_raw | from_json if _hh_vi_raw is string else _hh_vi_raw -%}
-                  {%- set _vi = _vi if _vi is mapping else {} -%}
-                  {%- set _a = _vi.get('acls', {}) -%}
-                  {{- (_a if _a is mapping else {}) -}}
-                _sp_existing_owner: >-
-                  {%- set _a = _sp_acls_check | from_json if _sp_acls_check is string else _sp_acls_check -%}
-                  {%- set _o = _a.get('owner', []) -%}
-                  {%- set _o = _o if _o is iterable and _o is not string else [] -%}
-                  {{- (_o[0].get('entity_id', '') if (_o | length > 0 and _o[0] is mapping) else '') -}}
-                _sp_existing_prime: >-
-                  {%- set _a = _sp_acls_check | from_json if _sp_acls_check is string else _sp_acls_check -%}
-                  {%- set _p = _a.get('partner', []) -%}
-                  {%- set _p = _p if _p is iterable and _p is not string else [] -%}
-                  {%- set _prime = _p | selectattr('role', 'equalto', 'prime') | list -%}
-                  {{- (_prime[0].get('entity_id', '') if (_prime | length > 0 and _prime[0] is mapping) else '') -}}
+                # The target's ACL (#10626): owner = HoH, prime = prime AI, by GUID.
+                _sp_rec: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {{- CABS.acl_record(_target_cab) | from_json -}}
+                _sp_pr: >-
+                  {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                  {{- ID.principals(_target_cab) | from_json -}}
             - variables:
+                _sp_existing_guid: "{{- _sp_rec.owner if member_type == 'user' else _sp_rec.prime -}}"
                 _sp_existing_slot_holder: >-
-                  {{- _sp_existing_owner if member_type == 'user' else _sp_existing_prime -}}
-                _sp_is_takeover: >-
-                  {{- _sp_existing_slot_holder != '' and _sp_existing_slot_holder != member_entity -}}
+                  {%- set e = _sp_pr.get('hoh' if member_type == 'user' else 'prime') -%}
+                  {{- ((e.entity_id or e.guid) if e is mapping else '') -}}
+                _sp_is_takeover: "{{- _sp_existing_guid not in ['', _mem_guid] -}}"
             - if: "{{- (_sp_is_takeover | bool) and not (confirm_action | default(false) | bool) -}}"
               then:
                 - variables:
@@ -2093,31 +2236,32 @@ script:
                       -}}
             - if: "{{- response is not defined -}}"
               then:
+                - if: "{{- _mem_guid_is_new | bool -}}"
+                  then:
+                    # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
+                    - action: script.zen_admintools_cabinet_writer
+                      data:
+                        mode: merge
+                        volume_entity: "{{- member_entity -}}"
+                        key: AI_Cabinet_VolumeInfo
+                        value: "{{- {'id': _mem_guid} -}}"
+                        caller: zen_dojotools_identity
+                        reason: "identity {{ mode | default('', true) }}"
                 - variables:
-                    _hh_vi_updated: >-
-                      {%- set _vi = _hh_vi_raw | from_json if _hh_vi_raw is string else _hh_vi_raw -%}
-                      {%- set _vi = _vi if _vi is mapping else {} -%}
-                      {%- set _acls = _vi.get('acls', {}) -%}
-                      {%- set _acls = _acls if _acls is mapping else {} -%}
-                      {%- set _mvi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
-                      {%- set _mguid = (_mvi if _mvi is mapping else {}).get('id', (_mvi if _mvi is mapping else {}).get('guid', '')) -%}
-                      {%- if member_type == 'user' -%}
-                        {%- set _acls = dict(_acls, **{'owner': [{'guid': _mguid, 'entity_id': member_entity}]}) -%}
-                      {%- else -%}
-                        {# replace prime entry, keep any non-prime partner entries #}
-                        {%- set _partners = _acls.get('partner', []) -%}
-                        {%- set _partners = _partners if _partners is iterable and _partners is not string else [] -%}
-                        {%- set _others = _partners | rejectattr('role', 'equalto', 'prime') | list -%}
-                        {%- set _acls = dict(_acls, **{'partner': _others + [{'guid': _mguid, 'entity_id': member_entity, 'role': 'prime'}]}) -%}
-                      {%- endif -%}
-                      {{- dict(_vi, **{'acls': _acls}) -}}
+                    _sp_acl_updated: >-
+                      {%- set r = _sp_rec -%}
+                      {{- {'v': 2,
+                           'owner': _mem_guid if member_type == 'user' else r.owner,
+                           'prime': _mem_guid if member_type != 'user' else r.prime,
+                           'partners': r.partners | reject('equalto', _mem_guid) | list,
+                           'ops': r.ops_stored} -}}
                 # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
                 - action: script.zen_admintools_cabinet_writer
                   data:
-                    mode: set
+                    mode: merge
                     volume_entity: "{{- _target_cab -}}"
                     key: AI_Cabinet_VolumeInfo
-                    value: "{{- _hh_vi_updated -}}"
+                    value: "{{- {'acls': _sp_acl_updated} -}}"
                     set_timestamp: true
                     caller: zen_dojotools_identity
                     reason: "identity {{ mode | default('', true) }}"
@@ -2144,9 +2288,7 @@ script:
                       {%- if _already -%}
                         {{- _m | tojson -}}
                       {%- else -%}
-                        {%- set _mvi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
-                        {%- set _mguid = (_mvi if _mvi is mapping else {}).get('id', (_mvi if _mvi is mapping else {}).get('guid', '')) -%}
-                        {%- set _entry = {'guid': _mguid, 'entity_id': member_entity, 'name': member_entity} -%}
+                        {%- set _entry = {'guid': _mem_guid, 'entity_id': member_entity, 'name': member_entity} -%}
                         {{- dict(_m, **{_sp_list_key: _lst + [_entry]}) | tojson -}}
                       {%- endif -%}
                 - action: script.zen_sutra_filecabinet
@@ -2366,31 +2508,27 @@ script:
                   {%- set _vi = _vi if _vi is mapping else {} -%}
                   {{- _vi.get('default_family_guid', '') -}}
                 _is_first_family: "{{- member_type != 'family' and (_mem_dfg_raw | trim == '') -}}"
-            # — always patch member's VolumeInfo: add family to acls.family + set default if first —
+            # Patch the member's VolumeInfo: its id, the default family if first,
+            #   and its ACL as v2 (family membership lives in the members drawers,
+            #   not in acls).
             - if: "{{- member_type != 'family' -}}"
               then:
                 - variables:
-                    _mem_vi_updated: >-
+                    _mem_vi_patch: >-
+                      {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                      {%- set r = CABS.acl_record(member_entity) | from_json -%}
                       {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
                       {%- set _vi = _vi if _vi is mapping else {} -%}
-                      {%- set _acls = _vi.get('acls', {}) -%}
-                      {%- set _acls = _acls if _acls is mapping else {} -%}
-                      {%- set _fam_list = _acls.get('family', []) -%}
-                      {%- set _fam_list = _fam_list if _fam_list is iterable and _fam_list is not string else [] -%}
-                      {%- set _already = _fam_list | selectattr('family_guid', 'equalto', _fam_guid) | list | count > 0 -%}
-                      {%- if not _already -%}
-                        {%- set _fam_list = _fam_list + [{'family_guid': _fam_guid, 'entity_id': family_entity, 'name': _fam_name}] -%}
-                      {%- endif -%}
-                      {%- set _acls = dict(_acls, **{'family': _fam_list}) -%}
                       {%- set _dfg = _fam_guid if _is_first_family | bool else _vi.get('default_family_guid', '') -%}
-                      {{- dict(_vi, **{'guid': _mem_guid, 'acls': _acls, 'default_family_guid': _dfg}) -}}
+                      {{- {'id': _mem_guid, 'default_family_guid': _dfg,
+                           'acls': {'v': 2, 'owner': r.owner, 'prime': r.prime, 'partners': r.partners, 'ops': r.ops_stored}} -}}
                 # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
                 - action: script.zen_admintools_cabinet_writer
                   data:
-                    mode: set
+                    mode: merge
                     volume_entity: "{{- member_entity -}}"
                     key: AI_Cabinet_VolumeInfo
-                    value: "{{- _mem_vi_updated -}}"
+                    value: "{{- _mem_vi_patch -}}"
                     set_timestamp: true
                     caller: zen_dojotools_identity
                     reason: "identity {{ mode | default('', true) }}"
@@ -2498,21 +2636,12 @@ script:
                   {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
                   {%- set _vi = _vi if _vi is mapping else {} -%}
                   {{- _vi.get('default_family_guid', '') == _fam_guid -}}
-                _fam_vi_raw2: >-
-                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                  {%- set _vi = CABS.cabinet_drawer_value(family_entity, 'AI_Cabinet_VolumeInfo', {}) | from_json() -%}
-                  {{- _vi | tojson -}}
                 _principal_warning: >-
-                  {%- set _vi = _fam_vi_raw2 | from_json if _fam_vi_raw2 is string else _fam_vi_raw2 -%}
-                  {%- set _vi = _vi if _vi is mapping else {} -%}
-                  {%- set _acls = _vi.get('acls', {}) -%}
-                  {%- set _acls = _acls if _acls is mapping else {} -%}
-                  {%- set _own = _acls.get('owner', []) -%}
-                  {%- set _prt = _acls.get('partner', []) -%}
-                  {%- set _is_hoh = _own | selectattr('entity_id', 'equalto', member_entity) | list | count > 0 -%}
-                  {%- set _is_prime = _prt | selectattr('entity_id', 'equalto', member_entity) | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | list | count > 0 -%}
-                  {%- if _is_hoh -%}hoh_slot_stale
-                  {%- elif _is_prime -%}prime_slot_stale
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set r = CABS.acl_record(family_entity) | from_json -%}
+                  {%- set g = CABS.acl_guid_of(member_entity) | trim -%}
+                  {%- if g != '' and g == r.owner -%}hoh_slot_stale
+                  {%- elif g != '' and g == r.prime -%}prime_slot_stale
                   {%- else -%}{%- endif -%}
             # The members drawer is the truth on remove: match the entity in
             # whichever list holds it, so an omitted member_type cannot miss.
@@ -2566,28 +2695,26 @@ script:
                       - "{{- family_entity -}}"
                     key: members
                     value: "{{- _updated_members -}}"
-                # — scrub member's VolumeInfo: remove family from acls.family + clear default —
+                # Patch the member's VolumeInfo: clear the default family if it
+                #   was this one, and its ACL as v2 (no acls.family).
                 - if: "{{- _eff_type != 'family' -}}"
                   then:
                     - variables:
-                        _mem_vi_updated: >-
+                        _mem_vi_patch: >-
+                          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                          {%- set r = CABS.acl_record(member_entity) | from_json -%}
                           {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
                           {%- set _vi = _vi if _vi is mapping else {} -%}
-                          {%- set _acls = _vi.get('acls', {}) -%}
-                          {%- set _acls = _acls if _acls is mapping else {} -%}
-                          {%- set _fam_list = _acls.get('family', []) -%}
-                          {%- set _fam_list = _fam_list if _fam_list is iterable and _fam_list is not string else [] -%}
-                          {%- set _fam_list = _fam_list | rejectattr('family_guid', 'equalto', _fam_guid) | list -%}
-                          {%- set _acls = dict(_acls, **{'family': _fam_list}) -%}
                           {%- set _dfg = '' if _was_default | bool else _vi.get('default_family_guid', '') -%}
-                          {{- dict(_vi, **{'acls': _acls, 'default_family_guid': _dfg}) -}}
+                          {{- {'default_family_guid': _dfg,
+                               'acls': {'v': 2, 'owner': r.owner, 'prime': r.prime, 'partners': r.partners, 'ops': r.ops_stored}} -}}
                     # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
                     - action: script.zen_admintools_cabinet_writer
                       data:
-                        mode: set
+                        mode: merge
                         volume_entity: "{{- member_entity -}}"
                         key: AI_Cabinet_VolumeInfo
-                        value: "{{- _mem_vi_updated -}}"
+                        value: "{{- _mem_vi_patch -}}"
                         set_timestamp: true
                         caller: zen_dojotools_identity
                         reason: "identity {{ mode | default('', true) }}"
@@ -2631,7 +2758,7 @@ script:
 
     # ── Step 3i: mode = link_partners ─────────────────────────────────────────
     # Works for any entity pair: user↔user, user↔ai_user, ai_user↔ai_user.
-    # partner = delegation authority. acls.partner is written on BOTH sides.
+    # partner = delegation authority. Each side's ACL lists the other's GUID.
     - if: "{{- response is not defined and _mode == 'link_partners' -}}"
       then:
             - if: "{{- member_entity == '' or ai_entity == '' -}}"
@@ -2658,9 +2785,10 @@ script:
                   {%- set _vi = CABS.cabinet_drawer_value(ai_entity, 'AI_Cabinet_VolumeInfo', {}) | from_json() -%}
                   {{- _vi | tojson -}}
             - variables:
+                # A cabinet with no GUID gets one: an ACL principal is a GUID.
                 _a_guid: >-
-                  {%- set _vi = _a_vi_raw | from_json if _a_vi_raw is string else _a_vi_raw -%}
-                  {{- (_vi if _vi is mapping else {}).get('id', (_vi if _vi is mapping else {}).get('guid', '')) -}}
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {{- (CABS.acl_guid_of(member_entity) | trim) or (CABS.cabinet_guid_new() | trim) -}}
                 _a_name: >-
                   {%- set _vi = _a_vi_raw | from_json if _a_vi_raw is string else _a_vi_raw -%}
                   {{- (_vi if _vi is mapping else {}).get('friendly_name', member_entity) -}}
@@ -2668,60 +2796,43 @@ script:
                   {%- set _vi = _a_vi_raw | from_json if _a_vi_raw is string else _a_vi_raw -%}
                   {{- (_vi if _vi is mapping else {}).get('cab_type', 'user') -}}
                 _b_guid: >-
-                  {%- set _vi = _b_vi_raw | from_json if _b_vi_raw is string else _b_vi_raw -%}
-                  {{- (_vi if _vi is mapping else {}).get('id', (_vi if _vi is mapping else {}).get('guid', '')) -}}
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {{- (CABS.acl_guid_of(ai_entity) | trim) or (CABS.cabinet_guid_new() | trim) -}}
                 _b_name: >-
                   {%- set _vi = _b_vi_raw | from_json if _b_vi_raw is string else _b_vi_raw -%}
                   {{- (_vi if _vi is mapping else {}).get('friendly_name', ai_entity) -}}
                 _b_type: >-
                   {%- set _vi = _b_vi_raw | from_json if _b_vi_raw is string else _b_vi_raw -%}
                   {{- (_vi if _vi is mapping else {}).get('cab_type', 'user') -}}
-            # — write B into A's acls.partner (delegation: B is A's partner) —
+            # Each side's ACL lists the other's GUID as a partner (delegation).
             - variables:
-                _a_vi_updated: >-
-                  {%- set _vi = _a_vi_raw | from_json if _a_vi_raw is string else _a_vi_raw -%}
-                  {%- set _vi = _vi if _vi is mapping else {} -%}
-                  {%- set _acls = _vi.get('acls', {}) -%}
-                  {%- set _acls = _acls if _acls is mapping else {} -%}
-                  {%- set _pts = _acls.get('partner', []) -%}
-                  {%- set _pts = _pts if _pts is iterable and _pts is not string else [] -%}
-                  {%- set _already = _pts | selectattr('entity_id', 'equalto', ai_entity) | list | count > 0 -%}
-                  {%- if not _already -%}
-                    {%- set _pts = _pts + [{'guid': _b_guid, 'entity_id': ai_entity, 'cab_type': _b_type, 'role': 'partner', 'sid': _b_guid}] -%}
-                  {%- endif -%}
-                  {%- set _acls = dict(_acls, **{'partner': _pts}) -%}
-                  {{- dict(_vi, **{'acls': _acls}) -}}
-                # — write A into B's acls.partner (delegation: A is B's partner) —
-                _b_vi_updated: >-
-                  {%- set _vi = _b_vi_raw | from_json if _b_vi_raw is string else _b_vi_raw -%}
-                  {%- set _vi = _vi if _vi is mapping else {} -%}
-                  {%- set _acls = _vi.get('acls', {}) -%}
-                  {%- set _acls = _acls if _acls is mapping else {} -%}
-                  {%- set _pts = _acls.get('partner', []) -%}
-                  {%- set _pts = _pts if _pts is iterable and _pts is not string else [] -%}
-                  {%- set _already = _pts | selectattr('entity_id', 'equalto', member_entity) | list | count > 0 -%}
-                  {%- if not _already -%}
-                    {%- set _pts = _pts + [{'guid': _a_guid, 'entity_id': member_entity, 'cab_type': _a_type, 'role': 'partner', 'sid': _a_guid}] -%}
-                  {%- endif -%}
-                  {%- set _acls = dict(_acls, **{'partner': _pts}) -%}
-                  {{- dict(_vi, **{'acls': _acls}) -}}
+                _a_patch: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set r = CABS.acl_record(member_entity) | from_json -%}
+                  {%- set _p = r.partners if _b_guid in r.partners else r.partners + [_b_guid] -%}
+                  {{- {'id': _a_guid, 'acls': {'v': 2, 'owner': r.owner, 'prime': r.prime, 'partners': _p, 'ops': r.ops_stored}} -}}
+                _b_patch: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set r = CABS.acl_record(ai_entity) | from_json -%}
+                  {%- set _p = r.partners if _a_guid in r.partners else r.partners + [_a_guid] -%}
+                  {{- {'id': _b_guid, 'acls': {'v': 2, 'owner': r.owner, 'prime': r.prime, 'partners': _p, 'ops': r.ops_stored}} -}}
             # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
             - action: script.zen_admintools_cabinet_writer
               data:
-                mode: set
+                mode: merge
                 volume_entity: "{{- member_entity -}}"
                 key: AI_Cabinet_VolumeInfo
-                value: "{{- _a_vi_updated -}}"
+                value: "{{- _a_patch -}}"
                 set_timestamp: true
                 caller: zen_dojotools_identity
                 reason: "identity {{ mode | default('', true) }}"
             # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
             - action: script.zen_admintools_cabinet_writer
               data:
-                mode: set
+                mode: merge
                 volume_entity: "{{- ai_entity -}}"
                 key: AI_Cabinet_VolumeInfo
-                value: "{{- _b_vi_updated -}}"
+                value: "{{- _b_patch -}}"
                 set_timestamp: true
                 caller: zen_dojotools_identity
                 reason: "identity {{ mode | default('', true) }}"
@@ -2763,7 +2874,7 @@ script:
                   summary: Manifest rebuild triggered by link_partners.
 
     # ── Step 3i-2: mode = unlink_partners ─────────────────────────────────────
-    # Symmetric: removes each entity from the other's acls.partner list.
+    # Symmetric: removes each entity's GUID from the other's ACL partners.
     - if: "{{- response is not defined and _mode == 'unlink_partners' -}}"
       then:
         - if: "{{- member_entity == '' or ai_entity == '' -}}"
@@ -2796,45 +2907,34 @@ script:
                 _b_name: >-
                   {%- set _vi = _b_vi_raw | from_json if _b_vi_raw is string else _b_vi_raw -%}
                   {{- (_vi if _vi is mapping else {}).get('friendly_name', ai_entity) -}}
-                # — remove B from A's acls.partner —
-                _a_vi_updated: >-
-                  {%- set _vi = _a_vi_raw | from_json if _a_vi_raw is string else _a_vi_raw -%}
-                  {%- set _vi = _vi if _vi is mapping else {} -%}
-                  {%- set _acls = _vi.get('acls', {}) -%}
-                  {%- set _acls = _acls if _acls is mapping else {} -%}
-                  {%- set _pts = _acls.get('partner', []) -%}
-                  {%- set _pts = _pts if _pts is iterable and _pts is not string else [] -%}
-                  {%- set _filtered = _pts | rejectattr('entity_id', 'equalto', ai_entity) | list -%}
-                  {%- set _acls = dict(_acls, **{'partner': _filtered}) -%}
-                  {{- dict(_vi, **{'acls': _acls}) -}}
-                # — remove A from B's acls.partner —
-                _b_vi_updated: >-
-                  {%- set _vi = _b_vi_raw | from_json if _b_vi_raw is string else _b_vi_raw -%}
-                  {%- set _vi = _vi if _vi is mapping else {} -%}
-                  {%- set _acls = _vi.get('acls', {}) -%}
-                  {%- set _acls = _acls if _acls is mapping else {} -%}
-                  {%- set _pts = _acls.get('partner', []) -%}
-                  {%- set _pts = _pts if _pts is iterable and _pts is not string else [] -%}
-                  {%- set _filtered = _pts | rejectattr('entity_id', 'equalto', member_entity) | list -%}
-                  {%- set _acls = dict(_acls, **{'partner': _filtered}) -%}
-                  {{- dict(_vi, **{'acls': _acls}) -}}
+                # Each side's ACL drops the other's GUID.
+                _a_patch: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set r = CABS.acl_record(member_entity) | from_json -%}
+                  {%- set g = CABS.acl_guid_of(ai_entity) | trim -%}
+                  {{- {'acls': {'v': 2, 'owner': r.owner, 'prime': r.prime, 'partners': r.partners | reject('equalto', g) | list, 'ops': r.ops_stored}} -}}
+                _b_patch: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set r = CABS.acl_record(ai_entity) | from_json -%}
+                  {%- set g = CABS.acl_guid_of(member_entity) | trim -%}
+                  {{- {'acls': {'v': 2, 'owner': r.owner, 'prime': r.prime, 'partners': r.partners | reject('equalto', g) | list, 'ops': r.ops_stored}} -}}
             # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
             - action: script.zen_admintools_cabinet_writer
               data:
-                mode: set
+                mode: merge
                 volume_entity: "{{- member_entity -}}"
                 key: AI_Cabinet_VolumeInfo
-                value: "{{- _a_vi_updated -}}"
+                value: "{{- _a_patch -}}"
                 set_timestamp: true
                 caller: zen_dojotools_identity
                 reason: "identity {{ mode | default('', true) }}"
             # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
             - action: script.zen_admintools_cabinet_writer
               data:
-                mode: set
+                mode: merge
                 volume_entity: "{{- ai_entity -}}"
                 key: AI_Cabinet_VolumeInfo
-                value: "{{- _b_vi_updated -}}"
+                value: "{{- _b_patch -}}"
                 set_timestamp: true
                 caller: zen_dojotools_identity
                 reason: "identity {{ mode | default('', true) }}"
@@ -2899,19 +2999,13 @@ script:
                 _fam_guid: >-
                   {%- set _vi = _fam_vi_raw | from_json if _fam_vi_raw is string else _fam_vi_raw -%}
                   {{- (_vi if _vi is mapping else {}).get('id', (_vi if _vi is mapping else {}).get('guid', '')) -}}
-                _mem_vi_updated: >-
-                  {%- set _vi = _mem_vi_raw | from_json if _mem_vi_raw is string else _mem_vi_raw -%}
-                  {%- set _vi = _vi if _vi is mapping else {} -%}
-                  {%- set _fvi = _fam_vi_raw | from_json if _fam_vi_raw is string else _fam_vi_raw -%}
-                  {%- set _fguid = (_fvi if _fvi is mapping else {}).get('id', (_fvi if _fvi is mapping else {}).get('guid', '')) -%}
-                  {{- dict(_vi, **{'default_family_guid': _fguid}) -}}
             # Admin door (#10637): VolumeInfo is cabinet structure; FileCabinet refuses it.
             - action: script.zen_admintools_cabinet_writer
               data:
-                mode: set
+                mode: merge
                 volume_entity: "{{- member_entity -}}"
                 key: AI_Cabinet_VolumeInfo
-                value: "{{- _mem_vi_updated -}}"
+                value: "{{- {'default_family_guid': _fam_guid} -}}"
                 set_timestamp: true
                 caller: zen_dojotools_identity
                 reason: "identity {{ mode | default('', true) }}"
@@ -2935,6 +3029,389 @@ script:
                   component: zen_dojotools_identity
                   severity: info
                   summary: Manifest rebuild triggered by set_default_family.
+
+    # ── Step 3j-2: mode = acl_migrate (#10626) ───────────────────────────────
+    # Brings every cabinet's VolumeInfo to the ACL v2 record and fixes the bad
+    # identity data older writers left: no id (a legacy guid field becomes the
+    # id, else a new one), v1 owner/partner lists (principals resolve to GUIDs,
+    # placeholders dropped), acls.family (membership lives in the members
+    # drawers), no flags / friendly_name (a VolumeInfo cut down to acls), and
+    # members entries whose guid is not their cabinet's. Ids for every cabinet
+    # are planned first, so an ACL that names a cabinet getting its id now
+    # still resolves. A GUID no cabinet holds is reported, never dropped.
+    # dry_run (default) only reports. Apply writes each cabinet through the
+    # admin door's merge (changed keys only), then re-reads every cabinet it
+    # touched; remaining lists any still not clean. A clean cabinet plans
+    # nothing, so a second run writes nothing.
+    - if: "{{- response is not defined and _mode == 'acl_migrate' -}}"
+      then:
+        - variables:
+            _mg_dry: "{{- dry_run | default(true) | bool -}}"
+            _mg_confirm: "{{- confirm_action | default(false) | bool -}}"
+        - if: "{{- not _mg_dry and not _mg_confirm -}}"
+          then:
+            - variables:
+                response:
+                  mode: acl_migrate
+                  status: error
+                  message: "guarded: acl_migrate writes only with dry_run=false and confirm_action=true; run it with dry_run (the default) first to see the plan."
+                  timestamp: "{{ now().isoformat() }}"
+        - if: "{{- response is not defined -}}"
+          then:
+            - variables:
+                _mg_plan: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set _all = label_entities('zen_cabinet') | select('match', 'sensor[.]') | list | sort -%}
+                  {%- set _scope = target_entity | default('', true) | string | trim -%}
+                  {%- set _cabs = [_scope] if _scope != '' else _all -%}
+                  {%- set _kata = states('sensor.zen_kata_cabinet_resolved') -%}
+                  {%- set ns = namespace(idmap={}, out=[], clean=[], dangling=[], skipped=[]) -%}
+                  {%- for c in _all + ([_scope] if _scope != '' and _scope not in _all else []) -%}
+                    {%- set _vars = state_attr(c, 'variables') -%}
+                    {%- if _vars is mapping -%}
+                      {%- set _env = _vars.get('AI_Cabinet_VolumeInfo') -%}
+                      {%- set _vi = _env.get('value') if _env is mapping else none -%}
+                      {%- set _vi = (_vi | from_json(none)) if _vi is string else _vi -%}
+                      {%- set _vi = _vi if _vi is mapping else {} -%}
+                      {%- set _cur = (_vi.get('id') or '') | string | trim -%}
+                      {%- set _leg = (_vi.get('guid') or '') | string | trim -%}
+                      {%- set _cpid = ((CABS.volumeinfo_copies(c) | from_json).best.get('id') or '') | string | trim -%}
+                      {%- set _g = _cur or ('' if _leg == 'default-guid' else _leg) or _cpid or (CABS.cabinet_guid_new_v4() | trim) -%}
+                      {%- set ns.idmap = dict(ns.idmap, **{c: _g}) -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set _known = ns.idmap.values() | list -%}
+                  {%- for c in _cabs -%}
+                    {%- set _vars = state_attr(c, 'variables') -%}
+                    {%- if not (_vars is mapping) -%}
+                      {%- set ns.skipped = ns.skipped + [c] -%}
+                    {%- else -%}
+                      {%- set _env = _vars.get('AI_Cabinet_VolumeInfo') -%}
+                      {%- set _vi = _env.get('value') if _env is mapping else none -%}
+                      {%- set _vi = (_vi | from_json(none)) if _vi is string else _vi -%}
+                      {%- set _vi = _vi if _vi is mapping else {} -%}
+                      {%- set _a = _vi.get('acls') if _vi.get('acls') is mapping else {} -%}
+                      {%- set _rec = CABS.acl_record(c, ns.idmap) | from_json -%}
+                      {%- set p = namespace(patch={}, unset=[], notes=[]) -%}
+                      {%- if not (_env is mapping) -%}{%- set p.notes = p.notes + ['VolumeInfo missing: created'] -%}{%- endif -%}
+                      {#- Stray VolumeInfo copies (writes before the key guard): a copy
+                          that carries an id fills what VolumeInfo lacks when VolumeInfo
+                          has no id (acls go through the conversion below); every copy
+                          is removed. -#}
+                      {%- set _cp = CABS.volumeinfo_copies(c) | from_json -%}
+                      {%- if _cp.best and (_vi.get('id') or '') | string | trim == '' -%}
+                        {%- for k, v in _cp.best.items() if k not in _vi and k not in ['acls', 'guid', 'id'] -%}
+                          {%- set p.patch = dict(p.patch, **{k: v}) -%}
+                        {%- endfor -%}
+                        {%- set p.notes = p.notes + ['VolumeInfo fields restored from a stray copy'] -%}
+                      {%- endif -%}
+                      {%- if _cp['keys'] | count > 0 -%}{%- set p.notes = p.notes + ['stray VolumeInfo copies removed: ' ~ (_cp['keys'] | join(', '))] -%}{%- endif -%}
+                      {%- if (_vi.get('id') or '') | string | trim == '' -%}
+                        {%- set p.patch = dict(p.patch, **{'id': ns.idmap[c]}) -%}
+                        {%- set p.notes = p.notes + ['id stamped' ~ (' from the legacy guid field' if ns.idmap[c] == ((_vi.get('guid') or '') | string | trim) else '')] -%}
+                      {%- endif -%}
+                      {%- if 'guid' in _vi -%}
+                        {%- set p.unset = p.unset + ['guid'] -%}
+                        {%- set p.notes = p.notes + ['legacy guid field removed'] -%}
+                      {%- endif -%}
+                      {%- set _is_v2 = (_a.get('v', 1) | int(1)) == 2 and (_a.keys() | list | reject('in', ['v', 'owner', 'prime', 'partners', 'ops']) | list | count) == 0 -%}
+                      {%- if not _is_v2 -%}
+                        {%- set p.patch = dict(p.patch, **{'acls': {'v': 2, 'owner': _rec.owner, 'prime': _rec.prime, 'partners': _rec.partners, 'ops': _rec.ops_stored}}) -%}
+                        {%- set _fam = _a.get('family') if _a.get('family') is list else [] -%}
+                        {%- set p.notes = p.notes + ['acls to v2' ~ ((' (acls.family dropped: ' ~ (_fam | count) ~ ')') if _fam | count > 0 else '')] -%}
+                      {%- endif -%}
+                      {%- for e in _rec.unresolved -%}{%- set p.notes = p.notes + ['principal with no GUID dropped: ' ~ e] -%}{%- endfor -%}
+                      {%- for g in ([_rec.owner, _rec.prime] + _rec.partners) | reject('equalto', '') | list if g not in _known -%}
+                        {%- set ns.dangling = ns.dangling + [{'cabinet': c, 'guid': g}] -%}
+                      {%- endfor -%}
+                      {%- if not (_vi.get('flags') is mapping) and not (p.patch.get('flags') is mapping) -%}
+                        {%- set p.patch = dict(p.patch, **{'flags': {'gc_eligible': c == _kata, 'hidden': false, 'read_only': false, 'secure_mode': false, 'system': false}}) -%}
+                        {%- set p.notes = p.notes + ['flags restored (defaults)'] -%}
+                      {%- endif -%}
+                      {%- if (_vi.get('friendly_name') or p.patch.get('friendly_name') or '') | string | trim == '' -%}
+                        {%- set p.patch = dict(p.patch, **{'friendly_name': state_attr(c, 'friendly_name') or c}) -%}
+                        {%- set p.notes = p.notes + ['friendly_name restored'] -%}
+                      {%- endif -%}
+                      {%- set _menv = _vars.get('members') -%}
+                      {%- set _m = _menv.get('value') if _menv is mapping else none -%}
+                      {%- set _m = (_m | from_json(none)) if _m is string else _m -%}
+                      {%- set mf = namespace(m={}, n=0) -%}
+                      {%- if _m is mapping -%}
+                        {%- set mf.m = _m -%}
+                        {%- for k in ['users', 'ai_users', 'families'] if _m.get(k) is list -%}
+                          {%- set lst = namespace(l=[]) -%}
+                          {%- for e in _m.get(k) -%}
+                            {%- set want = ns.idmap.get(e.get('entity_id', ''), '') if e is mapping else '' -%}
+                            {%- if want != '' and (e.get('guid') or '') != want -%}
+                              {%- set lst.l = lst.l + [dict(e, **{'guid': want})] -%}
+                              {%- set mf.n = mf.n + 1 -%}
+                            {%- else -%}
+                              {%- set lst.l = lst.l + [e] -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {%- set mf.m = dict(mf.m, **{k: lst.l}) -%}
+                        {%- endfor -%}
+                      {%- endif -%}
+                      {%- if mf.n > 0 -%}{%- set p.notes = p.notes + ['members entries given their cabinet GUID: ' ~ mf.n] -%}{%- endif -%}
+                      {%- if p.patch or p.unset or mf.n > 0 or _cp['keys'] | count > 0 -%}
+                        {%- set ns.out = ns.out + [{'cabinet': c, 'patch': p.patch, 'unset': p.unset, 'remove': _cp['keys'],
+                                                    'members': (mf.m if mf.n > 0 else none), 'notes': p.notes}] -%}
+                      {%- else -%}
+                        {%- set ns.clean = ns.clean + [c] -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{- {'changes': ns.out, 'clean': ns.clean, 'dangling': ns.dangling, 'skipped': ns.skipped, 'scanned': _cabs | count} -}}
+            - if: "{{- not _mg_dry -}}"
+              then:
+                - repeat:
+                    for_each: "{{ _mg_plan.changes }}"
+                    sequence:
+                      - if: "{{- repeat.item.patch | count > 0 or repeat.item.unset | count > 0 -}}"
+                        then:
+                          # Admin door (#10637): VolumeInfo is cabinet structure; merge
+                          # lays only the changed keys over what is stored.
+                          - action: script.zen_admintools_cabinet_writer
+                            continue_on_error: true
+                            data:
+                              mode: merge
+                              volume_entity: "{{- repeat.item.cabinet -}}"
+                              key: AI_Cabinet_VolumeInfo
+                              value: "{{- repeat.item.patch -}}"
+                              unset: "{{- repeat.item.unset -}}"
+                              caller: zen_dojotools_identity
+                              reason: identity acl_migrate
+                      - if: "{{- repeat.item.members is mapping -}}"
+                        then:
+                          - action: script.zen_sutra_filecabinet
+                            continue_on_error: true
+                            data:
+                              action_type: upsert
+                              mode: replace
+                              set_timestamp: true
+                              volume_entity_id: "{{- repeat.item.cabinet -}}"
+                              key: members
+                              value: "{{- repeat.item.members -}}"
+                      - variables:
+                          _mg_cab: "{{ repeat.item.cabinet }}"
+                          _mg_rm: "{{ repeat.item.remove }}"
+                      - repeat:
+                          for_each: "{{ _mg_rm }}"
+                          sequence:
+                            # Admin door: FileCabinet refuses '_' keys, the door does not.
+                            - action: script.zen_admintools_cabinet_writer
+                              continue_on_error: true
+                              data:
+                                mode: remove
+                                volume_entity: "{{- _mg_cab -}}"
+                                key: "{{- repeat.item -}}"
+                                caller: zen_dojotools_identity
+                                reason: identity acl_migrate stray VolumeInfo copy
+            # Independent re-read of every cabinet the plan touched.
+            - variables:
+                _mg_remaining: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set ns = namespace(r=[]) -%}
+                  {%- if not _mg_dry -%}
+                    {%- for ch in _mg_plan.changes -%}
+                      {%- set _chk = CABS.acl_schema_check(ch.cabinet) | from_json -%}
+                      {%- if not _chk.ok -%}{%- set ns.r = ns.r + [{'cabinet': ch.cabinet, 'why': _chk.why}] -%}{%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                  {{- ns.r -}}
+            - variables:
+                response:
+                  mode: acl_migrate
+                  status: "{{ 'dry_run' if _mg_dry else ('ok' if _mg_remaining | count == 0 else 'error') }}"
+                  dry_run: "{{ _mg_dry }}"
+                  scanned: "{{ _mg_plan.scanned }}"
+                  changed: "{{ _mg_plan.changes | count }}"
+                  changes: "{{ _mg_plan.changes }}"
+                  clean: "{{ _mg_plan.clean }}"
+                  dangling: "{{ _mg_plan.dangling }}"
+                  skipped: "{{ _mg_plan.skipped }}"
+                  remaining: "{{ _mg_remaining }}"
+                  message: >-
+                    {{ ('Plan only; nothing written. Run with dry_run=false and confirm_action=true to apply.' if _mg_dry
+                        else ('Applied and verified.' if _mg_remaining | count == 0 else 'Applied; some cabinets are still not clean (see remaining).'))
+                       ~ ((' Dangling GUIDs reported, not dropped: ' ~ (_mg_plan.dangling | count) ~ '.') if _mg_plan.dangling | count > 0 else '') }}
+                  timestamp: "{{ now().isoformat() }}"
+                  caller_token: "{{ caller_token | default('') }}"
+            - if: "{{- not _mg_dry and _mg_plan.changes | count > 0 -}}"
+              then:
+                - event: zen_event
+                  event_data:
+                    event:
+                      kind: identity_manifest_rebuild
+                      component: zen_dojotools_identity
+                      severity: info
+                      summary: Manifest rebuild triggered by acl_migrate.
+
+    # ── Step 3j-3: modes acl_set / take_ownership (#10626) ───────────────────
+    # The only ACL writers besides identity's own membership writes. acl_set is
+    # owner-only. take_ownership is the escape hatch: cert + a live human ack
+    # on every call, the ack naming target, current and proposed ACL; it
+    # rewrites only the ACL, never the value, and both are audited.
+    - if: "{{- response is not defined and _mode in ['acl_set', 'take_ownership'] -}}"
+      then:
+        - variables:
+            _ao_cab: "{{- target_entity | default('', true) | string | trim -}}"
+            _ao_key: "{{- drawer_key | default('', true) | string | trim -}}"
+            _ao_reason: "{{- reason | default('', true) | string | trim -}}"
+            _ao_ops_in: >-
+              {%- set _o = acl_ops if acl_ops is defined else {} -%}
+              {%- set _o = (_o | from_json({})) if _o is string else _o -%}
+              {%- set ns = namespace(o={}) -%}
+              {%- for k, v in (_o if _o is mapping else {}).items() if k in ['r', 'w', 'd', 'a'] and v is mapping -%}
+                {%- set ns.o = dict(ns.o, **{k: {'who': (v.get('who') if v.get('who') is list else ['*']), 'cert': (v.get('cert') or '') | string, 'ack': v.get('ack', false) | bool}}) -%}
+              {%- endfor -%}
+              {{- ns.o -}}
+        - variables:
+            _ao_err: >-
+              {%- set _vars = state_attr(_ao_cab, 'variables') if _ao_cab else none -%}
+              {%- if _ao_cab == '' -%}target_entity (the cabinet) is required
+              {%- elif _ao_cab not in label_entities('zen_cabinet') or not (_vars is mapping) -%}{{ _ao_cab }} is not a readable zen_cabinet
+              {%- elif _ao_key != '' and _ao_key not in _vars -%}drawer {{ _ao_key }} does not exist in {{ _ao_cab }}
+              {%- elif _ao_key in ['AI_Cabinet_VolumeInfo'] -%}VolumeInfo carries the cabinet ACL; omit drawer_key
+              {%- elif _mode == 'acl_set' and _ao_ops_in | count == 0 -%}acl_set needs acl_ops (r, w, d or a)
+              {%- elif _mode == 'take_ownership' and _ao_reason == '' -%}take_ownership needs a reason (it is shown in the live ack and audited)
+              {%- endif -%}
+        - if: "{{- _ao_err | trim != '' -}}"
+          then:
+            - variables:
+                response:
+                  mode: "{{ _mode }}"
+                  status: error
+                  code: invalid_request
+                  message: "guarded: {{ _ao_err | trim }}"
+                  timestamp: "{{ now().isoformat() }}"
+        - variables:
+            _ao_caller: >-
+              {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+              {{- ID.caller('zenos.identity.acl_take_ownership' if _mode == 'take_ownership' else '', 1) | from_json -}}
+            _ao_rec: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{- CABS.acl_record(_ao_cab) | from_json -}}
+            _ao_old: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {%- set r = CABS.acl_record(_ao_cab) | from_json -%}
+              {%- if _ao_key != '' -%}
+                {%- set _env = (state_attr(_ao_cab, 'variables') or {}).get(_ao_key) -%}
+                {%- set _a = _env.get('acl') if _env is mapping else none -%}
+                {{- {'scope': 'drawer', 'ops': ((_a.get('ops') or {}) if _a is mapping else {})} -}}
+              {%- else -%}
+                {{- {'scope': 'cabinet', 'owner': r.owner, 'prime': r.prime, 'partners': r.partners, 'ops': r.ops_stored} -}}
+              {%- endif -%}
+        - variables:
+            _ao_new: >-
+              {%- if _ao_key != '' -%}
+                {%- set _base = {} if _mode == 'take_ownership' else _ao_old.ops -%}
+                {{- {'scope': 'drawer', 'ops': dict(_base, **_ao_ops_in)} -}}
+              {%- else -%}
+                {{- {'scope': 'cabinet', 'owner': (_ao_caller.guid if _mode == 'take_ownership' else _ao_old.owner),
+                     'prime': _ao_old.prime, 'partners': _ao_old.partners, 'ops': dict(_ao_old.ops, **_ao_ops_in)} -}}
+              {%- endif -%}
+            _ao_refuse: >-
+              {%- if _ao_caller.policy_status != 'allowed' or _ao_caller.guid == '' -%}caller_unresolved
+              {%- elif _mode == 'acl_set' and (_ao_rec.owner == '' or _ao_caller.guid != _ao_rec.owner) -%}not_owner
+              {%- elif _mode == 'take_ownership' and not _ao_caller.cert_ok -%}cert_required
+              {%- endif -%}
+        - if: "{{- response is not defined and _ao_refuse | trim != '' -}}"
+          then:
+            - variables:
+                response:
+                  mode: "{{ _mode }}"
+                  status: error
+                  code: "{{ _ao_refuse | trim }}"
+                  target: "{{ _ao_cab }}{{ ('/' ~ _ao_key) if _ao_key else '' }}"
+                  message: >-
+                    {%- set c = _ao_refuse | trim -%}
+                    {%- if c == 'caller_unresolved' -%}The caller's identity did not resolve (policy {{ _ao_caller.policy_status }}); nothing was changed.
+                    {%- elif c == 'not_owner' -%}acl_set is owner-only and the caller is not this ACL's owner; nothing was changed. take_ownership (cert + live ack) is the way to change an ACL you do not own.
+                    {%- else -%}take_ownership needs cert zenos.identity.acl_take_ownership (request it: persona_editor mode=cert_req_grant cert_component=zenos.identity.acl_take_ownership); nothing was changed.
+                    {%- endif -%}
+                  timestamp: "{{ now().isoformat() }}"
+        # The live ack (request_live_ack honors the console override itself).
+        - if: "{{- response is not defined and _mode == 'take_ownership' -}}"
+          then:
+            - action: script.zen_dojotools_identity
+              response_variable: _ao_ack
+              continue_on_error: true
+              data:
+                mode: request_live_ack
+                ack_message: >-
+                  Your agent asks to TAKE OWNERSHIP of the ACL on {{ _ao_cab }}{{ ('/' ~ _ao_key) if _ao_key else '' }}.
+                  Reason: {{ _ao_reason }}. Current: {{ _ao_old | tojson }}. Proposed: {{ _ao_new | tojson }}. Approve?
+                ack_max_wait_seconds: 120
+            - if: "{{- not (_ao_ack is mapping and _ao_ack.get('approved', false) | bool) -}}"
+              then:
+                - variables:
+                    response:
+                      mode: take_ownership
+                      status: error
+                      code: "{{ 'ack_declined' if (_ao_ack is mapping and _ao_ack.get('reason', '') == 'declined') else 'ack_not_approved' }}"
+                      target: "{{ _ao_cab }}{{ ('/' ~ _ao_key) if _ao_key else '' }}"
+                      ack: "{{ _ao_ack if _ao_ack is mapping else {} }}"
+                      message: "No live human approval; nothing was changed."
+                      timestamp: "{{ now().isoformat() }}"
+        - variables:
+            _ao_approver: >-
+              {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+              {%- if _mode != 'take_ownership' -%}owner
+              {%- elif ID.console_override() | trim == 'true' -%}console_bypass
+              {%- else -%}live_ack
+              {%- endif -%}
+        - if: "{{- response is not defined -}}"
+          then:
+            # Admin door (#10637): the cabinet ACL lives in VolumeInfo (merge, acls
+            # only); a drawer's own ACL rides on a set with its value sent back unchanged.
+            - action: script.zen_admintools_cabinet_writer
+              response_variable: _ao_w
+              continue_on_error: true
+              data:
+                mode: "{{- 'merge' if _ao_key == '' else 'set' -}}"
+                volume_entity: "{{- _ao_cab -}}"
+                key: "{{- 'AI_Cabinet_VolumeInfo' if _ao_key == '' else _ao_key -}}"
+                value: >-
+                  {{- {'acls': {'v': 2, 'owner': _ao_new.owner, 'prime': _ao_new.prime, 'partners': _ao_new.partners, 'ops': _ao_new.ops}}
+                      if _ao_key == '' else ((state_attr(_ao_cab, 'variables') or {}).get(_ao_key) or {}).get('value') -}}
+                acl: "{{- {'ops': _ao_new.ops} if _ao_key != '' else none -}}"
+                caller: zen_dojotools_identity
+                reason: "identity {{ _mode }}: {{ _ao_reason }}"
+            - variables:
+                _ao_ok: "{{- _ao_w is mapping and _ao_w.get('status') == 'success' -}}"
+                _ao_kind: "{{- 'acl_ownership_taken' if _mode == 'take_ownership' else 'acl_changed' -}}"
+            - event: zen_event
+              event_data:
+                event:
+                  timestamp: "{{ now().isoformat() }}"
+                  component: zen_dojotools_identity
+                  severity: "{{ 'warning' if _mode == 'take_ownership' else 'info' }}"
+                  kind: "{{ _ao_kind }}"
+                  summary: "{{ _mode }} {{ _ao_cab }}{{ ('/' ~ _ao_key) if _ao_key else '' }} ({{ 'written' if _ao_ok else 'write failed' }}): {{ _ao_reason }}"
+                  metadata:
+                    target: "{{ _ao_cab }}{{ ('/' ~ _ao_key) if _ao_key else '' }}"
+                    caller_guid: "{{ _ao_caller.guid }}"
+                    reason: "{{ _ao_reason }}"
+                    old_acl: "{{ _ao_old }}"
+                    new_acl: "{{ _ao_new }}"
+                    approver: "{{ _ao_approver }}"
+                    written: "{{ _ao_ok }}"
+            - action: system_log.write
+              data:
+                level: warning
+                logger: zen_dojotools_identity
+                message: "{{ _ao_kind }} target={{ _ao_cab }}{{ ('/' ~ _ao_key) if _ao_key else '' }} written={{ _ao_ok }} approver={{ _ao_approver }} reason={{ _ao_reason }} old={{ _ao_old | tojson }} new={{ _ao_new | tojson }}"
+            - variables:
+                response:
+                  mode: "{{ _mode }}"
+                  status: "{{ 'ok' if _ao_ok else 'error' }}"
+                  target: "{{ _ao_cab }}{{ ('/' ~ _ao_key) if _ao_key else '' }}"
+                  old_acl: "{{ _ao_old }}"
+                  new_acl: "{{ _ao_new }}"
+                  approver: "{{ _ao_approver }}"
+                  message: "{{ 'ACL written and audited.' if _ao_ok else 'The admin door did not confirm the ACL write.' }}"
+                  timestamp: "{{ now().isoformat() }}"
 
     # ── Step 3k: mode = membership ───────────────────────────────────────────
     # Tree view for containers; reverse lookup for members.
@@ -2995,13 +3472,8 @@ script:
                           {%- set _m = _m if _m is mapping else {} -%}
                           {%- set _hp = _root_profile_raw | from_json if _root_profile_raw is string else _root_profile_raw -%}
                           {%- set _hp = _hp if _hp is mapping else {} -%}
-                          {%- set _acls = _vi.get('acls', {}) -%}
-                          {%- set _acls = _acls if _acls is mapping else {} -%}
-                          {%- set _owners = _acls.get('owner', []) -%}
-                          {%- set _partners = _acls.get('partner', []) -%}
-                          {%- set _prime = _partners | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | list -%}
-                          {%- set _hoh = _owners[0] if _owners | count > 0 else none -%}
-                          {%- set _prime_entry = _prime[0] if _prime | count > 0 else none -%}
+                          {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                          {%- set _pr = ID.principals(_root_entity) | from_json -%}
                           {# depth-1 families with their members #}
                           {%- set _ns = namespace(fams=[]) -%}{# FG-25: namespace required for list mutation inside for-loop #}
                           {%- for fam in _m.get('families', []) -%}
@@ -3009,11 +3481,7 @@ script:
                             {%- set _fvi = CABS.cabinet_drawer_value(_fc_entity_id, 'AI_Cabinet_VolumeInfo', {}) | from_json() -%}
                             {%- set _fm = CABS.cabinet_drawer_value(_fc_entity_id, 'members', {}) | from_json() -%}
 
-                            {%- set _facls = _fvi.get('acls', {}) | default({}, true) -%}
-                            {%- set _facls = _facls if _facls is mapping else {} -%}
-                            {%- set _fowners = _facls.get('owner', []) -%}
-                            {%- set _fpartners = _facls.get('partner', []) -%}
-                            {%- set _fprime = _fpartners | selectattr('role', 'defined') | selectattr('role', 'equalto', 'prime') | list -%}
+                            {%- set _fpr = ID.principals(_fc_entity_id) | from_json -%}
                             {# depth-2 sub-families (members only, no further recursion) #}
                             {%- set _nsf = namespace(subfams=[]) -%}{# FG-25: namespace required for list mutation inside for-loop #}
                             {%- for sf in _fm.get('families', []) -%}
@@ -3037,10 +3505,7 @@ script:
                               'guid': _fvi.get('id', _fvi.get('guid', '')),
                               'name': fam.get('name', _fvi.get('friendly_name', _fvi.get('name', _fc_entity_id))),
                               'depth': fam.get('depth', 1),
-                              'principals': {
-                                'hoh': _fowners[0] if _fowners | count > 0 else none,
-                                'prime': _fprime[0] if _fprime | count > 0 else none
-                              },
+                              'principals': _fpr,
                               'members': {
                                 'users': _fm.get('users', []),
                                 'ai_users': _fm.get('ai_users', []),
@@ -3054,10 +3519,7 @@ script:
                               'guid': _vi.get('id', _vi.get('guid', '')),
                               'name': _hp.get('friendly_name', _hp.get('name', _vi.get('friendly_name', _vi.get('name', _root_entity)))),
                               'cab_type': _vi.get('cab_type', ''),
-                              'principals': {
-                                'hoh': _hoh,
-                                'prime': _prime_entry
-                              },
+                              'principals': _pr,
                               'members': {
                                 'users': _m.get('users', []),
                                 'ai_users': _m.get('ai_users', []),
@@ -3311,6 +3773,7 @@ script:
             - action: script.zen_dojotools_identity
               data:
                 mode: family_add_member
+                force_action: "{{ force_action | default(false) | bool }}"
                 family_entity: "{{- _pm_fam -}}"
                 member_entity: "{{- _pm_slot -}}"
                 member_type: "{{- _pm_cab_type -}}"

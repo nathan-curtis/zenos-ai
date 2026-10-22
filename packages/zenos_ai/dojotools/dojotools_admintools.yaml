@@ -1,6 +1,26 @@
 ###############################################################################
 # ZenOS-AI DojoTools: AdminTools
-# Version: 5.4.13
+# Version: 5.4.19
+# v5.4.19: cabinetadmin's result carries repair_results only for
+#   repair_volumeinfo (it rendered Ansible's 'omit', undefined in Jinja, as ''
+#   with a warning on every call); hammer_ok defaults to false when absent.
+# v5.4.18: prompt_loader stamps an unset sim_mode_allowed from Flynn's override
+#   switch (input_boolean.zenos_sim_mode_override, on by default), not a
+#   hardcoded false: after reset_all (no HA start, so Flynn's boot stamp never
+#   ran) the bootstrap's prompt_loader load left the caller unresolved.
+# v5.4.17: cabinetadmin reset_all was a silent no-op answering success: its ack
+#   and wipe were gated on result being undefined, inside the main loop's guard
+#   where result is already {}. Now gated on confirm and the ack's answer.
+# v5.4.16: cabinetadmin's hammer/reset/reset_all acks no longer say "no standing
+#   override exists": the console override stands in for the human, in
+#   identity request_live_ack (identity 5.8.0).
+# v5.4.15: run_repair 5.2.0 runs identity acl_migrate; maint_4_5_6 and
+#   repair_fam_cab_volumeinfo are retired (acl_migrate and Flynn's bootstrap do
+#   their work). A refusal (no confirm_action) answers error, not success.
+# v5.4.14: cabinetadmin_factory stamps the ACL as v2 (#10626): owner/partner
+#   people map to their member cabinet's GUID; the family_guid field and the
+#   'default-guid' / 'My Family' placeholder are gone (family membership lives in
+#   the members drawers).
 # v5.4.13: prompt_loader mode=codex_registry (list/get/register/unregister): the one
 #   queued writer for the household finance codex registry, like lens_registry.
 # v5.4.12: prompt_loader runs queued (max 25): concurrent lens registry and
@@ -1109,7 +1129,7 @@ script:
       - choose:
         - conditions:
           - condition: template
-            value_template: "{{- op == 'hammer' and not hammer_ok -}}"
+            value_template: "{{- op == 'hammer' and not (hammer_ok | default(false) | bool) -}}"
           sequence:
           - variables:
               result:
@@ -1120,7 +1140,8 @@ script:
         # ── Mandatory live-ack — hammer and reset (both wipe every drawer).
         # On top of the cert above (and hammer_ok for hammer) -- no waiver, no
         # scope override, asks every single call. Same posture as locks'
-        # exterior-unlock / security_manager's disarm gate. ──
+        # exterior-unlock / security_manager's disarm gate. The console override
+        # (thrown only by hand) stands in for the human, in request_live_ack. ──
         - conditions:
           - condition: template
             value_template: "{{- op in ['hammer', 'reset'] -}}"
@@ -1139,8 +1160,7 @@ script:
                 {%- else -%}
                 Reset request: {{ target_cabinet | default('all ring-0 cabinets', true) }}.
                 This wipes every drawer on the cabinet. No undo. Approve this reset?
-                {%- endif %} (No standing override exists for
-                this action -- it asks every time by design.)
+                {%- endif %} (Asked on every call.)
               caller_token: "{{ caller_token }}"
           - variables:
               _hammer_ack_approved: "{{ _hammer_ack_raw.get('approved', false) if _hammer_ack_raw is mapping else false }}"
@@ -1670,7 +1690,7 @@ script:
             then:
             - if:
               - condition: template
-                value_template: "{{- not confirm -}}"
+                value_template: "{{- not (confirm | default(false) | bool) -}}"
               then:
               - variables:
                   result:
@@ -1682,10 +1702,14 @@ script:
                     caller_token: "{{- caller_token -}}"
             # ── Mandatory live-ack — reset_all. On top of confirm AND
             # the cert above -- no waiver, no scope override, asks every single
-            # call. Same posture as hammer's gate just above. Nested under
+            # call (the console override stands in for the human, in
+            # request_live_ack). Same posture as hammer's gate just above. Nested under
             # `result is not defined` so a missing-confirm refusal above never
             # even reaches the live-ack prompt. ──
-            - if: "{{ result is not defined }}"
+            # Gated on confirm and the ack's own answer, not on result: this block
+            # runs inside the main loop's guard, where result is already {} (the
+            # wipe never ran and reset_all answered an empty success).
+            - if: "{{ confirm | default(false) | bool }}"
               then:
               - action: script.zen_dojotools_identity
                 response_variable: _resetall_ack_raw
@@ -1695,9 +1719,8 @@ script:
                   ack_message: >-
                     reset_all request: wipes ALL ring-0 canonical cabinets, reseeds
                     schemas, and triggers Flynn bootstrap. No undo. User and
-                    expansion cabinets are NOT touched. Approve this reset_all? (No
-                    standing override exists for this action -- it asks every time
-                    by design.)
+                    expansion cabinets are NOT touched. Approve this reset_all? (Asked
+                    on every call.)
                   caller_token: "{{ caller_token }}"
               - variables:
                   _resetall_ack_approved: "{{ _resetall_ack_raw.get('approved', false) if _resetall_ack_raw is mapping else false }}"
@@ -1711,7 +1734,7 @@ script:
                       reason: "{{ _resetall_ack_reason }}"
                       message: "reset_all requires a fresh live household-admin ack every time -- not granted."
                       caller_token: "{{ caller_token }}"
-              - if: "{{ result is not defined }}"
+              - if: "{{ _resetall_ack_approved | bool }}"
                 then:
                 # Step 1 — wipe all ring-0 cabinets
                 - repeat:
@@ -2060,13 +2083,15 @@ script:
                 _any_skipped: >-
                   {{ op == 'repair_volumeinfo'
                      and (_repair_results.values() | select('search', '^skipped') | list | count) > 0 }}
-                result:
-                  status: "{{ 'partial' if _any_skipped else 'success' }}"
-                  message: "AdminTools completed '{{ op }}' on {{ effective_targets | length }} cabinet(s)."
-                  op: "{{- op -}}"
-                  target_count: "{{- effective_targets | length -}}"
-                  repair_results: "{{ _repair_results if op == 'repair_volumeinfo' else omit }}"
-                  caller_token: "{{- caller_token -}}"
+                # repair_results only for repair_volumeinfo ('omit' is not Jinja: it
+                # rendered empty and logged an undefined-variable warning every call).
+                result: >-
+                  {{- dict({'status': 'partial' if _any_skipped else 'success',
+                            'message': "AdminTools completed '" ~ op ~ "' on " ~ (effective_targets | length) ~ " cabinet(s).",
+                            'op': op,
+                            'target_count': effective_targets | length,
+                            'caller_token': caller_token},
+                           **({'repair_results': _repair_results} if op == 'repair_volumeinfo' else {})) -}}
     # ── single true exit for the whole tool — every op branch above sets
     # `result` itself; this just returns whatever is currently held. ──────
     - variables:
@@ -2180,18 +2205,19 @@ script:
               {%- set _f = {'system': False, 'hidden': False, 'read_only': False, 'secure_mode': False, 'gc_eligible': false} -%}
             {%- endif -%}
             {{- _f | combine({'cabinet_ro': true} if is_syscab else {}) -}}
-          acl_family: >
-            {%- set fam_guid = family_guid | default('default-guid') -%}
-            {%- set manifest = state_attr('sensor.zen_library_manifest','value') | default({}, true) -%}
-            {%- set fam_name = 'My Family' -%}
-            {%- if manifest is mapping -%}
-              {%- for ent, data in manifest.items() -%}
-                {%- if data.metadata.id == fam_guid -%}
-                  {%- set fam_name = data.friendly_name | default('My Family') -%}
-                {%- endif -%}
-              {%- endfor -%}
-            {%- endif -%}
-            {{- [ { "family_guid": fam_guid, "nickname": fam_name } ] -}}
+          # ACL v2 (#10626): principals are cabinet GUIDs. A person given as
+          # owner/partner maps to the GUID of their member cabinet (the
+          # household members' person_entity_id); a person with no member
+          # cabinet yet leaves the slot empty.
+          acl_v2: >
+            {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set rows = ID.member_index() | from_json([]) if (owner_person or partner_person) else [] -%}
+            {%- set oc = rows | selectattr('person_entity', 'equalto', owner_person) | map(attribute='entity_id') | first | default('') if owner_person else '' -%}
+            {%- set pc = rows | selectattr('person_entity', 'equalto', partner_person) | map(attribute='entity_id') | first | default('') if partner_person else '' -%}
+            {%- set og = (CABS.acl_guid_of(oc) | trim) if oc else '' -%}
+            {%- set pg = (CABS.acl_guid_of(pc) | trim) if pc else '' -%}
+            {{- {'v': 2, 'owner': og, 'prime': '', 'partners': ([pg] if pg else []), 'ops': {}} -}}
           mount_scan: "{{- mount_scan | default(true) -}}"
           existing_drawers: "{{ state_attr(cabinet_entity,'variables') | default({}, true) }}"
           mounts_out: >
@@ -2217,31 +2243,7 @@ script:
                   "created": now_iso,
                   "updated": now_iso,
                   "flags": flags,
-                  "acls": {
-                    "owner": (
-                      [{
-                          "entity_id": owner_person,
-                          "sid": state_attr(owner_person,"user_id") | default("no-sid"),
-                          "role": "owner"
-                      }]
-                      if owner_person and owner_person.startswith("person.")
-                      else []
-                    ),
-                    "partner": (
-                      [{
-                        "entity_id": partner_person,
-                        "sid": state_attr(partner_person,"user_id") | default("no-sid"),
-                        "role": "partner"
-                      }]
-                      if partner_person and partner_person.startswith("person.")
-                        else []
-                    ),
-                    "family": (
-                      acl_family
-                      if acl_family is iterable and not (acl_family is string)
-                        else (acl_family | from_json)
-                    )
-                  },
+                  "acls": acl_v2,
                   "entity_labels":
                       (
                         ["chat","history","secure","context","transcript","cabinet"]
@@ -2459,10 +2461,6 @@ script:
           entity:
             filter:
             - domain: person
-      family_guid:
-        name: Family GUID
-        selector:
-          text:
       caller_token:
         name: Caller Token
         description: Opaque token passed through by the caller for correlation. Not interpreted by this script.
@@ -4260,7 +4258,8 @@ script:
           # value, of either true or false, is left alone.
           _pl_sim_mode_existing: "{{ _pl_ic.get('identity', {}).get('sim_mode_allowed', none) if _pl_ic.get('identity') is mapping else none }}"
           _pl_sim_mode_final: >-
-            {{ _pl_sim_mode_existing if _pl_sim_mode_existing is not none else (sim_mode_allowed | default(false) | bool) }}
+            {{ _pl_sim_mode_existing if _pl_sim_mode_existing is not none
+               else (sim_mode_allowed | default(is_state('input_boolean.zenos_sim_mode_override', 'on')) | bool) }}
           _pl_updated_ic: >-
             {{ _pl_ic | combine({'identity': _pl_ic.get('identity', {}) | combine({'sim_mode_allowed': _pl_sim_mode_final}) }) }}
       - action: script.zen_sutra_filecabinet
@@ -4438,7 +4437,7 @@ script:
                 tool='zen_admintools_run_repair',
                 display_name='Run Repair — Versioned Maint Passthrough',
                 tier='admintools',
-                version='5.1.0',
+                version='5.2.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['admintools'],
                 optional_labels=[],
@@ -4469,44 +4468,33 @@ script:
           then:
             - variables:
                 _repair: "{{- repair_action | default('') | trim -}}"
+            # acl_migrate (identity, #10626): ids, ACL v2, members guids, stray
+            # VolumeInfo copies, for every cabinet or the one in entity_id.
             - choose:
                 - conditions:
                     - condition: template
-                      value_template: "{{- _repair == 'identity_family_repair_4_5_6' -}}"
+                      value_template: "{{- _repair == 'acl_migrate' -}}"
                   sequence:
-                    - action: script.zen_maint_4_5_6_identity_family_repair
+                    - action: script.zen_dojotools_identity
                       response_variable: _repair_result
-                    - variables:
-                        response: "{{- _repair_result | default({'status': 'error', 'message': 'Repair script returned no result.'}) -}}"
-                - conditions:
-                    - condition: template
-                      value_template: "{{- _repair == 'stamp_cab_guid_4_5_6' -}}"
-                  sequence:
-                    - action: script.zen_maint_4_5_6_stamp_cab_guid
                       data:
-                        cabinet_entity: "{{- entity_id | default('') | trim -}}"
-                      response_variable: _repair_result
+                        mode: acl_migrate
+                        dry_run: false
+                        confirm_action: true
+                        target_entity: "{{- entity_id | default('', true) | trim -}}"
                     - variables:
-                        response: "{{- _repair_result | default({'status': 'error', 'message': 'Repair script returned no result.'}) -}}"
-                - conditions:
-                    - condition: template
-                      value_template: "{{- _repair == 'roster_guid_repair_4_5_6' -}}"
-                  sequence:
-                    - action: script.zen_maint_4_5_6_roster_guid_repair
-                      response_variable: _repair_result
-                    - variables:
-                        response: "{{- _repair_result | default({'status': 'error', 'message': 'Repair script returned no result.'}) -}}"
+                        response: "{{- _repair_result if _repair_result is mapping else {'status': 'error', 'message': 'acl_migrate returned no result.'} -}}"
               default:
                 - variables:
                     response:
                       status: error
                       repair_action: "{{- _repair -}}"
-                      message: "Unknown repair_action '{{ _repair }}'. Valid: identity_family_repair_4_5_6, stamp_cab_guid_4_5_6, roster_guid_repair_4_5_6."
+                      message: "Unknown repair_action '{{ _repair }}'. Valid: acl_migrate."
     - variables:
         response: >-
           {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
           {{- OS.envelope(
-            status='error' if (response is mapping and response.get('status') == 'error') else 'success',
+            status='error' if (response is mapping and response.get('status') in ['error', 'blocked']) else 'success',
             mode=(mode | default('') if mode | default('') != '' else repair_action | default('')),
             result=response,
             tool='zen_admintools_run_repair',
@@ -4519,25 +4507,23 @@ script:
       Human-confirmed passthrough to versioned maint/ repair scripts.
       Requires confirm_action: true — will not run without explicit confirmation.
       DO NOT expose to unattended LLM pipelines. For operator use only.
-      Repairs: identity_family_repair_4_5_6, stamp_cab_guid_4_5_6, roster_guid_repair_4_5_6.
+      Repairs: acl_migrate (identity: ids, ACL v2, members guids, stray VolumeInfo copies;
+      dry run it first with zen_dojotools_identity mode=acl_migrate).
     fields:
       repair_action:
         name: Repair Action
         description: >-
-          One-time maintenance repair to run.
-          identity_family_repair_4_5_6 — wire default family cab into household graph.
-          stamp_cab_guid_4_5_6 — stamp GUID on a single cabinet (requires entity_id).
-          roster_guid_repair_4_5_6 — stamp GUIDs + re-wire all default cab roster entries.
+          Repair to run. acl_migrate: identity's cabinet repair (missing ids, legacy
+          guid field, ACL v2, members guids, stray VolumeInfo copies), every cabinet
+          or the one in entity_id.
         required: true
         selector:
           select:
             options:
-            - identity_family_repair_4_5_6
-            - stamp_cab_guid_4_5_6
-            - roster_guid_repair_4_5_6
+            - acl_migrate
       entity_id:
         name: Cabinet Entity ID
-        description: Required for stamp_cab_guid_4_5_6. Entity ID of cabinet to stamp.
+        description: Optional. acl_migrate repairs only this cabinet (default every zen_cabinet).
         required: false
         selector:
           text:

@@ -302,7 +302,7 @@ packages/zenos_ai/
     zen_resolver_epoch.yaml, zen_room_manager_vibration_completion.yaml — supporting internals
 
   maint/
-    maint_4_5_6.yaml           — One-time repair scripts (not AI-accessible, run manually)
+    repair_user_cab_essence.yaml — One-time repair script (not AI-accessible, run manually)
 
   sensors/
     zenos_agent_health.yaml

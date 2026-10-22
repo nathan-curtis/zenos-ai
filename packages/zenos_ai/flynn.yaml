@@ -1,5 +1,11 @@
 ###############################################################################
-# FLYNN — UNIFIED ENGINE (v5.1.6)
+# FLYNN — UNIFIED ENGINE (v5.1.9)
+# v5.1.9: the bootstrap's identity setup calls pass force_action: identity refuses
+#   setup on the old ACL schema, and the override upgrades it first (#10626).
+# v5.1.8: bootstrap runs identity acl_migrate after the VolumeInfo stamps (#10626).
+# v5.1.7: the primary-user picker hides people who already head a household by
+#   their person entity (it compared people against the owner's cabinet id and
+#   never matched), read through member_index (the shared ACL record, #10626).
 # v5.1.6: the history-mount check reads the mount pointer from the drawer's
 #   value (it read the envelope, never found it, and re-sent set_mount on every
 #   bootstrap); a failed history mount or set_mount logs a warning.
@@ -8,7 +14,8 @@
 #
 # v5.1.5 (#10637 Phase 4): no raw cabinet write events. flynn_active_notification
 #   (household data) goes through FileCabinet upsert mode=replace; the bootstrap
-#   VolumeInfo stamps go through the admin door with bootstrap+force.
+#   VolumeInfo stamps go through the admin door with bootstrap+force. The prompt
+#   loader call names mode=load explicitly.
 #
 # v5.1.4: flynn_unified_engine defaults value and action_type in the template.
 #   Script field defaults only fill the UI, so a flag_complete call with no
@@ -142,17 +149,14 @@ template:
         icon: mdi:account
         state: "{{ states('input_text.zenos_primary_user') }}"
         options: >-
-          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-          {#- Already-assigned HoH names, gathered across every household
-              cabinet's AI_Cabinet_VolumeInfo.acls.owner — don't offer a
-              person who's already someone's head of household. -#}
+          {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+          {#- Already-assigned HoH people, across every household: the person
+              on the household's HoH member cabinet (its ACL owner, matched
+              by GUID). Don't offer someone who is already a head of household. -#}
           {%- set assigned = namespace(names=[]) -%}
           {%- for hh in label_entities('zen_household_cabinet') -%}
-            {%- set vi = CABS.cabinet_drawer_value(hh, 'AI_Cabinet_VolumeInfo') | from_json() -%}
-            {%- set owners = (vi.get('acls', {}).get('owner', []) if vi is mapping else []) -%}
-            {%- for o in owners -%}
-              {%- set assigned.names = assigned.names + [(o.get('entity_id', '') if o is mapping else '')] -%}
-            {%- endfor -%}
+            {%- set rows = ID.member_index(hh) | from_json([]) -%}
+            {%- set assigned.names = assigned.names + (rows | selectattr('container', 'equalto', hh) | selectattr('role', 'equalto', 'hoh') | map(attribute='person_entity') | reject('equalto', '') | list) -%}
           {%- endfor -%}
           {%- set people = namespace(list=[]) -%}
           {%- for p in states.person -%}
@@ -1766,6 +1770,9 @@ script:
           mode: load
 
       # Wire household membership — fills HoH and prime slots, links partners, builds manifest.
+      # force_action (#10626): on a fresh install the household and family are
+      # still on the old ACL schema; identity upgrades each one first, then sets
+      # it up, and errors only if the upgrade fails.
       # Idempotent: household_add_member blocks if slot already occupied (existing installs safe).
       - variables:
           _b3_hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
@@ -1777,6 +1784,7 @@ script:
           - action: script.zen_dojotools_identity
             data:
               mode: household_add_member
+              force_action: true
               member_entity: "{{ _b3_user_cab }}"
               member_type: user
       - if: "{{ _b3_ai_cab not in ['', 'unknown', 'unavailable'] }}"
@@ -1784,6 +1792,7 @@ script:
           - action: script.zen_dojotools_identity
             data:
               mode: household_add_member
+              force_action: true
               member_entity: "{{ _b3_ai_cab }}"
               member_type: ai_user
       - if: >-
@@ -1801,6 +1810,7 @@ script:
           - action: script.zen_dojotools_identity
             data:
               mode: household_add_family
+              force_action: true
               family_entity: "{{ _b3_fam_cab }}"
       - if: >-
           {{ _b3_user_cab not in ['', 'unknown', 'unavailable']
@@ -1809,6 +1819,7 @@ script:
           - action: script.zen_dojotools_identity
             data:
               mode: family_add_member
+              force_action: true
               family_entity: "{{ _b3_fam_cab }}"
               member_entity: "{{ _b3_user_cab }}"
               member_type: user
@@ -1819,6 +1830,7 @@ script:
           - action: script.zen_dojotools_identity
             data:
               mode: family_add_member
+              force_action: true
               family_entity: "{{ _b3_fam_cab }}"
               member_entity: "{{ _b3_ai_cab }}"
               member_type: ai_user
@@ -1883,6 +1895,17 @@ script:
               bootstrap: true
               caller: flynn
               reason: "flynn bootstrap"
+
+      # ACL v2 (#10626), the planned run on first setup: every cabinet's
+      # VolumeInfo to the ACL record, with bad identity data fixed (ids, v1
+      # lists, a VolumeInfo the membership writes above created without flags
+      # or a name). Idempotent; a clean install writes nothing.
+      - action: script.zen_dojotools_identity
+        continue_on_error: true
+        data:
+          mode: acl_migrate
+          dry_run: false
+          confirm_action: true
 
       # Seed home mode schedule timers — only on first build, per timer (bare = never set).
       # initial: was removed from input_datetime definitions to prevent boot-time resets.
