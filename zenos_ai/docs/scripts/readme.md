@@ -178,7 +178,7 @@ Universal, contract-safe telemetry tool for emitting structured ZenOS-AI events 
 
 ---
 
-## 16. Zen DojoTools FileCabinet — v6.26.0
+## 16. Zen DojoTools FileCabinet — v6.27.0
 **File:** [`zen_dojotools_filecabinet_readme.md`](zen_dojotools_filecabinet_readme.md)
 
 Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. CabCeption nested drawer trees via `/` path separator. VirtualDrawer (cross-cabinet redirect) and LiveDrawer (tool-call-on-read with warm/cold cache). **Tapestry** (`weave`/`weave_preview`/`weave_save`) — multi-cabinet drawer composer; definitions stored as labeled drawers; cycle detection; depth 3 unrolled. `move`/`copy` blocked on mounted drawers by default (`force_action=true` required to transfer mount config intact). `fleet` + `expansion_sitrep` modes. Mode-scoped `tool:mode` callout whitelist entries (KF5 self-registration support) alongside legacy plain/`tool:*` forms. Single exit per action, honest `write_unverified` answers, every write a stated merge or replace, and an audit-only ACL gate on the resolved mount target. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet or the admin door.

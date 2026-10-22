@@ -1,4 +1,4 @@
-# Zen DojoTools SystemTools — v5.2.7
+# Zen DojoTools SystemTools — v5.2.8
 
 *`zen_dojotools_ha_log_viewer` v1.1.0 · `zen_dojotools_event_emitter` v1.0.0 (same file).*
 
@@ -48,6 +48,7 @@ Config validation, safe HA restart, and update management. Every destructive ope
 | `confirm_action` | boolean | `false` | Required `true` for destructive operations |
 | `entity_id` | text | — | Required for update actions — the `update.*` entity |
 | `do_backup` | boolean | `false` | Create a backup before installing an update |
+| `force_action` | boolean | `false` | `cabinet_schema_upgrade` only: run the ACL migration as a repair even when the schema stamp is current |
 
 ### Tools
 
@@ -96,6 +97,12 @@ If config is clean, restart proceeds:
 ```
 
 ---
+
+#### `cabinet_schema_upgrade`
+
+Flips every cabinet to schema v1 (mount-aware) through cabinet admin. Then, when the system cabinet's `acl_schema` stamp is behind (or `force_action: true`), runs Identity's `acl_migrate` with `dry_run: false`.
+
+Answer fields: `result` (`error` when the migration ran and wasn't clean), `message`, and `acl_migrate: {status, changed, remaining, schema_stamped}` (null when the migration didn't run). Run `acl_migrate` as a dry run first if you want to review the class plan; see [Identity](zen_dojotools_identity_readme.md#acl_migrate--bring-every-cabinet-to-acl-v2).
 
 #### `ha_update_install`
 

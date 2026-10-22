@@ -202,7 +202,7 @@ Use this when a cabinet is missing its metadata header — for example, after cr
 | `owner_person` | entity (person) | — | Owner, stamped into the ACL as the person's member cabinet GUID |
 | `partner_person` | entity (person) | — | Partner, stamped the same way |
 
-The factory stamps the ACL as v2 (`{v: 2, owner, prime, partners, ops}`). Family membership lives in the `members` drawers, not in the ACL.
+The factory stamps the ACL as v2 (`{v: 2, owner, prime, partners, ops}`) and the cabinet's `class`, from `cabinet_type`. Family membership lives in the `members` drawers, not in the ACL.
 
 ### Flag Profiles (Auto-Detected)
 
@@ -393,6 +393,7 @@ Run when a cabinet fails identity's ACL schema check (identity answers `acl_sche
 
 | Version | Change |
 |---------|--------|
+| v5.4.20 | cabinetadmin_factory stamps the cabinet `class` from `cabinet_type`. |
 | v5.4.19 | cabinetadmin's result carries `repair_results` only for `repair_volumeinfo`; `hammer_ok` defaults to `false` when absent. |
 | v5.4.18 | prompt_loader stamps an unset `sim_mode_allowed` from Flynn's `input_boolean.zenos_sim_mode_override`, so a load right after `reset_all` still resolves its caller. |
 | v5.4.17 | cabinetadmin `reset_all` wipes: its ack and wipe are gated on `confirm` and the ack's answer. |

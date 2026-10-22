@@ -39,7 +39,7 @@ System
 
 These slots fill on first add and block re-entry. Use `set_principal` to transfer them.
 
-**The ACL record (v2).** Every cabinet's VolumeInfo carries `acls: {v: 2, owner, prime, partners, ops}`. Principals are cabinet GUIDs (the VolumeInfo `id`), never names or entity_ids. `ops` holds the access rules FileCabinet enforces (see [FileCabinet access control](zen_dojotools_filecabinet_readme.md#access-control-acl-v2)). Family membership lives in the `members` drawers, not in the ACL. Read the record only through `CABS.acl_record` / `acl_for` and `ID.principals`; Identity writes it through the admin door's `merge`, touching only the changed keys.
+**The ACL record (v2).** Every cabinet's VolumeInfo carries `acls: {v: 2, owner, prime, partners, ops}`. Principals are cabinet GUIDs (the VolumeInfo `id`), never names or entity_ids. `ops` holds the access rules FileCabinet enforces (see [FileCabinet access control](zen_dojotools_filecabinet_readme.md#access-control-acl-v2)). Family membership lives in the `members` drawers, not in the ACL. The vault cabinet is identity-only: other tools ask Identity, and Identity answers verdicts, never vault contents. Read the record only through `CABS.acl_record` / `acl_for` and `ID.principals`; Identity writes it through the admin door's `merge`, touching only the changed keys.
 
 **Partner = delegation authority.** `acls.partners` records who is authorized to delegate on an entity's behalf. This is a governance relationship, not a social one. No token is issued without an explicit allow — the link records who has delegation authority, it does not grant it automatically. Works for any entity pair (user↔user, user↔AI, AI↔AI).
 
@@ -590,7 +590,7 @@ zen_dojotools_identity:
   # confirm_action: true               # required to apply
 ```
 
-Run it as a dry run first and review the plan, then apply it. Apply re-reads every cabinet it touched; a second run should report 0 changes. Flynn's bootstrap runs it on its own, and identity setup needs it (see the schema gate above).
+Run it as a dry run first and review the plan, then apply it. Check every proposed `class`, especially any cabinet the plan calls `scratchpad` (the open row). Apply re-reads every cabinet it touched; a second run should report 0 changes. Identity setup needs it (see the schema gate above). Flynn's bootstrap runs it until the schema stamp is current, and `zen_dojotools_systemtools tool=cabinet_schema_upgrade` runs it when the stamp is behind.
 
 What it repairs:
 - a missing `id` (a legacy `guid` field becomes the id)
@@ -600,7 +600,12 @@ What it repairs:
 - `members` entries whose guid isn't their cabinet's
 - stray VolumeInfo copies (`ai_cabinet_volumeinfo`, `_ai_cabinet_volumeinfo`): a copy holding an id fills what's missing, and every copy is removed
 
-Answer fields: `status` (`dry_run` / `ok` / `error`), `scanned`, `changed`, `changes` (each `{cabinet, patch, unset, remove, members, notes}`), `clean`, `dangling` (`{cabinet, guid}` principals that resolve to no cabinet, reported and never dropped), `skipped` (cabinets that can't be read) and `remaining` (cabinets still failing the schema check after apply).
+What it stamps:
+- each cabinet's `class` (`system`, `vault`, `dojo`, `kata`, `history`, `household`, `family`, `user`, `ai_user`, `scratchpad`), proposed from its labels once; after that only the admin door changes it, and the gate never reads labels
+- the kata cabinet's owner (the default agent) when it has none
+- after a clean full apply, `acl_schema: {version, migrated}` on the system cabinet. A cabinet skipped because nothing loaded is reported but doesn't hold the stamp back
+
+Answer fields: `status` (`dry_run` / `ok` / `error`), `schema_stamped`, `scanned`, `changed`, `changes` (each `{cabinet, patch, unset, remove, members, notes}`), `clean`, `dangling` (`{cabinet, guid}` principals that resolve to no cabinet, reported and never dropped), `skipped` (cabinets that can't be read) and `remaining` (cabinets still failing the schema check after apply).
 
 ### `acl_set` — Change a Cabinet's or Drawer's Ops (owner only)
 
@@ -765,7 +770,7 @@ Other macros (v1.5.0):
 | `zen_os_1.jinja` → `identity_resolve_source()` | Full identity resolution pipeline — resolve/prompt modes |
 | `zen_os_1.jinja` → `identity_roster()` | Full household roster — build_identity_manifest |
 | `zen_os_1.jinja` → `identity_manifest_loader()` | Reads `zen_identity_manifest` from household cabinet |
-| `zen_dojotools_filecabinet` | Drawer reads and writes |
+| `zen_sutra_filecabinet` | Drawer reads and writes, naming `caller_tool: zen_dojotools_identity` |
 | `zen_admintools_cabinet_writer` | VolumeInfo writes (`merge`, only the changed keys) |
 | `zenos_cabinets.jinja` | `acl_record`, `acl_schema_check`, `volumeinfo_copies` |
 | `zen_identity.jinja` | Template surface (Jinja2 contexts) — v1.5.0 |

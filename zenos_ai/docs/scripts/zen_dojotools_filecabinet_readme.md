@@ -1,4 +1,4 @@
-# Zen DojoTools FileCabinet — v6.26.0
+# Zen DojoTools FileCabinet — v6.27.0
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 **ZenOS Release:** 2026.11.0 'This Is Spinal Tap'
@@ -25,6 +25,8 @@ zen_dojotools_filecabinet  (DojoTool, MCP-facing — expose this to MCP)
 `zen_sutra_filecabinet` is the engine. It is **not** MCP-exposed. Agents and MCP callers go through `zen_dojotools_filecabinet`; ZenOS scripts call `zen_sutra_filecabinet` directly for get, list, create, update, upsert and delete (one script run instead of two). The wrapper still accepts every action.
 
 Structural drawers (`AI_Cabinet_VolumeInfo`, `meta`, `_label_index`, `_zen_relationships`), the system cabinet and the vault are written only through the admin door, `zen_admintools_cabinet_writer`. FileCabinet refuses those keys.
+
+**Caller origin.** The wrapper stamps `caller_origin: agent` on every engine call it makes. Any other caller of `zen_sutra_filecabinet` is internal. A tool may name itself with `caller_tool: <script>`, as a constant in its own call and never taken from its input; the ACL gate matches it against `@tool:<script>` rules. Identity, the provisioner and Flynn's history mount name themselves. A tool that passes an agent-chosen cabinet and key straight to the engine should stamp `caller_origin: agent` itself.
 
 `stack=wiki` routes to `zen_sutra_wikijs`. FileCabinet is the single surface for both knowledge stacks. The former standalone `zen_dojotools_wikijs` script no longer exists.
 
@@ -442,7 +444,9 @@ Fields present depends on the action. `value` is present on `get`. `write_verifi
 
 ## Access Control (ACL v2)
 
-FileCabinet enforces the ACL record Identity writes: VolumeInfo `acls` `{v: 2, owner, prime, partners, ops}`, with cabinet GUIDs as principals. `ops` holds one rule per op class, `{cert, ack, who}`, where `who` may list `*`, `@owner`, `@prime` or GUIDs. A drawer's envelope `acl` may set `ops` only. Each op inherits on its own: drawer, then cabinet, then the default, which is open.
+FileCabinet enforces the ACL record Identity writes: VolumeInfo `acls` `{v: 2, owner, prime, partners, ops}`, with cabinet GUIDs as principals, plus the cabinet's `class`. `ops` holds one rule per op class, `{cert, ack, who}`. `who` may list GUIDs, `*`, `@owner`, `@prime`, `@partner`, `@self`, `@internal` (any tool calling the engine) or `@tool:<script>`; an empty `who` means admin door only. A drawer's envelope `acl` may set `ops` only.
+
+Each op resolves on its own: a built-in lock, else the drawer's rule, else the cabinet's, else the default row for the cabinet's class. The class defaults and the built-in locks (`zen_ai_certs`, `integrations_config` and `alert_response_*` take writes only from tools; `cert_admin_console_bypass` only from the admin door) are tabled in [zenos_cabinets.jinja](../custom_templates/zenos_cabinets_jinja.md#acl-v2). A caller matched by `@tool:<script>` passes on that tool's own gates, with no rule cert or ack.
 
 | Op | Actions |
 |---|---|
@@ -459,7 +463,8 @@ Get and the writes are checked against the resolved mount target; delete, move, 
 "acl_audit": {
   "mode": "audit",
   "action": "upsert",
-  "checks": [{"op": "w", "target": "...", "source": "drawer|cabinet|default", "why": "..."}],
+  "origin": "agent|internal",
+  "checks": [{"op": "w", "target": "...", "source": "builtin|drawer|cabinet|default", "via": "...", "why": "..."}],
   "would_deny": false,
   "reasons": [],
   "would_ack": false

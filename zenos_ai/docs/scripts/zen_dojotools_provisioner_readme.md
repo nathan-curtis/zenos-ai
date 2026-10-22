@@ -35,6 +35,8 @@ All three modes (`provision`, `deprovision`, `replace`) require the `cabinet_lif
 | `profile_payload` | No | JSON string of additional key/value pairs to press into the profile drawer. Merged with `person_entity` data if both are given. |
 | `caller_token` | No | Opaque pass-through for caller correlation. |
 
+**ACL standing.** Every FileCabinet call names `caller_tool: zen_dojotools_provisioner`. The provisioner is a lifecycle principal: it is in every cabinet class's admin rule except the vault's, so mounting, dismounting and provisioning pass the FileCabinet ACL gate on the provisioner's own cert gate.
+
 ---
 
 ## Provision Flow
