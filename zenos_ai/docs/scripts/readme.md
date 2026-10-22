@@ -94,7 +94,7 @@ Core primitive for label CRUD and entity tagging. Backbone of the label index th
 
 ---
 
-## 5. Zen DojoTools Identity — v1.1.3
+## 5. Zen DojoTools Identity — v1.2.0
 **File:** [`zen_dojotools_identity_readme.md`](zen_dojotools_identity_readme.md)
 
 Identity resolver for household members and AI constructs. MCP-exposed. Resolves by label, person entity, cabinet entity, or GUID. Delegates to the same path the prompt uses. Writes the ACL v2 record FileCabinet enforces (`acl_migrate`, `acl_set`, `take_ownership`) and owns the live-ack chokepoint.
@@ -150,7 +150,7 @@ General-purpose collection: `calculator`, `dice_roller`, `announce` (TTS by area
 
 ---
 
-## 12. Zen DojoTools Core (FileCabinet GC) — v4.5.1
+## 12. Zen DojoTools Core (FileCabinet GC) — v4.6.0
 **File:** [`zen_dojotools_core_readme.md`](zen_dojotools_core_readme.md)
 
 FileCabinet garbage collector. Enforces drawer hide/delete/recycle lifecycle. `gc`, `recycle`, `hide`, `unhide`, `dry_run`. Protected drawers (`_prefix`, VolumeInfo, schema keys) are never touched.
