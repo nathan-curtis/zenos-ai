@@ -10,7 +10,7 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Public Beta: 2026.11.0 'This Is Spinal Tap'** (`feat/2026.11.0`, ETA Saturday, November 14, 2026; see [release notes](zenos_ai/docs/releases/spinal_tap.md)) | Current Stable: 2026.10.1 'Tron' (patch on 2026.10.0, `feat/2026.10.1`) | Previous: 2026.10.0 'Tron' | Legacy line: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) and 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/tron.md).
+**Public Beta: 2026.11.0 'This Is Spinal Tap'** (`feat/2026.11.0`, ETA Saturday, November 14, 2026) | Current Stable: 2026.10.1 'Tron' (patch on 2026.10.0) | Legacy line: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) and 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/spinal_tap.md).
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
@@ -18,41 +18,39 @@ And a few things that are.
 
 > **Upgrading from an earlier release?** Confirm your Home Assistant Companion App can receive a push notification *before* you restart into 2026.9.0 or later. Every certification grant (locks, alarm, covers, infra, room overrides) now requires a real push to a real device, every time, no fallback — and an in-place upgrade won't prompt you the way a fresh install does. See [Install Step 3.5](zenos_ai/docs/getting_started/install.md#step-35--set-up-your-mobile-notification-path) if you're not already set up, or [First Alert Step 7](zenos_ai/docs/getting_started/first_alert.md#step-7--connect-a-real-device-required-before-certifications-work) to confirm you are (safe to re-run either way).
 
-**What's in 2026.10.0 'Tron':** *Shore up the Grid.*
+**What's in 2026.11.0 'This Is Spinal Tap':** *Security goes to eleven.*
 
-**New in 2026.10: The Book of Friday, Volume 2.** The architecture docs are rewritten from the ground up. It starts with why ZenOS is built the way it is: the box and the scrapbook, the plinko board, the design history from the Friday's Party thread, and how the system converged on CoALA without setting out to. Then it covers the graph, the ontology, the digital twin, identity and authority, and operation, and closes with what we found and what to do with it. Every chapter points to the code that implements it, and anything designed but not built is labeled that way. [Start with the preface](zenos_ai/docs/architecture/00_preface.md) or jump to the [contents](zenos_ai/docs/architecture/00_toc.md).
+Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets behind it. FileCabinet holds identity, configuration, certs and the material that becomes agent context, so permission to change a drawer is permission to change what the system believes. The drawer is the next boundary.
 
-**Breaking: room state is opt-in.** Room Manager's room state ships off, and off means off: until you opt in (`zen_dojotools_room_manager mode=roomstate_enable roomstate_enabled=true`), rooms hold their current state and no evidence moves them. Nothing turns it on for you. If your rooms stop changing state after upgrading, that's why.
+**The locks are built, and running in audit mode.** Every FileCabinet call, and every agent or console write through the admin door, is decided by a real access gate that logs what it would refuse or ask a human about, then lets the call through. Nothing is refused yet; the logs show what enforcement will change before it changes anything.
 
-**Admission certification** (phase 1 shipped) — Tron creates the `zenos.agent.basic` certificate and Flynn requests it, with a starter capability bundle, when onboarding completes; enforcement lands in 2026.11.0. Once enforced, every agent will need it just to read the tool surface at all, not to administer or actuate anything. Like every grant it waits on a live human acknowledgement, and existing agents recertify through the same grant rather than a rebuild.
+**One ACL record.** Identity and FileCabinet share one record per cabinet: owner, prime agent, partners, and a rule for each of read, write, delete and admin, naming who may do it, the cert it needs, and whether a live human must say yes. One reading of the rules, not two.
 
-**The administrative plane** (in planning) — a second certification boundary above normal participation (`ZenOS Admin Certified, Level X`) will gate CertAdmin, cabinet repair, and reset-class tools. Country club, not skeleton key: even the top Admin level won't waive a fresh live human ack on the functions that need one.
+**Every cabinet has a class, and every class has defaults.** System, vault, dojo, kata, history, household, family, user, AI user, scratchpad: each gets its own default rules. The system cabinet takes writes only from the admin door, the vault answers only to Identity, a person's cabinet to that person, their partners and the prime agent. Certs, integration settings and live-ack answers carry built-in locks no owner can loosen.
 
-**Closing the bypass routes** — a platform-wide audit went looking for gaps nobody thought to ask about and found roughly a dozen: cabinet lifecycle operations reachable with zero cert, a camera's alert routing silently redirectable, eight of thirteen Utilities scripts actuating without any gate, and a shared `pii_disclosure_control` cert now covering mail/Teams/task/todo/calendar writes so a caller can't route around one gate through a neighboring tool. New cert-taxonomy infrastructure — OID-style prefix inheritance and named cert bundles — came out of doing this at platform scale.
+**The gate knows who's asking.** The agent-facing FileCabinet tool marks its calls as agent calls, and tools can name themselves, so the gate tells an agent from a tool. Mounts confer no authority: the gate checks the real target behind a mount chain.
 
-**The Cadillac Pass** — one shared exit per script, one canonical response envelope, cert-gating retrofitted through a shared macro, rolled out tool-by-tool across the platform (Scribe, Ectoplasm, SpaMaster, Media Manager, Library, Zenzork, Index/Query/Inspect, Room Manager, and this cycle's full dojotools sweep plus Postman's own cert-gate audit closing).
+**FileCabinet, rebuilt to be lockable.** One exit per action, honest writes (an unconfirmed write says so instead of claiming success), every write a stated merge or replace, a drawer envelope with room for its own rules, and an admin door (`zen_admintools_cabinet_writer`) as the one writer for structural, system and vault cabinet writes.
 
-**Display Surface (beta)** — net-new tool, finishing in 2026.11.0 with its dashboard: cast a Lovelace view to any TV, wall tablet, or display that isn't already running the HA Companion app, via Google Cast, Fire TV/Android TV, or LG webOS.
+**Upgrading?** The ACL migration is mandatory. Flynn runs it on its own; you can dry-run it first with `zen_dojotools_identity mode=acl_migrate` and review the plan. Expect audit lines in the log; they're the preview of enforcement, not errors. See [Read this before upgrading](zenos_ai/docs/releases/spinal_tap.md#read-this-before-upgrading).
 
-**Room Manager / Media / Lighting / Display convergence** — one shared vocabulary (labels plus `room_control_manager`) instead of four systems each re-deriving "what room is this and what's it doing."
+**Also in this beta:** semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, and Cortex 45.
 
-**Quieter alerts** — Alert Manager acknowledgements (`ack`/`check_ack`/`revoke_ack`) let a household say "we know, it's fine" and have the summarizer pipeline stop re-escalating that component until the ack expires; summarizer writes now guard on a validated parse.
+**Still to come this cycle:** enforcement, admission enforcement for `zenos.agent.basic`, hiding unreadable drawers from listings, the operator permission report, and the Display dashboard.
 
-FileCabinet gets a bug pass in Tron; its single-exit/envelope/cert-gate work is the intended scope of **2026.11.0 'This Is Spinal Tap'**. Ours goes to 11.
-
-→ [Release Notes — Tron](zenos_ai/docs/releases/tron.md)
+→ [Release Notes — This Is Spinal Tap](zenos_ai/docs/releases/spinal_tap.md)
 
 ---
 
-**Previous stable: 2026.9.1 'Steel Magnolia'** (bugfix-only patch, backported from Tron work that doesn't depend on any of its still-in-development features) — Room Manager v3's wasp-in-a-box occupancy model, identity gates across locks/covers/alarm/climate/ZenLux/ZenZork/spa, a Security Manager parity build, full AutoVac Roborock support, and ZenZork's first content chapter.
+**Current stable: 2026.10.1 'Tron'** (patch on 2026.10.0) — *Shore up the Grid.* Admission certification (phase 1), a platform-wide audit closing roughly a dozen bypass routes, the Cadillac Pass (one exit, one envelope, cert-gating) across the platform, Display Surface in beta, Room Manager/Media/Lighting/Display convergence, quieter alerts, and The Book of Friday, Volume 2. **Breaking in Tron:** room state is opt-in.
 
-→ [Release Notes — Steel Magnolia](zenos_ai/docs/releases/steel_magnolia.md) ([9.1 patch notes](zenos_ai/docs/releases/steel_magnolia.md#202691--patch))
+→ [Release Notes — Tron](zenos_ai/docs/releases/tron.md) ([10.1 patch notes](zenos_ai/docs/releases/tron.md#2026101--patch))
 
 ---
 
 **2026.8.1 is the last ZenOS-AI release that does not require Steel Magnolia's identity-gate/cert-scope security architecture.** It's a small, deliberately narrow bugfix patch — every fix in it predates Steel Magnolia entirely — but it's also a hard fork point, not a soft one: anything built past this release that needs those safeguards to run safely will not be backported here. Staying on 2026.8.x means staying without them, indefinitely; that's a legitimate choice for a household not ready to adopt agent-actuation cert-gating, but it is a choice, not a default. See the ["Last Release Before Identity Gates"](zenos_ai/docs/releases/chef.md#202681--the-last-release-before-identity-gates) section of the Chef release notes for the full reasoning and the fix list.
 
-**Earlier releases:** [Chef (2026.8.1)](zenos_ai/docs/releases/chef.md) | [Neo (2026.7.x)](zenos_ai/docs/releases/neo.md) | [Clue (2026.6.0)](zenos_ai/docs/releases/clue.md) — full writeups for those, and everything before them, live in the [Documentation Hub](zenos_ai/docs/readme.md).
+**Earlier releases:** [Steel Magnolia (2026.9.1)](zenos_ai/docs/releases/steel_magnolia.md) | [Chef (2026.8.1)](zenos_ai/docs/releases/chef.md) | [Neo (2026.7.x)](zenos_ai/docs/releases/neo.md) | [Clue (2026.6.0)](zenos_ai/docs/releases/clue.md) — full writeups for those, and everything before them, live in the [Documentation Hub](zenos_ai/docs/readme.md).
 
 ---
 
