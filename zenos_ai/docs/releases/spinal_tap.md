@@ -52,9 +52,60 @@ FileCabinet enforcement protects the ZenOS access boundary. Home Assistant admin
 
 ---
 
+## Where It Stands: the Amps Are Wired, the Volume Is at Ten
+
+Every lock in this release is built, wired to its door, and running in **audit mode**. The gate decides every FileCabinet call and every admin-door write, logs what it would have refused or asked a human about, and lets the call through. Nothing is refused yet. The rules it will enforce, the principals they name, and the migration that puts them on every cabinet are all in place, and the logs show what enforcement will change before it changes anything. Turning it to eleven is the next step.
+
+| Planned | Landed (audit mode) | Still to come |
+|---|---|---|
+| Access-path audit | The audit drove the default table and caller origin below. | Finishing the map of every path in. |
+| FileCabinet security | One gate, on the resolved mount target. Separate read, write, delete and admin rules. Default rules for every cabinet class, and locks on credential and approval drawers. Effective access per drawer (`CABS.acl_for`). | Refusing for real. Hiding unreadable drawers from listings and search. |
+| Trusted entry points | The gate tells an agent from a tool (caller origin). Boot, Flynn and automations are exempt at the admin door. Provisioning and Flynn's cabinet setup are named lifecycle principals. | Separating System and Default Agent authority. |
+| Admission enforcement | | The admission-token contract with `zen_root_authentik`. |
+| Bootstrap and recovery | A fresh install migrates and stamps its own schema; an upgrade migrates once and stamps it. | Revocation and recovery on the trusted path. |
+| Audit-only rollout | Shipping now: `fc_acl_audit` and `door_gate_audit`. | Enforcement. |
+| Operator permission report | | The report. |
+
+---
+
+## The Locks, in Audit Mode
+
+**One record.** Identity and FileCabinet share one ACL record in each cabinet's VolumeInfo: `acls: {v: 2, owner, prime, partners, ops}`. Principals are cabinet GUIDs, never names. `ops` holds a rule for each of read, write, delete and admin: who may do it (`who`), the cert it needs, and whether a live human must say yes (`ack`). Identity writes the record, through the admin door. FileCabinet and Identity read it only through the CABS `acl_*` macros and `ID.principals`, so there is one reading of the rules, not two.
+
+**Every cabinet has a class, and every class has defaults.** A cabinet is `system`, `vault`, `dojo`, `kata`, `history`, `household`, `family`, `user`, `ai_user` or `scratchpad`. Each class has a default row: the system cabinet is read-only to everything but the admin door, the vault answers only to Identity, a person's cabinet answers to that person, their partners and the prime agent, and a scratchpad is open. A drawer may tighten or loosen its own ops; each op falls back on its own to the cabinet's rule and then the class default. The full table is in the [zenos_cabinets.jinja reference](../custom_templates/zenos_cabinets_jinja.md#acl-v2). The class is a stamp in VolumeInfo, which only the admin door can change. The gate never reads a label.
+
+**Some drawers no owner can open.** Certs (`zen_ai_certs`), integration settings (`integrations_config`) and live-ack answers (`alert_response_*`) take writes only from tools, and the console override (`cert_admin_console_bypass`) only from the admin door. These built-in locks win over every other rule, so `acl_set` can't loosen them.
+
+**The gate knows who's asking.** The agent-facing FileCabinet tool marks every call it makes as an agent call. A tool calling the engine is internal, and can name itself with `caller_tool`, so a rule can say `@tool:zen_dojotools_identity` and mean exactly that. New principals in `who`: `@internal`, `@tool:<script>`, `@self`, `@partner`. Before this, every FileCabinet call looked like it came from the default agent. Now the audit log tells an agent from a tool.
+
+**Mounts confer no authority.** FileCabinet resolves the real target behind a mount chain (up to 8 hops; a loop refuses) before it checks access. Reads and writes are checked against the target's rules; delete, move, copy and the mount commands against the pointer's own.
+
+**Two gates, both auditing.** FileCabinet's gate answers `acl_audit` and logs `fc_acl_audit` with the caller's `origin` and, per check, where the rule came from and how the caller matched. The admin door checks agent and console writes against `zenos.system.cabinet_admin` and answers `gate_audit`. Boot, Flynn and automations are exempt.
+
+**Escape hatches, with a paper trail.** A cabinet's owner changes its rules with `identity acl_set`. `identity take_ownership` takes a cabinet over: it needs `zenos.identity.acl_take_ownership` and a live human yes on every call, rewrites only the ACL, never the contents, and is audited. The console override stands in for that yes (and every other live acknowledgement) in exactly one place, Identity's `request_live_ack`, and each use is audited.
+
+**One migration, stamped.** `identity acl_migrate` brings every cabinet to the record: it converts v1 lists to GUIDs, stamps classes, repairs bad identity data and stray VolumeInfo copies, and never drops a dangling principal. A clean run stamps `acl_schema` version 3 on the system cabinet. Flynn runs it on a fresh install and skips it while the stamp is current; `systemtools cabinet_schema_upgrade` runs it when the stamp is behind.
+
+---
+
+## FileCabinet, Rebuilt to Be Lockable
+
+A gate is only as good as the engine behind it, so FileCabinet was rebuilt first.
+
+- **One exit per action.** Get, create, update, upsert, delete and list each set a result and fall through to the engine's single exit, so the gate sits in one place.
+- **Honest writes.** A write the cabinet never confirmed answers `write_unverified` and logs a warning, instead of success. `update` on a missing key answers `not_found`. Delete reports `children_deleted`.
+- **Every write is a stated merge or replace.**
+- **One read taxonomy.** Content is in `value`; `read` is `get`.
+- **The drawer envelope is `{value, meta, timestamp[, acl]}`.** `meta` is always present and carries expiry; `acl` carries a drawer's own rules. A cabinet set keeps both instead of rebuilding the drawer.
+- **The admin door.** `zen_admintools_cabinet_writer` is the one writer for structural, system and vault cabinet writes, which FileCabinet refuses. It isn't MCP-exposed, every write names its caller and is logged, and it waits until the cabinet shows the write before it answers, and confirms the content. `merge` mode writes only the keys that changed. AdminTools, Flynn, GC and maint fire no raw cabinet events any more.
+- **The cabinet guards hold.** The 128 KB size cap and the unknown-at-boot guard refuse the write and leave the cabinet as it was.
+
+---
+
 ## Read this before upgrading
 
-- **The ACL v2 migration is mandatory.** Identity setup refuses an old-schema household or family with `acl_schema_upgrade_required`. After reloading (templates, automations, template entities, then scripts), run `zen_dojotools_identity mode=acl_migrate` to see the plan (a dry run is the default). Check every proposed cabinet `class`, especially any it calls `scratchpad`. Then apply it with `dry_run: false` and `confirm_action: true`, or run `zen_dojotools_systemtools tool=cabinet_schema_upgrade`, which applies it when the schema stamp is behind. A second dry run should plan nothing, and the system cabinet then holds `acl_schema` version 3. Flynn's bootstrap runs the same migration on its own: on a fresh install, and on an existing one the next time the bootstrap runs. Drawers need no migration of their own; existing ones read as before.
+- **The ACL v2 migration is mandatory.** Identity setup refuses an old-schema household or family with `acl_schema_upgrade_required`. After reloading (templates, automations, template entities, then scripts), run `zen_dojotools_identity mode=acl_migrate` to see the plan (a dry run is the default). Check every proposed cabinet `class`, especially any it calls `scratchpad`. Then apply it with `dry_run: false` and `confirm_action: true`, or run `zen_dojotools_systemtools tool=cabinet_schema_upgrade`, which applies it when the schema stamp is behind. A second dry run should plan nothing, and the system cabinet then holds `acl_schema` version 3. Flynn's bootstrap runs the same migration on its own until the stamp is current: on a fresh install, and on an existing one the next time the bootstrap runs. Drawers need no migration of their own; existing ones read as before.
+- **Expect audit lines.** Agents that don't hold `zenos.system.cabinet_admin` log `door_gate_audit` lines, and the FileCabinet gate logs `fc_acl_audit` wherever enforcement would have refused or asked. They are the preview of enforcement, not errors.
 - **FileCabinet reads return content in `value`.** The `{path: value}` map that `read` put in `result` is retired; `result` is only the tool envelope, and `read` is a plain alias of `get`. Anything of your own that reads `result.<path>` needs to read `value`.
 - **FileCabinet writes are honest.** A create, update, upsert or delete the cabinet never confirmed answers `status: error`, `code: write_unverified` instead of success. `update` on a missing key answers `not_found` (`force_action` creates it), and `create` on an existing key is an error unless `force_action`.
 - **Every write is a merge or a replace.** `upsert` deep-merges by default and `update` replaces. A read-modify-write caller passes `mode: replace`; under a merge, a key you removed comes back.
@@ -71,14 +122,8 @@ FileCabinet enforcement protects the ZenOS access boundary. Home Assistant admin
 - **Taskmaster almanac, the "when" root.** One call returns a headline and the current period of the day, vacation, events from calendars carrying the `almanac` label (timed events first, at most two per calendar), tasks due by today, meals and weather. `horizon_hours`, `lookahead_days` and `max_items` tune it.
 - **Per-tool roots on the core tools.** Room Manager, Index, FileCabinet, Identity and Taskmaster declare their own roots in their `tool_manifest` modes. A bare call returns them in about 350 characters.
 - **Cortex 45.** Cortex 44 'Open Door' with one fix: its `core_tools` list named a log viewer that does not exist, and now names `zen_dojotools_ha_log_viewer`. 45 is the new latest and replaces the v42 slot, so the selectable versions are 45, 44 and 43.
-- **The admin door.** `zen_admintools_cabinet_writer` is the one writer for structural, system and vault cabinet writes that FileCabinet refuses by design. It is not MCP-exposed, every write names its caller and is logged, and it waits until the cabinet shows each write before it answers. Identity's VolumeInfo writes now go through it.
 - **Who knows where a member belongs.** `identity resolve` returns `name`, `person_entity`, `member_type` and `memberships`, and finds a person anywhere in the household tree, not only among the household's own users.
-- **One ACL record.** Identity and FileCabinet share VolumeInfo `acls` v2: `{v: 2, owner, prime, partners, ops}`, with cabinet GUIDs as principals and `ops` holding a `cert`, `ack` and `who` rule for each of read, write, delete and admin. A drawer's own envelope `acl` may set `ops` only, and each op inherits on its own from drawer, then cabinet, then the default, which is open. Identity writes the record; FileCabinet and Identity read it only through the CABS `acl_*` macros and `ID.principals`.
-- **Default access by cabinet class.** Every cabinet carries a `class` (system, vault, dojo, kata, history, household, family, user, ai_user, scratchpad), and each class has a default rule for read, write, delete and admin. Credential and approval drawers (`zen_ai_certs`, `integrations_config`, `alert_response_*`, `cert_admin_console_bypass`) carry built-in locks no owner can loosen. The vault is identity-only. New `who` principals: `@internal`, `@tool:<script>`, `@self`, `@partner`.
-- **Caller origin.** The agent-facing FileCabinet tool marks its calls as agent calls, and a tool can name itself with `caller_tool`, so the gate tells an agent from a tool. The audit answer and log line carry `origin`, and each check carries `via`.
-- **Audit-only access gates.** FileCabinet resolves the real target behind any mount chain, then checks that target's ACL. It logs would-deny and would-ack decisions (`fc_acl_audit`) and returns `acl_audit`, but refuses nothing yet. The admin door does the same for agent and console writes against `zenos.system.cabinet_admin` (`gate_audit`); boot, Flynn and automation chains are exempt.
-- **Identity ACL modes.** `acl_migrate` brings every cabinet to v2 and repairs bad identity data (missing ids, v1 lists, stray VolumeInfo copies, mismatched member GUIDs), and never drops a dangling principal. `acl_set` lets a cabinet's owner change its ops. `take_ownership` needs `zenos.identity.acl_take_ownership` and a live acknowledgement on every call, rewrites only the ACL, and is audited.
-- **Admin door `merge` mode.** Lays the given keys over the stored value at write time, queued, so concurrent merges don't lose each other's keys. Every Identity ACL write uses it.
+- **The ACL record, cabinet classes, built-in locks, caller origin, both audit gates, and Identity's `acl_migrate`, `acl_set` and `take_ownership`.** See [The Locks, in Audit Mode](#the-locks-in-audit-mode).
 - **FileCabinet GC `repair` mode.** Normalizes one drawer to the `{value, meta}` envelope, with `dry_run`.
 
 ## Changed
@@ -87,12 +132,7 @@ FileCabinet enforcement protects the ZenOS access boundary. Home Assistant admin
 - **Compact bare replies.** Inventory, Kitchen and Finance return a short mode list on a bare call, down from roughly 100k, 65k and a few thousand characters. The full catalogue is for `mode=help`.
 - **Manifest publish cadence.** Publishing runs on the events a reload itself fires, writes only when content changed, and cannot loop on its own events.
 - **The KungFu Loader is retired.** Every component self-registers through KF5 (each tool's own `mode=kfc_manifest`, registered by `bootstrap_kfc` on reload and daily), so a prompt load now only loads the prompt and the `ship_zen_system` option is gone. The manifest whitelists `<tool>:kfc_manifest`.
-- **FileCabinet has one exit per action.** Get, create, update, upsert, delete and list each set a result and fall through to the engine's single exit. Unconfirmed writes answer `write_unverified` and log a warning (logger `zen_sutra_filecabinet`), so a caller that never reads the answer still leaves a trace. Delete answers `children_deleted`. In-repo callers call `zen_sutra_filecabinet` directly, one script run instead of two; the wrapper still works.
-- **The drawer envelope is `{value, meta, timestamp[, acl]}`.** A cabinet set keeps `meta` and `acl` instead of rebuilding the drawer, and `meta` is always present. Expiry (`expires_after`, `no_autoexpire`, `no_autorecycle`) is stored in `meta` and reported by `get`. Expiry still stored inside an older value counts, and GC normalizes every drawer it moves.
-- **Admin writes go through the door.** AdminTools, Flynn, FileCabinet GC and maint no longer fire raw cabinet events.
-- **Mount chains resolve whole.** Get, create, update and upsert follow a mount chain up to 8 hops to the real target, where writes used to stop at the first hop. A loop, a chain too deep or a missing target refuses with `mount_traversal`.
-- **Flynn skips the ACL migration while the schema stamp is current,** instead of running it on every bootstrap pass. `cabinet_schema_upgrade` runs it when the stamp is behind (`force_action` runs it as a repair).
-- **The console override stands in for every live acknowledgement.** While `cert_admin_console_bypass` is thrown, Identity's `request_live_ack` approves at once with `reason: console_bypass`, and the approval is audited. Hammer, reset, reset_all and take_ownership honor it.
+- **FileCabinet internals.** See [FileCabinet, Rebuilt to Be Lockable](#filecabinet-rebuilt-to-be-lockable). In-repo callers call `zen_sutra_filecabinet` directly, one script run instead of two; the wrapper still works. Expiry still stored inside an older value counts, and GC normalizes every drawer it moves. Writes through a mount chain land on the real target, where they used to stop at the first hop.
 - **`prompt_loader` runs queued,** up to 25 at once, so a burst of registry calls waits its turn instead of being dropped. When `sim_mode_allowed` is unset, it stamps it from Flynn's `input_boolean.zenos_sim_mode_override` (on by default) instead of `false`, so a load right after `reset_all` still resolves its caller.
 - **Identity `area_labels` holds only real HA areas,** so data-routing labels no longer show up in a "who" answer.
 
@@ -113,7 +153,6 @@ FileCabinet enforcement protects the ZenOS access boundary. Home Assistant admin
 - **Flynn log noise.** `flynn_unified_engine` defaults `value` and `action_type` in the template instead of logging `'value' is undefined` on every stepgate pass.
 - **The camera heartbeat runs again.** Its old drawer matched no label, so the Ninja empty-input guard skipped it. It is now a KF5 component of the camera tool, enabled only while cameras carry the `exterior` or `interior` label.
 - **FileCabinet's `write` alias meets the write guards.** A direct engine call with `action: write` skipped the system cabinet, read-only, protected drawer, reserved key and health guards. Aliases now resolve before any guard.
-- **Cabinet guards block.** A write past the 128 KB size cap, or to a cabinet whose contents are unknown at boot, is refused and the cabinet stays as it was. FileCabinet answers `write_unverified`.
 - **`move` onto its own key refuses** with `code: same_key` instead of writing the drawer onto itself and deleting it.
 - **Identity VolumeInfo writes touch only the changed keys,** so an empty read can no longer replace the whole drawer.
 - **Flynn's history mount** reads the mount pointer from the drawer's value and stops re-sending `set_mount` on every bootstrap; a failed mount logs a warning. Flynn's primary-user picker now hides the head of household.
