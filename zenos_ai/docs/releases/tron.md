@@ -264,15 +264,27 @@ Fixes and tooling gaps found running 2026.10.0 on live installs, plus two certif
 
 ## 2026.10.2 — Security Patch
 
-**Status:** Release candidate 1 on `feat/2026.10.2` (cut from `v2026.10.1`)
+**Status:** Release candidate 2 on `feat/2026.10.2` (cut from `v2026.10.1`)
 
-Three authorization fixes. None changes how a correctly behaving agent works; each closes a way to reach something a tool was supposed to refuse.
+Three authorization fixes, plus the field fixes from beta testing that break things or lose data. None changes how a correctly behaving agent works. Everything else from the same testing ships in 2026.11.0.
+
+### Read this before upgrading
+
+- **Re-grant `zenos_agent_basic` if to-do writes fail.** `todo_control` level 1 joined the bundle in 2026.10.1, but an agent that was granted the bundle's certs before then doesn't inherit it. Re-grant `zenos_agent_basic`, or grant `todo_control` level 1, before to-do writes work.
 
 ### Fixed
 
 - **The event emitter no longer forges internal events.** `zen_dojotools_event_emitter` is reachable by agents and passed any `kind` straight to the event bus. Several listeners act on kinds: scheduled reloads, tool dispatch, approval acknowledgements, prompt injection, garbage collection, and cabinet, identity, alert and label signals. Those kinds are now reserved and refused with a `guarded:` error. Internal callers fire their own events directly. Free-form kinds and the summary and ninja forces still work. If you have a listener that acts on a privileged kind, its prefix belongs in the reserved list in `dojotools_systemtools.yaml`.
 - **The help proxy only reaches ZenOS tools.** `zen_dojotools_help` took any script name and called it with `mode=help`, which runs the default path of a script that has no help handler. It now proxies only existing `zen_dojotools_`, `zen_stack_`, `zen_sutra_` and `zen_codex_` tools and refuses anything else with a `guarded:` error.
 - **Cabinet admin refusals hold.** A cert denial, a missing `hammer_ok`, or a refused live acknowledgement set an error and then fell through to the operation, so the operation ran anyway: a hammer without `hammer_ok` wiped the cabinet. Everything after the guards now runs only when no refusal was set, and `mode=help` answers again. `reset` asks for the same per-call live household-admin acknowledgement as `hammer`.
+- **`query` without `filter_json` no longer crashes** (RC2), including calls that pass `domain`, `label` or `areas` at the top level.
+- **Music Assistant `get_library` without a search** (RC2) no longer sends `search: None` and gets a 400; a missing Music Assistant entry or a failed call answers `error`.
+- **Infra survives update entities with no title** (RC2), which had taken down the tool scan, the manifest, Identity's `cert_list` and the KFC bootstrap with it.
+- **Lights and Ectoplasm stop sending empty values** (RC2). Ansible's `omit` rendered as an empty string, so Lights sent `color_temp_kelvin: ''` and Ectoplasm's `repair_list` sent `domain: ''`, and both calls failed.
+- **Live-ack alerts clear** (RC2) as soon as they are answered or time out, instead of staying active for a day.
+- **Grocy by-name stock adds work** (RC2) for a product whose stock unit key is absent; only a key that is present and null is refused.
+- **The cert-denial hint names the real mode** (RC2), `cert_req_grant`.
+- **Zammad agrees with itself about configuration** (RC2): both readers unwrap `integrations_config` stored as JSON text or wrapped in `value`.
 
 ---
 
