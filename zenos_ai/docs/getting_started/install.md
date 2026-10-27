@@ -274,6 +274,8 @@ Continue to [first_run.md](first_run.md) to complete OOBE and enable the summari
 
 If any other sensor shows `warn` or `error`, check its attributes for detail. Flynn will attempt self-repair on the next HA restart or health sensor change.
 
+**Access control ships in audit mode.** FileCabinet's access gate checks every cabinet call but refuses nothing until you switch it to enforce. While it audits, `fc_acl_audit` warnings from `zen_sutra_filecabinet` in the Home Assistant log are expected, not errors: each one is a call enforcement would have refused or asked you to approve. Read them for a while before you turn enforcement on. The switch and the rollback are in the [FileCabinet readme](../scripts/zen_dojotools_filecabinet_readme.md#access-control-acl-v2).
+
 ---
 
 ## Plugins (Optional)
