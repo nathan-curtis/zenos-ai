@@ -1,6 +1,11 @@
 ###############################################################################
 # ZenOS-AI Plugin: Kitchen — Mealie Recipe/Kitchen Integration
-# Version: 5.23.2
+# Version: 5.23.3
+# v5.23.3: foods_audit pages until Mealie's own total_pages (100 per page, 200
+#   page safety cap) instead of a fixed 20 x 50 = 1,000 foods; it reports
+#   total_available (Mealie's total) and truncated, so a short audit is never
+#   read as complete. The advanced GET broker joins orderDirection with & when
+#   the endpoint already carries a query string (a second ? broke perPage).
 # v5.23.2: kitchen bare call (no mode, no case) returns a compact case list
 #   (full catalogue only on mode=help) instead of "Unknown case."
 #
@@ -7027,14 +7032,15 @@ script:
             _fa_unlinked_n: 0
             _fa_unlinked_sample: []
             _fa_done: false
+            _fa_available: -1
+            _fa_pages: 0
+        # Pages until Mealie's total_pages says the catalog is done (a fixed
+        # count stopped at 1,000 foods and the audit looked complete).
         - repeat:
-            count: 20
+            while:
+              - condition: template
+                value_template: '{{ not _fa_done and repeat.index <= 200 }}'
             sequence:
-            - choose:
-              - conditions:
-                - condition: template
-                  value_template: '{{ not _fa_done }}'
-                sequence:
                 - action: script.zen_sutra_mealie
                   response_variable: _fa_page_raw
                   continue_on_error: true
@@ -7044,13 +7050,18 @@ script:
                     endpoint: foods
                     payload: '{{ none }}'
                     pageNumber: '{{ repeat.index }}'
-                    perPage: 50
+                    perPage: 100
                 - variables:
-                    _fa_items: >-
-                      {{
-                        _fa_page_raw.result.content.get('items', [])
-                        if _fa_page_raw.result.content is mapping else []
-                      }}
+                    _fa_content: >-
+                      {{ _fa_page_raw.result.content
+                         if (_fa_page_raw is mapping and _fa_page_raw.get('result') is mapping
+                             and _fa_page_raw.result.content is mapping) else {} }}
+                    _fa_items: "{{ _fa_content.get('items', []) if _fa_content is mapping else [] }}"
+                    _fa_pages: '{{ repeat.index }}'
+                    _fa_available: >-
+                      {{ (_fa_content.get('total') | int(-1)) if (_fa_content is mapping and _fa_content.get('total') is not none) else _fa_available }}
+                    _fa_last_page: >-
+                      {{ (_fa_content.get('total_pages') | int(0)) if _fa_content is mapping else 0 }}
                 - variables:
                     _fa_page_unlinked: >-
                       {%- set ns = namespace(out=[]) -%}
@@ -7067,11 +7078,13 @@ script:
                     _fa_unlinked_n: '{{ _fa_unlinked_n + (_fa_page_unlinked | length) }}'
                     _fa_linked_n: '{{ _fa_linked_n + (_fa_items | length) - (_fa_page_unlinked | length) }}'
                     _fa_unlinked_sample: '{{ (_fa_unlinked_sample + _fa_page_unlinked)[:25] }}'
-                - choose:
-                  - conditions:
+                - if:
                     - condition: template
-                      value_template: '{{ _fa_items | length < 50 }}'
-                    sequence:
+                      value_template: >-
+                        {{ (_fa_items | length) == 0
+                           or (_fa_last_page > 0 and repeat.index >= _fa_last_page)
+                           or (_fa_last_page == 0 and (_fa_items | length) < 100) }}
+                  then:
                     - variables:
                         _fa_done: true
         - variables:
@@ -7079,6 +7092,9 @@ script:
               status: success
               case: foods_audit
               total_foods: '{{ _fa_total | int }}'
+              total_available: '{{ _fa_available | int if (_fa_available | int) >= 0 else none }}'
+              pages_read: '{{ _fa_pages | int }}'
+              truncated: '{{ (not _fa_done) or ((_fa_available | int) > (_fa_total | int)) }}'
               linked: '{{ _fa_linked_n | int }}'
               unlinked: '{{ _fa_unlinked_n | int }}'
               coverage_pct: >-
@@ -8475,7 +8491,7 @@ rest_command:
       {%- if endpoint[0] == '/' -%}
           {%- set endpoint = endpoint[1:] %}
       {%- endif -%}
-      {{ states('input_text.mealie_url') | trim('/') }}/api/{{ endpoint }}?orderDirection={{ orderDirection | default("desc") }}
+      {{ states('input_text.mealie_url') | trim('/') }}/api/{{ endpoint }}{{ '&' if '?' in endpoint else '?' }}orderDirection={{ orderDirection | default("desc") }}
       {%- if search is defined and search not in ["", None] -%}
           &search={{ search | urlencode }}
       {%- endif %}

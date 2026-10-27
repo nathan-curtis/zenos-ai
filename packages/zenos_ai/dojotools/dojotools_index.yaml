@@ -1,6 +1,18 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Index Cluster
-# Version: 5.1.5
+# Version: 5.1.7
+# v5.1.7: inspect device reads use config_entry_id (config_entries is
+#   deprecated, removed in HA 2027.10) and fall back only where it is absent.
+#   zen_dojotools_query with no filter_json (or a domain/label/areas
+#   shorthand at the top level) no longer crashes on the undefined filter_json:
+#   ZQ-1 gets the parsed filter, and the shorthands seed it when filter_json
+#   does not name them.
+# v5.1.6: inspect treats an entity with a variables mapping and a valid cabinet
+#   header (VolumeInfo with an id) as a cabinet: +attributes is suppressed for
+#   all of them (it relied on the optional VolumeInfo validation stamp and
+#   dumped every drawer of a cabinet without it). The drawer_key peek answers only what FileCabinet's read
+#   rule lets this agent read (resolved target, cert; an ack rule shows
+#   nothing), #10626.
 # v5.1.5: inspect takes a single entity_id as text (it became the string "[x]" and the
 #   loop died); label blurbs come from the label description, else the Dojo drawer.
 # v5.1.4: zen_dojotools_query bare call returns help (it crashed on the undefined
@@ -281,6 +293,21 @@ script:
                 {{- text | from_json(default={}) -}}
               {%- endif -%}
             {%- endif -%}
+      - variables:
+          # areas (and other names) are also HA template functions, so a
+          # shorthand counts only as a string or a list, never as defined.
+          parsed_filter: >
+            {%- set ns = namespace(f=(parsed_filter if parsed_filter is mapping else {})) -%}
+            {%- if domain is defined and domain is string and domain | trim != '' and not ns.f.get('domain') -%}
+              {%- set ns.f = dict(ns.f, domain=domain | trim) -%}
+            {%- endif -%}
+            {%- if label is defined and label is string and label | trim != '' and not ns.f.get('label') -%}
+              {%- set ns.f = dict(ns.f, label=label | trim) -%}
+            {%- endif -%}
+            {%- if areas is defined and (areas is string or (areas is iterable and areas is not mapping and areas is not callable)) and areas | count > 0 and not ns.f.get('areas') and not ns.f.get('area') -%}
+              {%- set ns.f = dict(ns.f, areas=areas) -%}
+            {%- endif -%}
+            {{- ns.f -}}
           filter_domain: "{{- parsed_filter.get('domain') -}}"
           _target_entities: "{{- target_entities | default([], true) -}}"
       # ZQ-1 never throws on an unrecognized filter_json key — it's silently
@@ -335,7 +362,7 @@ script:
       - variables:
           result: >
             {%- import 'zenos_ai/zen_query.jinja' as zen -%}
-            {{- zen.zen_filter(filter_json,  auto_base_list) -}}
+            {{- zen.zen_filter(parsed_filter,  auto_base_list) -}}
       - if:
         - condition: template
           value_template: "{{- dry_run | default(false) -}}"
@@ -362,7 +389,7 @@ script:
           sequence:
           - data:
               name: ZQ-1 FILTER
-              message: "{{- filter_json -}}"
+              message: "{{- parsed_filter -}}"
             action: logbook.log
           - data:
               name: ZQ-1 BASESET
@@ -675,7 +702,8 @@ script:
             - variables:
                 _device_info_payload: >-
                   {%- set _ents = device_entities(_target_dev) | list -%}
-                  {%- set _cfg = (device_attr(_target_dev, 'config_entries') or []) | list -%}
+                  {%- set _cfe = device_attr(_target_dev, 'config_entry_id') -%}
+                  {%- set _cfg = [_cfe] if _cfe else (device_attr(_target_dev, 'config_entries') or []) | list -%}
                   {%- set _area = device_attr(_target_dev, 'area_id') -%}
                   {%- set _floor = floor_id(area_name(_area)) if _area is not none else none -%}
                   {{ {
@@ -1215,7 +1243,8 @@ script:
                   {%- if dev_id is not none -%}
                     {%- set via = device_attr(dev_id, 'via_device_id') -%}
                     {%- set siblings = device_entities(dev_id) | reject('equalto', current_entity) | list -%}
-                    {%- set config_entries = (device_attr(dev_id, 'config_entries') or []) | list -%}
+                    {%- set _cfe = device_attr(dev_id, 'config_entry_id') -%}
+                    {%- set config_entries = [_cfe] if _cfe else (device_attr(dev_id, 'config_entries') or []) | list -%}
                     {{- 
                       {
                         'via_device_id': via,
@@ -1232,8 +1261,14 @@ script:
                 {%- endif -%}
 
               #@todo - why return the word '{ ... }'
+              # A cabinet is an entity with a variables mapping AND a valid
+              # cabinet header (VolumeInfo with an id), read from the entity
+              # itself: attrs_raw can arrive stringified (cabinet_header then
+              # empty), and the VolumeInfo validation stamp is optional; neither
+              # may decide whether drawers leak (#10626).
               safe_attributes: >
-                {%- if is_cabinet_sensor -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- if state_attr(current_entity, 'variables') is mapping and (CABS.acl_guid_of(current_entity) | trim) != '' -%}
                   { "notice": "Attributes suppressed for cabinet sensor. Use FileCabinet tools for full volume access."  }
               
                 {%- else -%}
@@ -1318,12 +1353,23 @@ script:
 
                   {%- endif -%}
                 {%- endif -%}
+              # The peek answers only what FileCabinet's read rule lets this
+              # agent read (the resolved target's ACL, cert included); a rule
+              # that needs a live ack shows nothing here (#10626).
               drawer_result: >
-                {%- if is_cabinet_sensor and drawer_key_input | length > 0 -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- if state_attr(current_entity, 'variables') is mapping and (CABS.acl_guid_of(current_entity) | trim) != '' and drawer_key_input | length > 0 -%}
+                  {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                  {%- set _who = ID.caller() | from_json -%}
                   {%- set _vars = state_attr(current_entity, 'variables') or {} -%}
                   {%- set ns = namespace(out={}) -%}
                   {%- for dk in drawer_key_input -%}
-                    {%- set _d = _vars.get(dk) -%}
+                    {%- set _t = CABS.fc_resolve(current_entity, dk) | from_json -%}
+                    {%- set _rvol = _t.vol if _t.status in ['direct', 'resolved', 'not_found_in_target'] else current_entity -%}
+                    {%- set _chk = CABS.acl_check(CABS.acl_for(_rvol, dk), 'r', {'guid': _who.guid, 'origin': 'agent'}) | from_json -%}
+                    {%- set _rc = _chk.cert | string | trim -%}
+                    {%- set _cert_ok = _rc == '' or (ID.caller(_rc | regex_replace(':[0-9]+$', ''), (_rc | regex_findall(':([0-9]+)$') | first | default('1')) | int(1)) | from_json).cert_ok -%}
+                    {%- set _d = _vars.get(dk) if (_chk.who_ok and _cert_ok and not _chk.ack) else 'denied' -%}
                     {%- set _dk_prefix = dk ~ '/' -%}
                     {%- set _sub_ns = namespace(keys=[]) -%}
                     {%- for vk in _vars.keys() -%}
@@ -1331,7 +1377,9 @@ script:
                         {%- set _sub_ns.keys = _sub_ns.keys + [vk] -%}
                       {%- endif -%}
                     {%- endfor -%}
-                    {%- if _d is not mapping -%}
+                    {%- if _d == 'denied' -%}
+                      {%- set ns.out = ns.out | combine({dk: {'error': 'Not readable by this agent (FileCabinet read rule).'}}) -%}
+                    {%- elif _d is not mapping -%}
                       {%- set ns.out = ns.out
                           | combine( {
                             dk: { "error": "Drawer not found." }

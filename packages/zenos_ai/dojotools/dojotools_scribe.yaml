@@ -1,6 +1,14 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Scribe
-# Version: 5.2.2
+# Version: 5.3.0
+# v5.3.0: target guard (#10626). Write modes refuse a reserved or built-in
+#   locked key and an existing drawer that is not a scribe artifact (no
+#   stored artifact_class, no KFC fields): code not_a_scribe_artifact.
+#   The kfc cert gate also fires on the drawer's stored class, not only the
+#   caller's artifact_class. Every FileCabinet call names caller_tool; a
+#   call into a caller-chosen cabinet other than the dojo runs as the agent
+#   (caller_origin agent), so the gate applies the agent's own rights.
+#
 # v5.2.2: drawer reads take value as the content (the {key: value} unwrap left from
 #   the retired FileCabinet read reshape is gone).
 #
@@ -1044,11 +1052,54 @@ script:
       # dry_run/read/repair) never touch this at all. This is a domain-
       # specific gate on ONE semantic act, not a substitute for the
       # drawer/cabinet-level ACLs FileCabinet will eventually own itself.
+      # The class that decides it is the drawer's own (stored artifact_class,
+      # or KFC fields on a published component), never only the caller's.
       # -------------------------------------------------------------------
+      # Target guard (#10626): scribe writes only scribe artifacts. A write
+      # mode refuses a reserved or built-in-locked key, and an existing
+      # drawer that is not a scribe artifact (no stored artifact_class and
+      # no KFC fields), so no caller-chosen cabinet/key reaches credentials,
+      # approvals, membership or any other drawer through scribe.
+      - variables:
+          _sg_writes: "{{ _mode in ['new_thought', 'patch', 'replace', 'clear_field', 'delete', 'formalize_scroll', 'publish_kfc', 'republish_kfc', 'repair'] }}"
+          _sg_targets: >-
+            {%- if _mode == 'publish_kfc' -%}
+              {{ [{'cab': _dojo_cab, 'key': (_component_key if _component_key != '' else _slug)}, {'cab': _target_cab, 'key': _storage_key}] }}
+            {%- elif _mode == 'republish_kfc' -%}
+              {{ [{'cab': _dojo_cab, 'key': _storage_key}] }}
+            {%- else -%}
+              {{ [{'cab': _target_cab, 'key': _storage_key}] }}
+            {%- endif -%}
+      - variables:
+          _sg_check: >-
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set ns = namespace(why=[], cls={}) -%}
+            {%- for t in _sg_targets -%}
+              {%- set k = t.key | string | trim -%}
+              {%- set raw = (state_attr(t.cab, 'variables') or {}).get(k) if t.cab else none -%}
+              {%- set v = raw.get('value') if raw is mapping else none -%}
+              {%- set v = (v | from_json(none)) if v is string else v -%}
+              {%- if v is mapping and 'value' in v and not v.get('artifact_class') and not v.get('index_call') and not v.get('component_summary') -%}
+                {%- set v = v.get('value') -%}
+                {%- set v = (v | from_json(none)) if v is string else v -%}
+              {%- endif -%}
+              {%- set c = (v.get('artifact_class') or '') | string | lower | trim if v is mapping else '' -%}
+              {%- set c = c if c != '' else ('kfc' if v is mapping and (v.get('index_call') or v.get('component_instructions') or v.get('component_summary') or v.get('seed')) else '') -%}
+              {%- set ns.cls = dict(ns.cls, **{t.cab ~ '/' ~ k: c}) -%}
+              {%- if k == '' or k.startswith('_') or k in ['ai_cabinet_volumeinfo', 'meta', 'members'] or (CABS.acl_builtin_ops(k) | from_json) | count > 0 -%}
+                {%- set ns.why = ns.why + [k ~ ' is a reserved or locked drawer'] -%}
+              {%- elif raw is mapping and c == '' -%}
+                {%- set ns.why = ns.why + [t.cab ~ '/' ~ k ~ ' exists and is not a scribe artifact'] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{- {'why': ns.why, 'cls': ns.cls} -}}
+      - variables:
+          _sg_stored_class: "{{ _sg_check.cls.get(_target_cab ~ '/' ~ _storage_key, '') }}"
+          _sg_refusal: "{{ (_sg_check.why | join('; ')) if _sg_writes else '' }}"
       - variables:
           _scribe_touches_live_kfc: >-
             {{ _mode in ['publish_kfc', 'republish_kfc']
-               or (_mode in ['patch', 'replace', 'clear_field', 'delete'] and _artifact_class == 'kfc') }}
+               or (_mode in ['patch', 'replace', 'clear_field', 'delete'] and (_artifact_class == 'kfc' or _sg_stored_class == 'kfc')) }}
       - if:
           - condition: template
             value_template: "{{ _scribe_touches_live_kfc }}"
@@ -1085,6 +1136,20 @@ script:
             {%- endif -%}
 
       - choose:
+          - alias: Target guard refusal
+            conditions:
+              - condition: template
+                value_template: "{{ _sg_refusal != '' }}"
+            sequence:
+              - variables:
+                  result:
+                    ok: false
+                    tool: zen_dojotools_scribe
+                    mode: "{{ _mode }}"
+                    code: not_a_scribe_artifact
+                    error: "guarded: {{ _sg_refusal }}"
+                    message: Scribe writes only its own artifacts (thoughts, scrolls, published components). Use the tool that owns that drawer.
+                    caller_token: "{{ caller_token | default('') }}"
           # ================================================================
           # HELP
           # ================================================================
@@ -1216,6 +1281,8 @@ script:
                 default:
                   - action: script.zen_sutra_filecabinet
                     data:
+                      caller_tool: zen_dojotools_scribe
+                      caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                       action_type: get
                       show_hidden_volumes: false
                       volume_entity_id:
@@ -1413,6 +1480,8 @@ script:
                         }}
                   - action: script.zen_sutra_filecabinet
                     data:
+                      caller_tool: zen_dojotools_scribe
+                      caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                       action_type: update
                       mode: replace
                       show_hidden_volumes: false
@@ -1476,6 +1545,8 @@ script:
                 default:
                   - action: script.zen_sutra_filecabinet
                     data:
+                      caller_tool: zen_dojotools_scribe
+                      caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                       action_type: get
                       show_hidden_volumes: false
                       volume_entity_id:
@@ -1531,6 +1602,8 @@ script:
                         {%- endif -%}
                   - action: script.zen_sutra_filecabinet
                     data:
+                      caller_tool: zen_dojotools_scribe
+                      caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                       action_type: update
                       mode: replace
                       show_hidden_volumes: false
@@ -1590,6 +1663,8 @@ script:
                 default:
                   - action: script.zen_sutra_filecabinet
                     data:
+                      caller_tool: zen_dojotools_scribe
+                      caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                       action_type: update
                       mode: replace
                       show_hidden_volumes: false
@@ -1648,6 +1723,8 @@ script:
                 default:
                   - action: script.zen_sutra_filecabinet
                     data:
+                      caller_tool: zen_dojotools_scribe
+                      caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                       action_type: get
                       show_hidden_volumes: false
                       volume_entity_id:
@@ -1696,6 +1773,8 @@ script:
                         {{ ns.obj | tojson }}
                   - action: script.zen_sutra_filecabinet
                     data:
+                      caller_tool: zen_dojotools_scribe
+                      caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                       action_type: update
                       mode: replace
                       show_hidden_volumes: false
@@ -1755,6 +1834,8 @@ script:
                 default:
                   - action: script.zen_sutra_filecabinet
                     data:
+                      caller_tool: zen_dojotools_scribe
+                      caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                       action_type: delete
                       show_hidden_volumes: false
                       force_action: true
@@ -1800,6 +1881,8 @@ script:
                 default:
                   - action: script.zen_sutra_filecabinet
                     data:
+                      caller_tool: zen_dojotools_scribe
+                      caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                       action_type: get
                       show_hidden_volumes: false
                       volume_entity_id:
@@ -1850,6 +1933,8 @@ script:
                         }}
                   - action: script.zen_sutra_filecabinet
                     data:
+                      caller_tool: zen_dojotools_scribe
+                      caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                       action_type: update
                       mode: replace
                       show_hidden_volumes: false
@@ -1915,6 +2000,8 @@ script:
                 default:
                   - action: script.zen_sutra_filecabinet
                     data:
+                      caller_tool: zen_dojotools_scribe
+                      caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                       action_type: get
                       show_hidden_volumes: false
                       volume_entity_id:
@@ -2065,6 +2152,8 @@ script:
                         then:
                           - action: script.zen_sutra_filecabinet
                             data:
+                              caller_tool: zen_dojotools_scribe
+                              caller_origin: internal
                               action_type: update
                               mode: replace
                               show_hidden_volumes: false
@@ -2161,6 +2250,8 @@ script:
                 default:
                   - action: script.zen_sutra_filecabinet
                     data:
+                      caller_tool: zen_dojotools_scribe
+                      caller_origin: internal
                       action_type: get
                       show_hidden_volumes: false
                       volume_entity_id:
@@ -2266,6 +2357,8 @@ script:
                     then:
                       - action: script.zen_sutra_filecabinet
                         data:
+                          caller_tool: zen_dojotools_scribe
+                          caller_origin: internal
                           action_type: update
                           mode: replace
                           show_hidden_volumes: false
@@ -2426,6 +2519,8 @@ script:
                     default:
                       - action: script.zen_sutra_filecabinet
                         data:
+                          caller_tool: zen_dojotools_scribe
+                          caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                           action_type: get
                           show_hidden_volumes: false
                           volume_entity_id:
@@ -2513,6 +2608,8 @@ script:
                               # Live run: write normalized body back
                               - action: script.zen_sutra_filecabinet
                                 data:
+                                  caller_tool: zen_dojotools_scribe
+                                  caller_origin: "{{ 'internal' if _target_cab == _dojo_cab else 'agent' }}"
                                   action_type: update
                                   mode: replace
                                   show_hidden_volumes: false
