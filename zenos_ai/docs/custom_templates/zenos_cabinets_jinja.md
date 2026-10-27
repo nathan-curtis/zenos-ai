@@ -1,6 +1,6 @@
 # zenos_cabinets.jinja — Cabinet Macro Library
 
-**Version:** 1.5.2 (introduced in 2026.4.0 'Ectoplasm'; ACL macros and `fc_resolve` in 2026.11.0 'This Is Spinal Tap')
+**Version:** 1.6.3 (introduced in 2026.4.0 'Ectoplasm'; ACL macros, `fc_resolve` and the expansion macros in 2026.11.0 'This Is Spinal Tap')
 **File:** `custom_templates/zenos_ai/zenos_cabinets.jinja`
 **Status:** Stable. Required by `zen_os_1.jinja`, `zenos_health.jinja`, `dojotools_filecabinet`, and any template that reads cabinet drawers.
 
@@ -137,9 +137,9 @@ The one ACL record Identity writes and FileCabinet enforces: VolumeInfo `acls` `
 | `acl_lifecycle_tools()` | JSON list | The `@tool` principals that mount, dismount and provision cabinets (`zen_dojotools_provisioner`, `flynn_initialize_cabinets`); added to every class's `a` rule but the vault's |
 | `acl_schema_current()` | String | The ACL schema version `acl_migrate` brings an install to (3) |
 | `acl_schema_is_current()` | String | `True` when the system cabinet's `acl_schema` stamp is current; Flynn's bootstrap skips the migration then |
-| `acl_record(entity_id, idmap={})` | JSON object | `{v, stored_v, class, self, owner, prime, partners, ops, ops_stored, ops_source, unresolved}`. Reads v1 records compatibly. `ops_stored` is what a writer stores back; `idmap` supplies ids for cabinets about to get one |
-| `acl_for(entity_id, drawer_key='')` | JSON object | `{class, self, owner, prime, partners, ops, source}`: effective ops for a drawer, each from builtin, else drawer, else cabinet, else the class default; `source` names where each op came from. `prime` falls back to the household's prime |
-| `acl_op_class(action)` | String | `r`, `w`, `d` or `a` for a FileCabinet action (unknown actions are `a`) |
+| `acl_record(entity_id, idmap={})` | JSON object | `{v, stored_v, class, self, owner, prime, partners, ops, ops_stored, ops_source, unresolved, inherited_from}`. Reads v1 records compatibly. `ops_stored` is what a writer stores back; `idmap` supplies ids for cabinets about to get one. An expansion (VolumeInfo `cabinet_class: expansion` + `hosted_by`) answers with its host's record and names the host in `inherited_from`; one hop, so a host that is itself an expansion is not followed |
+| `acl_for(entity_id, drawer_key='')` | JSON object | `{class, self, owner, prime, partners, ops, source, inherited_from}`: effective ops for a drawer, each from builtin, else drawer, else cabinet, else the class default; `source` names where each op came from. `prime` falls back to the household's prime. A mount pointer answers with its cabinet's ACL, never a drawer `acl` |
+| `acl_op_class(action)` | String | `r`, `w`, `d` or `a` for a FileCabinet action (`expand_drawer`, `collapse_drawer` and unknown actions are `a`) |
 | `acl_check(acl, op, subject)` | JSON object | `{op, who_ok, via, cert, ack, source, reason}`. A caller matched by `@tool:<script>` passes on that tool's own gates (`via: tool`, no rule cert or ack). `subject` is `{guid, origin, tool}` or a bare GUID (an agent call) |
 | `acl_schema_check(entity_id)` | JSON object | `{ok, why}`. `why` can name: no VolumeInfo, no id, legacy guid field, no flags, acls not v2, stray VolumeInfo copies |
 
@@ -170,7 +170,11 @@ The one ACL record Identity writes and FileCabinet enforces: VolumeInfo `acls` `
 
 | Macro | Returns | Description |
 |-------|---------|-------------|
-| `fc_resolve(entity_id, drawer_key, max_hops=8)` | JSON object | `{status, vol, key, depth, visited, reason, loop_at, fc_args, entry}`: the real target behind a mount chain. `status` is `absent`, `direct`, `resolved`, `live`, `not_found_in_target`, `unresolvable`, `loop_detected` or `depth_limit_exceeded`. FileCabinet's one mount resolver |
+| `fc_resolve(entity_id, drawer_key, max_hops=8)` | JSON object | `{status, vol, key, depth, visited, reason, loop_at, fc_args, entry[, expanded_root]}`: the real target behind a mount chain. `status` is `absent`, `direct`, `resolved`, `live`, `not_found_in_target`, `unresolvable`, `loop_detected` or `depth_limit_exceeded`. Softlinks and expansions are one chain: at each cabinet, a key it doesn't hold under an expanded root hops into that expansion, and a softlink there is followed on; every hop lands in `visited`. FileCabinet's one mount resolver |
+| `expansion_root_of(entity_id, drawer_key)` | JSON object | `{root, target}`: the nearest ancestor of the key that is a pointer into an expansion this cabinet hosts, and that expansion. Empty strings when there is none. The key itself is not checked |
+| `expansion_plan(entity_id, drawer_key)` | JSON object | What a move, copy or delete of the key touches: `mode` is `self` (the key is an expanded root), `ancestor` (it sits under one), `contains` (its tree holds expanded roots) or `none`, with `roots: [{root, target, scope}]` |
+| `cabinet_hosts_expansion(entity_id)` | String | `true` when any expansion slot is stamped as hosted by this cabinet; a cheap check before building the view |
+| `cabinet_expanded_view(entity_id)` | JSON object | The cabinet's drawers as one tree: its own, plus each expansion's keys under the expanded root it doesn't hold itself (children added after the move). `get` (children) and `list` read it |
 | `cabinet_drawer_value_mounted(entity_id, drawer_key, fallback={})` | JSON object/any | Like `cabinet_drawer_value`, following one mount hop |
 | `drawer_normalize(env)` | JSON object | `{ok, changed, value, meta, repairs}`: a drawer envelope normalized to `{value, meta}` (nested envelopes unwrapped, expiry moved into `meta`). `ok: false` means do not write |
 

@@ -633,6 +633,8 @@ zen_dojotools_identity:
 
 Needs cert `zenos.identity.acl_take_ownership` and a live ack on every call (the console override stands in for the ack). On a cabinet, the caller becomes the ACL owner and `acl_ops` replaces the named ops. On a drawer, the drawer's ops become `acl_ops`; empty means inherit from the cabinet. Only the ACL is rewritten, never the value.
 
+**Expansions.** An expansion's cabinet ACL is its host's, so `acl_set` and `take_ownership` on an expansion cabinet are refused, and the refusal names the host to set it on. A drawer `expand_drawer` moved keeps its own ACL, so a drawer-scope call on that key in the host writes the drawer's ACL on the copy in the expansion, where the drawer lives.
+
 Answer fields: `status`, `target`, `old_acl`, `new_acl`, `approver` (`live_ack`, `console_bypass` or `owner`). Refusal codes: `invalid_request`, `caller_unresolved`, `cert_required`, `ack_declined`, `ack_not_approved`. Audited as `zen_event acl_ownership_taken`.
 
 ### `cert_list` — Combined Cert Catalog + Live-Grant View (2026-08-15)

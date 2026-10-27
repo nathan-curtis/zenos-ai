@@ -1,4 +1,4 @@
-# Zen DojoTools FileCabinet — v6.27.0
+# Zen DojoTools FileCabinet — v6.31.0
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 **ZenOS Release:** 2026.11.0 'This Is Spinal Tap'
@@ -226,7 +226,9 @@ A VirtualDrawer has `mount_point: true` in its `value`:
 }
 ```
 
-Mount traversal is a redirect, not execution. `get`, `create`, `update` and `upsert` resolve the whole chain once (CABS `fc_resolve`, up to 8 hops) and act on the real target. A chain that loops, runs too deep or has no target refuses with `mount_traversal: {status, reason, loop_at, depth, visited}`. Delete, move, copy and the mount commands act on the pointer itself.
+Mount traversal is a redirect, not execution. `get`, `create`, `update` and `upsert` resolve the whole chain once (CABS `fc_resolve`, up to 8 hops) and act on the real target. A chain that loops, runs too deep or has no target refuses with `mount_traversal: {status, reason, loop_at, depth, visited}`. Delete, move, copy and the mount commands act on a softlink itself; the pointers `expand_drawer` leaves behave differently (see [Expansions](#expansions--expand_drawer-and-collapse_drawer)).
+
+Softlinks and expansions are one chain. At any cabinet on the way, a key under an expanded root hops into that expansion, and a softlink there is followed on. Softlinks from and to expanded drawers are normal.
 
 Mounts are set with `set_mount` (requires `key` + `target_guid`). They are removed with `remove_mount`. The `clone` action copies mount point drawers through to the destination (noted in the response as `mounts_copied`).
 
@@ -286,6 +288,53 @@ The whitelist supports three entry formats, parsed via a `tool[:mode]` split:
 Adding a bare `*` or a `tool:` entry with an empty mode suffix is rejected by Admintools on add.
 
 Mode-scoping exists so a live drawer can expose a self-describing or read-only mode (e.g. `kfc_manifest`) without opening any write path on that tool. `zen_dojotools_finance`, for example, is scoped `zen_dojotools_finance:kfc_manifest` only — no live drawer can reach a finance write mode. See [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools) for the self-registration flow that writes these entries.
+
+---
+
+## Expansions — `expand_drawer` and `collapse_drawer`
+
+An expansion gives a cabinet more room. `expand_drawer` moves a root drawer and its whole tree (`path` and every `path/...` child) into an expansion slot, and leaves one mount pointer per key in the source cabinet. Each drawer moves unchanged: value, meta and the drawer's own `acl`.
+
+**The rules:**
+
+- **An expansion mounts at a root drawer.** A nested path is refused.
+- **One expansion holds one drawer and its children.** A slot that already holds another drawer is refused with `target_holds_another_drawer`.
+- **A drawer expands once.** A drawer that is already expanded, or a tree that holds any expansion pointer, is refused before anything is written.
+- **An expanded drawer is a permanent redirect for its whole tree.** Reads and writes follow it, and so do children written after the move: they land in the expansion. `get` (children) and `list` show the cabinet and its expansion as one tree.
+- **Pointers are immutable.** `expand_drawer` creates them. Only `move`, `delete` and `collapse_drawer` remove them. `set_mount` and `remove_mount` refuse them, and they are never copied, moved or rewritten.
+- **An expansion is its host's.** It answers with the host cabinet's ACL, and a drawer's own `acl` travels with it (see [Access Control](#access-control-acl-v2)).
+
+System, credential and approval drawers do not move. One call moves at most 30 keys.
+
+### `expand_drawer`
+
+| Field | Required | Meaning |
+|---|---|---|
+| `source_cabinet` | yes | The cabinet that holds the drawer |
+| `path` | yes | A root drawer (no `/`) |
+| `target_cabinet` | no | A free expansion slot. Omitted, FileCabinet picks one with room. |
+| `space_threshold` | no | Abort if the source cabinet stays at or above this percentage (default 85) |
+
+The call mounts the slot if it needs to, then merges the expansion stamp (`cabinet_class: expansion`, `hosted_by`) into the slot's VolumeInfo. The slot keeps its id, flags and acls. It copies the tree, verifies every key byte for byte, proves each read resolves through the source, and only then reports `success` with `moved_keys`, `bytes_moved` and the source cabinet's space before and after. Any failure rolls everything back.
+
+A bad target (not a slot, or a slot that belongs to another host) answers `status: error` with a `guarded:` reason. No room answers `abort` with `insufficient_target_space` or `no_expansion_slot_has_room`.
+
+### `collapse_drawer`
+
+Takes `source_cabinet` and `path`, and undoes an expansion:
+
+1. **Size preflight.** If the tree won't fit back in the source cabinet, the call is refused with `insufficient_source_space` before anything is written.
+2. **Copy back.** The children are copied over their pointers first, and the root last.
+3. **Verify.** Every key is compared byte for byte. A failure puts the pointers back and leaves the expansion untouched.
+4. **Teardown.** The expansion's copies are removed, the expansion stamp comes off VolumeInfo, and the slot is dismounted. `slot_torn_down` reports it. If the slot doesn't confirm its teardown, the answer is `warning`: the drawer is back and verified, and `expansion_sitrep` shows the slot.
+
+### Move, copy and delete in an expanded tree
+
+`get`, `list`, `move`, `copy` and `delete` work on the real drawers wherever they live. A destination under an expanded root lands in its expansion. Every write is size-checked per destination cabinet before anything is written, and a failed write is taken back. `move` and `delete` drop the source pointers. An operation that empties an expansion (moving or deleting the expanded root) tears it down, so no orphan is left behind.
+
+Softlinks inside an expanded tree are ordinary drawers. `set_mount` and `remove_mount` on a key under an expanded root act in the expansion that holds the tree. `delete` removes a softlink. `move` and `copy` refuse one as they refuse any mount (`force_action` carries the pointer as is). `expand_drawer` and `collapse_drawer` carry softlinks unchanged, and refuse one that would point at its own cabinet afterwards.
+
+**Upgrading:** a slot stamped by the older `expand_drawer` now answers with its host's ACL. The class stamped on the slot itself no longer applies.
 
 ---
 
@@ -377,7 +426,7 @@ Creates a VirtualDrawer or LiveDrawer at the specified key.
 - Blocked if the key exists and is not already a mount point, unless `force_action: true`
 
 ### `remove_mount`
-Removes a mount point drawer. Errors if the key does not exist or is not a mount point.
+Removes a mount point drawer. Errors if the key does not exist or is not a mount point. Refuses the pointers `expand_drawer` made; use `collapse_drawer`, `move` or `delete`.
 
 ### `mount_cabinet`
 Transitions a cabinet from `online_unmounted` to `online_mounted`. Idempotent if already mounted.
@@ -389,6 +438,9 @@ Transitions a cabinet to `online_unmounted` (puts it in the stacks). Blocked if:
 
 ### `set_cabinet_ro`
 Stamps `cabinet_ro: true` in the cabinet's `AI_Cabinet_VolumeInfo.flags`. Blocked on `sensor.zenos_system_cabinet`.
+
+### `expand_drawer` / `collapse_drawer`
+Moves a root drawer and its tree into an expansion slot, and back. See [Expansions](#expansions--expand_drawer-and-collapse_drawer).
 
 ### `inspect`
 Returns the Lens Bus registry entry for the FileCabinet provider. Surfaces subdrawers inline when called on a CabCeption path.
@@ -453,9 +505,11 @@ Each op resolves on its own: a built-in lock, else the drawer's rule, else the c
 | `r` | get, list, search and other reads |
 | `w` | create, update, upsert, relabel, set_mount, the copy destination |
 | `d` | delete, move, remove_mount |
-| `a` | mount_cabinet, dismount_cabinet, set_cabinet_ro, expand_drawer, and any unknown action |
+| `a` | mount_cabinet, dismount_cabinet, set_cabinet_ro, expand_drawer, collapse_drawer, and any unknown action |
 
-Get and the writes are checked against the resolved mount target; delete, move, copy and the mount commands against the pointer itself.
+**Every hop is checked.** Each pointer a mount chain passes needs `r`, and the drawer the chain ends on needs the action's op. A caller that can't read a pointer doesn't get past it. `expand_drawer` checks `a` on the source.
+
+**A pointer answers with its cabinet's ACL,** never a drawer `acl`. **An expansion answers with its host's ACL** (one hop; the answer names it in `inherited_from`). An expansion can't have an ACL of its own: Identity's `acl_set` and `take_ownership` refuse it and name the host. A drawer keeps its own `acl` wherever it lives, so a drawer-scope `acl_set` on an expanded key writes it on the copy in the expansion.
 
 **The gate is audit-only.** It refuses nothing. When it would deny or would ask for a live acknowledgement, it logs `fc_acl_audit` and the answer carries:
 
@@ -974,7 +1028,7 @@ Tapestry is how you build a composed knowledge surface from multiple live drawer
 | Mode | What It Does |
 |------|-------------|
 | `fleet` | Lists all known cabinet volumes with health, mount state, GUID, and capacity. System-wide view. |
-| `expansion_sitrep` | Returns the status of all expansion cabinet mounts: which are online_mounted, which are online_unmounted (stacks), which have pending mount activation. |
+| `expansion_sitrep` | Returns the status of all expansion cabinet mounts: which are online_mounted, which are online_unmounted (stacks), which have pending mount activation, what each slot holds, and how full it is. |
 
 ---
 

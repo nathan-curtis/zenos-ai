@@ -60,7 +60,7 @@ Every lock in this release is built, wired to its door, and running in **audit m
 | Planned | Landed (audit mode) | Still to come |
 |---|---|---|
 | Access-path audit | The audit drove the default table and caller origin below. | Finishing the map of every path in. |
-| FileCabinet security | One gate, on the resolved mount target. Separate read, write, delete and admin rules. Default rules for every cabinet class, and locks on credential and approval drawers. Effective access per drawer (`CABS.acl_for`). | Refusing for real. Hiding unreadable drawers from listings and search. |
+| FileCabinet security | One gate, checking every hop of a mount chain. Separate read, write, delete and admin rules. Default rules for every cabinet class, and locks on credential and approval drawers. Effective access per drawer (`CABS.acl_for`). | Refusing for real. Hiding unreadable drawers from listings and search. |
 | Trusted entry points | The gate tells an agent from a tool (caller origin). Boot, Flynn and automations are exempt at the admin door. Provisioning and Flynn's cabinet setup are named lifecycle principals. | Separating System and Default Agent authority. |
 | Admission enforcement | | The admission-token contract with `zen_root_authentik`. |
 | Bootstrap and recovery | Flynn's bootstrap is built to migrate and stamp a fresh install. An upgrade migrates and stamps when the bootstrap next runs, or on `acl_migrate` / `cabinet_schema_upgrade`. | A cold fresh-install run with the stamp. Revocation and recovery on the trusted path. |
@@ -79,7 +79,7 @@ Every lock in this release is built, wired to its door, and running in **audit m
 
 **The gate knows who's asking.** The agent-facing FileCabinet tool marks every call it makes as an agent call. A tool calling the engine is internal, and can name itself with `caller_tool`, so a rule can say `@tool:zen_dojotools_identity` and mean exactly that. New principals in `who`: `@internal`, `@tool:<script>`, `@self`, `@partner`. Before this, every FileCabinet call looked like it came from the default agent. Now the audit log tells an agent from a tool.
 
-**Mounts confer no authority.** FileCabinet resolves the real target behind a mount chain (up to 8 hops; a loop refuses) before it checks access. Reads and writes are checked against the target's rules; delete, move, copy and the mount commands against the pointer's own.
+**Mounts confer no authority.** FileCabinet resolves the real target behind a mount chain (up to 8 hops; a loop refuses) and checks every hop, none skipped: each pointer the chain passes needs read, and the drawer it ends on needs the action's op. A caller that can't read a pointer doesn't get past it. A pointer answers with its cabinet's rules, never a drawer's. An expansion answers with its host cabinet's rules, so moving a drawer into one changes where it lives, not who can reach it.
 
 **Two gates, both auditing.** FileCabinet's gate answers `acl_audit` and logs `fc_acl_audit` with the caller's `origin` and, per check, where the rule came from and how the caller matched. The admin door checks agent and console writes against `zenos.system.cabinet_admin` and answers `gate_audit`. Boot, Flynn and automations are exempt.
 
@@ -100,6 +100,7 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **The drawer envelope is `{value, meta, timestamp[, acl]}`.** `meta` is always present and carries expiry; `acl` carries a drawer's own rules. A cabinet set keeps both instead of rebuilding the drawer.
 - **The admin door.** `zen_admintools_cabinet_writer` is the one writer for structural, system and vault cabinet writes, which FileCabinet refuses. It isn't MCP-exposed, every write names its caller and is logged, and it waits until the cabinet shows the write before it answers, and confirms the content. `merge` mode writes only the keys that changed. AdminTools, Flynn, GC and maint fire no raw cabinet events any more.
 - **The cabinet guards hold.** The 128 KB size cap and the unknown-at-boot guard refuse the write and leave the cabinet as it was.
+- **Expansions are a permanent redirect.** `expand_drawer` moves a root drawer and its whole tree into an expansion slot unchanged (value, meta and the drawer's own ACL), verified byte for byte, and leaves a pointer per key. Reads, writes and new children follow the drawer there, and `get` and `list` show the cabinet and its expansion as one tree. One expansion holds one drawer, a drawer expands once, and the pointers can't be edited. Move, copy and delete work on the real drawers wherever they live, and an operation that empties an expansion tears it down. `collapse_drawer` brings the tree back, checking first that it fits. Any failure along the way rolls back. See [Expansions](../scripts/zen_dojotools_filecabinet_readme.md#expansions--expand_drawer-and-collapse_drawer).
 
 ---
 
@@ -123,10 +124,12 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **Semantic roots.** The tool manifest publishes a root for each question word: who (Identity), what (Index), when (Taskmaster almanac), where (Room Manager), why (history), how (help) and knowledge (FileCabinet). Each root answers what matters now and names where to go deeper, and the boot prompt renders them as one line.
 - **Taskmaster almanac, the "when" root.** One call returns a headline and the current period of the day, vacation, events from calendars carrying the `almanac` label (timed events first, at most two per calendar), tasks due by today, meals and weather. `horizon_hours`, `lookahead_days` and `max_items` tune it.
 - **Per-tool roots on the core tools.** Room Manager, Index, FileCabinet, Identity and Taskmaster declare their own roots in their `tool_manifest` modes. A bare call returns them in about 350 characters.
+- **Expansion slots answer with their host's ACL.** A slot an earlier `expand_drawer` stamped now answers with the ACL of the cabinet that hosts it. The class stamped on the slot itself no longer applies.
 - **Cortex 45.** Cortex 44 'Open Door' with one fix: its `core_tools` list named a log viewer that does not exist, and now names `zen_dojotools_ha_log_viewer`. 45 is the new latest and replaces the v42 slot, so the selectable versions are 45, 44 and 43.
 - **Who knows where a member belongs.** `identity resolve` returns `name`, `person_entity`, `member_type` and `memberships`, and finds a person anywhere in the household tree, not only among the household's own users.
 - **The ACL record, cabinet classes, built-in locks, caller origin, both audit gates, and Identity's `acl_migrate`, `acl_set` and `take_ownership`.** See [The Locks, in Audit Mode](#the-locks-in-audit-mode).
 - **FileCabinet GC `repair` mode.** Normalizes one drawer to the `{value, meta}` envelope, with `dry_run`.
+- **FileCabinet `collapse_drawer`.** Undoes an expansion: the tree comes back to its cabinet, verified, and the slot is freed.
 - **Cabinet capacity.** `sensor.zen_cabinet_health` gains a `cabinet_capacity` attribute: each cabinet's size as a percentage of the 128 KB cap, the fullest cabinet, and a warning list at 90% and over. The sensor's state is unchanged.
 
 ## Changed
@@ -159,6 +162,7 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **`move` onto its own key refuses** with `code: same_key` instead of writing the drawer onto itself and deleting it.
 - **Identity VolumeInfo writes touch only the changed keys,** so an empty read can no longer replace the whole drawer.
 - **Flynn's history mount** reads the mount pointer from the drawer's value and stops re-sending `set_mount` on every bootstrap; a failed mount logs a warning. Flynn's primary-user picker now hides the head of household.
+- **`expand_drawer` keeps everything it moves.** It used to overwrite the slot's VolumeInfo (losing its id, ACLs and flags), copy only a drawer's value (dropping its title, labels, meta and ACL), and leave the moved drawer under the slot's default rules. Now the slot's VolumeInfo is merged, the whole drawer moves, and the expansion answers with the host's ACL.
 - **Scribe writes only its own artifacts,** and Inspect never dumps a whole cabinet; its drawer peek follows FileCabinet's read rule.
 - **`query` without `filter_json` no longer crashes,** including calls that pass `domain`, `label` or `areas` at the top level.
 - **Music Assistant `get_library` without a search** no longer sends `search: None` and gets a 400; a missing Music Assistant entry or a failed call answers `error`.

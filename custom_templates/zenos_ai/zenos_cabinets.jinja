@@ -1,4 +1,21 @@
-{#- zenos_cabinets.jinja — Version: 1.5.2 -#}
+{#- zenos_cabinets.jinja — Version: 1.6.3 -#}
+{#- 1.6.3: fc_resolve is one chain through softlinks and expansions alike. At
+    each cabinet a key it does not hold, under an expanded root it hosts, hops
+    into that expansion, and a mount pointer there (a softlink) is chased on, so
+    a softlink from or to an expanded drawer resolves to the real drawer and
+    every hop lands in visited. -#}
+{#- 1.6.2: expansion_plan, what a move, copy or delete of a key touches in an
+    expanded tree (self, ancestor, contains or none). -#}
+{#- 1.6.1: an expanded drawer is a permanent redirect for its whole tree. A key
+    the cabinet does not hold, under an ancestor that is a mount pointer into
+    an expansion this cabinet hosts, resolves to that expansion (fc_resolve),
+    so a child added after the move lands there. expansion_root_of names that
+    ancestor; cabinet_expanded_view is the cabinet with its expansions' keys
+    under each expanded root (get children, list). -#}
+{#- 1.6.0: an expansion cabinet (VolumeInfo cabinet_class expansion + hosted_by)
+    answers with its host's ACL record (acl_record, one hop: a host that is
+    itself an expansion is not followed). A drawer's own acl still applies.
+    acl_for: a mount pointer answers with its cabinet's ACL, never a drawer acl. -#}
 {#- 1.5.2: acl_class_plan reads zen_index_cabinet (Index scope, also on role
     cabinets) as scratchpad only when no role label is present. -#}
 {#- 1.5.1: acl_lifecycle_tools (provisioner and Flynn cabinet init administer every
@@ -677,6 +694,8 @@ part of the ACL (the members drawers hold that topology).
 Each op inherits on its own: the drawer envelope's acl.ops, else the
 cabinet's acls.ops, else acl_default_ops for the cabinet's class.
 acl_builtin_ops (credential and approval drawers) wins over all three.
+An expansion cabinet (cabinet_class expansion, hosted_by <host entity_id>)
+has no ACL of its own: its cabinet record is its host's.
 -#}
 
 {#-
@@ -846,6 +865,13 @@ acl_builtin_ops (credential and approval drawers) wins over all three.
     {%- set _vi = _env.get('value') if _env is mapping else none -%}
     {%- set _vi = (_vi | from_json(none)) if _vi is string else _vi -%}
     {%- set _vi = _vi if _vi is mapping else {} -%}
+    {%- set _host = ((_vi.get('hosted_by') or '') | string | trim) if _vi.get('cabinet_class') == 'expansion' else '' -%}
+    {%- set _henv = (state_attr(_host, 'variables') or {}).get('AI_Cabinet_VolumeInfo') if _host not in ['', entity_id] else none -%}
+    {%- set _hvi = _henv.get('value') if _henv is mapping else none -%}
+    {%- set _hvi = (_hvi | from_json(none)) if _hvi is string else _hvi -%}
+    {%- if _hvi is mapping and _hvi.get('cabinet_class') != 'expansion' -%}
+    {{- dict(acl_record(_host, idmap) | from_json, inherited_from=_host) | tojson -}}
+    {%- else -%}
     {%- set _a = _vi.get('acls') if _vi.get('acls') is mapping else {} -%}
     {%- set _cls = (_vi.get('class') or '') | string | lower | trim -%}
     {%- set _dflt = acl_default_ops(_cls) | from_json -%}
@@ -882,7 +908,8 @@ acl_builtin_ops (credential and approval drawers) wins over all three.
          'ops': ns.ops, 'ops_stored': _sops,
          'ops_source': {'r': 'cabinet' if _sops.get('r') is mapping else 'default', 'w': 'cabinet' if _sops.get('w') is mapping else 'default',
                         'd': 'cabinet' if _sops.get('d') is mapping else 'default', 'a': 'cabinet' if _sops.get('a') is mapping else 'default'},
-         'unresolved': ns.unresolved} | tojson -}}
+         'unresolved': ns.unresolved, 'inherited_from': ''} | tojson -}}
+    {%- endif -%}
 {%- endmacro -%}
 
 {#-
@@ -903,13 +930,39 @@ acl_builtin_ops (credential and approval drawers) wins over all three.
 {%- macro fc_resolve(entity_id, drawer_key, max_hops=8) -%}
     {%- set _v0 = state_attr(entity_id, 'variables') if entity_id else none -%}
     {%- set _v0 = _v0 if _v0 is mapping else {} -%}
-    {%- if drawer_key not in _v0 -%}
-        {{- {'status': 'absent', 'vol': entity_id, 'key': drawer_key, 'depth': 0, 'visited': [entity_id ~ '/' ~ drawer_key],
-             'reason': '', 'loop_at': '', 'fc_args': none, 'entry': none} | tojson -}}
-    {%- else -%}
-        {%- set ns = namespace(vol=entity_id, vars=_v0, depth=0, visited=[entity_id ~ '/' ~ drawer_key], done=false,
-                               entry=none, status='', reason='', loop_at='', fc=none) -%}
-        {%- for _ in range(max_hops) if not ns.done -%}
+    {%- set ns = namespace(vol=entity_id, vars=_v0, depth=0, visited=[entity_id ~ '/' ~ drawer_key], done=false,
+                           entry=none, status='', reason='', loop_at='', fc=none, xroot='') -%}
+    {%- for _ in range(max_hops + 1) if not ns.done -%}
+        {%- set _xr = (expansion_root_of(ns.vol, drawer_key) | from_json({})) if drawer_key not in ns.vars else {} -%}
+        {%- if drawer_key not in ns.vars and _xr.get('target', '') != '' -%}
+            {#- Under an expanded root this cabinet hosts: the expansion holds
+                the whole tree, so the chain hops there. -#}
+            {%- set _next = _xr.target ~ '/' ~ drawer_key -%}
+            {%- if ns.depth >= max_hops - 1 -%}
+                {%- set ns.status = 'depth_limit_exceeded' -%}
+                {%- set ns.done = true -%}
+            {%- elif _next in ns.visited -%}
+                {%- set ns.status = 'loop_detected' -%}
+                {%- set ns.loop_at = _next -%}
+                {%- set ns.done = true -%}
+            {%- else -%}
+                {%- set ns.visited = ns.visited + [_next] -%}
+                {%- set ns.xroot = ns.xroot if ns.xroot != '' else _xr.root -%}
+                {%- set ns.vol = _xr.target -%}
+                {%- set _tv = state_attr(_xr.target, 'variables') -%}
+                {%- set ns.vars = _tv if _tv is mapping else {} -%}
+                {%- set ns.depth = ns.depth + 1 -%}
+                {%- if drawer_key not in ns.vars -%}
+                    {%- set ns.status = 'not_found_in_target' -%}
+                    {%- set ns.reason = 'key not found in target volume: ' ~ _xr.target -%}
+                    {%- set ns.done = true -%}
+                {%- endif -%}
+            {%- endif -%}
+        {%- elif drawer_key not in ns.vars -%}
+            {%- set ns.status = 'absent' if ns.depth == 0 else 'not_found_in_target' -%}
+            {%- set ns.reason = '' if ns.depth == 0 else 'key not found in target volume: ' ~ ns.vol -%}
+            {%- set ns.done = true -%}
+        {%- else -%}
             {%- set _cur = ns.vars.get(drawer_key) -%}
             {%- set _cv_s = (_cur.get('value') or none) if _cur is mapping else none -%}
             {%- set _cv = _cv_s if _cv_s is mapping else (_cv_s | from_json(none) if _cv_s is string and _cv_s | trim not in ['', 'null', 'None'] else none) -%}
@@ -942,18 +995,135 @@ acl_builtin_ops (credential and approval drawers) wins over all three.
                     {%- set _tv = state_attr(_target, 'variables') -%}
                     {%- set ns.vars = _tv if _tv is mapping else {} -%}
                     {%- set ns.depth = ns.depth + 1 -%}
-                    {%- if drawer_key not in ns.vars -%}
-                        {%- set ns.status = 'not_found_in_target' -%}
-                        {%- set ns.reason = 'key not found in target volume: ' ~ _target -%}
-                        {%- set ns.done = true -%}
-                    {%- endif -%}
+                {%- endif -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {%- if not ns.done -%}{%- set ns.status = 'depth_limit_exceeded' -%}{%- endif -%}
+    {{- dict({'status': ns.status, 'vol': ns.vol, 'key': drawer_key, 'depth': ns.depth, 'visited': ns.visited,
+         'reason': ns.reason, 'loop_at': ns.loop_at, 'fc_args': ns.fc, 'entry': ns.entry},
+         **({'expanded_root': ns.xroot} if ns.xroot != '' else {})) | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: expansion_root_of
+@desc: The nearest ancestor of drawer_key (a/b/c -> a/b, then a) that is a
+       mount pointer into an expansion this cabinet hosts (expand_drawer's
+       permanent redirect). The key itself is not checked.
+@returns: JSON {root, target}, both '' when no ancestor is expanded.
+-#}
+{%- macro expansion_root_of(entity_id, drawer_key) -%}
+    {%- set _v = state_attr(entity_id, 'variables') if entity_id else none -%}
+    {%- set _v = _v if _v is mapping else {} -%}
+    {%- set _parts = (drawer_key | string).split('/') -%}
+    {%- set ns = namespace(root='', target='') -%}
+    {%- for i in range((_parts | count) - 1, 0, -1) if ns.target == '' -%}
+        {%- set a = _parts[:i] | join('/') -%}
+        {%- set e = _v.get(a) -%}
+        {%- set ev = e.get('value') if e is mapping else none -%}
+        {%- set ev = (ev | from_json(none)) if ev is string else ev -%}
+        {%- if ev is mapping and ev.get('mount_point', false) == true and ev.get('fc_args') is none -%}
+            {%- set tg = (ev.get('target_entity_id') or '') | string -%}
+            {%- set te = (state_attr(tg, 'variables') or {}).get('AI_Cabinet_VolumeInfo') if tg else none -%}
+            {%- set tvi = te.get('value') if te is mapping else none -%}
+            {%- set tvi = (tvi | from_json(none)) if tvi is string else tvi -%}
+            {%- if tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id -%}
+                {%- set ns.root = a -%}
+                {%- set ns.target = tg -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{- {'root': ns.root, 'target': ns.target} | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: expansion_plan
+@desc: How a key sits in an expanded tree, for move / copy / delete.
+       ancestor: the key is under an expanded root (the expansion holds it).
+       self: the key is itself an expanded root (a pointer into an expansion
+       this cabinet hosts). contains: the key's tree holds expanded roots below
+       it. none: no expansion involved. roots: [{root, target, scope}] (scope =
+       the key the data under it is taken from in the expansion).
+@returns: JSON {mode, roots}.
+-#}
+{%- macro expansion_plan(entity_id, drawer_key) -%}
+    {%- set _v = state_attr(entity_id, 'variables') if entity_id else none -%}
+    {%- set _v = _v if _v is mapping else {} -%}
+    {%- set anc = expansion_root_of(entity_id, drawer_key) | from_json({}) -%}
+    {%- set ns = namespace(roots=[], mode='none') -%}
+    {%- if anc.get('target', '') != '' -%}
+        {%- set ns.mode = 'ancestor' -%}
+        {%- set ns.roots = [{'root': anc.root, 'target': anc.target, 'scope': drawer_key}] -%}
+    {%- else -%}
+        {%- set _pre = drawer_key ~ '/' -%}
+        {%- for k in _v.keys() | list | sort if k == drawer_key or k.startswith(_pre) -%}
+            {%- set e = _v[k] -%}
+            {%- set ev = e.get('value') if e is mapping else none -%}
+            {%- set ev = (ev | from_json(none)) if ev is string else ev -%}
+            {%- if ev is mapping and ev.get('mount_point', false) == true and ev.get('fc_args') is none
+                  and (expansion_root_of(entity_id, k) | from_json({})).get('target', '') == '' -%}
+                {%- set tg = (ev.get('target_entity_id') or '') | string -%}
+                {%- set te = (state_attr(tg, 'variables') or {}).get('AI_Cabinet_VolumeInfo') if tg else none -%}
+                {%- set tvi = te.get('value') if te is mapping else none -%}
+                {%- set tvi = (tvi | from_json(none)) if tvi is string else tvi -%}
+                {%- if tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id -%}
+                    {%- set ns.roots = ns.roots + [{'root': k, 'target': tg, 'scope': k}] -%}
+                    {%- set ns.mode = 'self' if k == drawer_key else 'contains' -%}
                 {%- endif -%}
             {%- endif -%}
         {%- endfor -%}
-        {%- if not ns.done -%}{%- set ns.status = 'depth_limit_exceeded' -%}{%- endif -%}
-        {{- {'status': ns.status, 'vol': ns.vol, 'key': drawer_key, 'depth': ns.depth, 'visited': ns.visited,
-             'reason': ns.reason, 'loop_at': ns.loop_at, 'fc_args': ns.fc, 'entry': ns.entry} | tojson -}}
+        {%- if ns.roots | selectattr('root', 'equalto', drawer_key) | list | count == 0 and ns.roots | count > 0 -%}{%- set ns.mode = 'contains' -%}{%- endif -%}
     {%- endif -%}
+    {{- {'mode': ns.mode, 'roots': ns.roots} | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: cabinet_hosts_expansion
+@desc: Whether any expansion slot is stamped as hosted by this cabinet (a
+       cheap check over the slots before building cabinet_expanded_view).
+@returns: 'true' | 'false'.
+-#}
+{%- macro cabinet_hosts_expansion(entity_id) -%}
+    {%- set ns = namespace(hit=false) -%}
+    {%- for eid in (cabinet_slot_candidates() | from_json([])) if not ns.hit -%}
+        {%- set te = (state_attr(eid, 'variables') or {}).get('AI_Cabinet_VolumeInfo') -%}
+        {%- set tvi = te.get('value') if te is mapping else none -%}
+        {%- set tvi = (tvi | from_json(none)) if tvi is string else tvi -%}
+        {%- if tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id -%}{%- set ns.hit = true -%}{%- endif -%}
+    {%- endfor -%}
+    {{- 'true' if ns.hit else 'false' -}}
+{%- endmacro -%}
+
+{#-
+@macro: cabinet_expanded_view
+@desc: A cabinet's drawers as one tree: its own, plus, under each expanded
+       root (a mount pointer into an expansion it hosts), the expansion's keys
+       of that tree it does not hold itself (children added after the move).
+@returns: JSON {key: envelope}.
+-#}
+{%- macro cabinet_expanded_view(entity_id) -%}
+    {%- set _v = state_attr(entity_id, 'variables') if entity_id else none -%}
+    {%- set _v = _v if _v is mapping else {} -%}
+    {%- set ns = namespace(d=_v) -%}
+    {%- for k, e in _v.items() -%}
+        {%- set ev = e.get('value') if e is mapping else none -%}
+        {%- set ev = (ev | from_json(none)) if ev is string else ev -%}
+        {%- if ev is mapping and ev.get('mount_point', false) == true and ev.get('fc_args') is none -%}
+            {%- set tg = (ev.get('target_entity_id') or '') | string -%}
+            {%- set tvars = state_attr(tg, 'variables') if tg else none -%}
+            {%- set tvars = tvars if tvars is mapping else {} -%}
+            {%- set te = tvars.get('AI_Cabinet_VolumeInfo') -%}
+            {%- set tvi = te.get('value') if te is mapping else none -%}
+            {%- set tvi = (tvi | from_json(none)) if tvi is string else tvi -%}
+            {%- if tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id -%}
+                {%- set _pre = k ~ '/' -%}
+                {%- for tk, tvv in tvars.items() if tk.startswith(_pre) and tk not in ns.d -%}
+                    {%- set ns.d = dict(ns.d, **{tk: tvv}) -%}
+                {%- endfor -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{- ns.d | tojson -}}
 {%- endmacro -%}
 
 {#-
@@ -1021,7 +1191,12 @@ acl_builtin_ops (credential and approval drawers) wins over all three.
 {%- macro acl_for(entity_id, drawer_key='') -%}
     {%- set rec = acl_record(entity_id) | from_json -%}
     {%- set _env = (state_attr(entity_id, 'variables') or {}).get(drawer_key) if drawer_key else none -%}
-    {%- set _own = _env.get('acl') if _env is mapping else none -%}
+    {#- A mount pointer has no drawer ACL: it answers with its cabinet's.
+        The drawer's own acl is on the drawer the pointer leads to. -#}
+    {%- set _pv = _env.get('value') if _env is mapping else none -%}
+    {%- set _pv = (_pv | from_json(none)) if _pv is string else _pv -%}
+    {%- set _is_ptr = _pv is mapping and _pv.get('mount_point', false) == true -%}
+    {%- set _own = _env.get('acl') if _env is mapping and not _is_ptr else none -%}
     {%- set _dops = (_own.get('ops') if _own is mapping and _own.get('ops') is mapping else {}) -%}
     {%- set _bops = (acl_builtin_ops(drawer_key) | from_json) if drawer_key else {} -%}
     {%- set ns = namespace(ops={}, src={}) -%}
@@ -1043,7 +1218,7 @@ acl_builtin_ops (credential and approval drawers) wins over all three.
     {%- set _prime = rec.prime if rec.prime != '' or _hh == entity_id
                      else ((acl_record(_hh) | from_json).prime if _hh not in ['', 'unknown', 'unavailable'] else '') -%}
     {{- {'class': rec['class'], 'self': rec['self'], 'owner': rec.owner, 'prime': _prime, 'partners': rec.partners,
-         'ops': ns.ops, 'source': ns.src} | tojson -}}
+         'ops': ns.ops, 'source': ns.src, 'inherited_from': rec.get('inherited_from', '')} | tojson -}}
 {%- endmacro -%}
 
 {#-
@@ -1058,7 +1233,7 @@ acl_builtin_ops (credential and approval drawers) wins over all three.
         'create': 'w', 'update': 'w', 'upsert': 'w', 'relabel': 'w', 'set_mount': 'w', 'copy': 'w',
         'clone': 'w', 'register': 'w', 'unregister': 'w', 'weave_save': 'w',
         'delete': 'd', 'remove_mount': 'd', 'move': 'd',
-        'mount_cabinet': 'a', 'dismount_cabinet': 'a', 'set_cabinet_ro': 'a', 'expand_drawer': 'a',
+        'mount_cabinet': 'a', 'dismount_cabinet': 'a', 'set_cabinet_ro': 'a', 'expand_drawer': 'a', 'collapse_drawer': 'a',
         'acl_set': 'a', 'take_ownership': 'a'} -%}
     {{- _m.get(action | string | lower | trim, 'a') -}}
 {%- endmacro -%}

@@ -1,7 +1,42 @@
 ###############################################################################
 # ZenOS-AI: FileCabinet DojoTool + FileCabinet Sutra
 # File: dojotools_filecabinet.yaml
-# Version: 6.27.0 -- caller origin (#10626): zen_dojotools_filecabinet stamps
+# Version: 6.31.0 -- softlinks from and to expanded drawers. set_mount and
+#   remove_mount under an expanded root act in the expansion that holds the
+#   tree (the root's own pointer stays immutable); a softlink pointing at an
+#   expanded drawer, or one inside an expanded tree, resolves through every hop
+#   (CABS fc_resolve 1.6.3) and the gate checks each one, the expansion hop
+#   included, before the target's ACL decides. Inside an expanded tree delete
+#   removes a softlink like any drawer; move and copy refuse it as they do any
+#   mount (force_action carries the pointer as is). expand_drawer and
+#   collapse_drawer carry softlinks in the tree unchanged and refuse one that
+#   would point at its own cabinet afterwards.
+# 6.30.0 -- expanded trees are transparent to move / copy / delete:
+#   they run on the real drawers wherever they live (a destination under an
+#   expanded root lands in its expansion), with a size check per destination
+#   cabinet before any write and a take-back on a failed write. Pointers are
+#   immutable: expand_drawer creates them, move / delete / collapse_drawer
+#   remove them; remove_mount and set_mount refuse them. An expansion an
+#   operation leaves empty is torn down. expand_drawer takes root drawers only.
+# 6.29.0 -- an expanded drawer is a permanent redirect for its whole
+#   tree: a child written after the move lands in the expansion (CABS
+#   fc_resolve), and get/list show the cabinet and its expansions as one tree
+#   (CABS cabinet_expanded_view). expand_drawer runs once per drawer: a drawer
+#   that is already expanded, or a tree holding any mount pointer, is refused
+#   before anything is written. One expansion holds ONE drawer and its children.
+#   New collapse_drawer undoes it: size preflight (refused if the tree will not
+#   fit back), copies the tree back over its pointers (children first, root
+#   last), verifies byte for byte (a failure puts the pointers back, the
+#   expansion untouched), then tears the slot down (copies removed, expansion
+#   stamp off VolumeInfo, dismounted).
+# 6.28.1 -- expand_drawer moves a drawer and its whole subtree into an
+#   expansion slot unchanged (value, meta, the drawer's own acl), one mount
+#   pointer per key; target optional (a free slot). Mounts the slot; VolumeInfo merged (id, flags, acls
+#   kept); byte-for-byte verify and a resolve proof before success; full
+#   rollback on any failure. The expansion answers with its host's ACL.
+#   ACL gate: every hop of a mount chain is checked (r on each pointer, the
+#   action's op on the drawer it ends on); expand_drawer checks a on the source.
+# 6.27.0 -- caller origin (#10626): zen_dojotools_filecabinet stamps
 #   caller_origin=agent on every engine call; any other caller is internal
 #   (@internal, and @tool:<caller_tool> in an ACL). The gate checks the
 #   class default ops and the built-in drawer locks; still audit only.
@@ -121,7 +156,7 @@ script:
     fields:
       mode:
         name: Mode
-        description: "Dispatch: get|create|update|upsert|delete|list|move|copy|search|relabel|manifest|clone|set_mount|remove_mount|mount_cabinet|dismount_cabinet|set_cabinet_ro|stacks_by_anchor|register|unregister|inspect|health|audit|fleet|help. Preferred over action: (legacy)."
+        description: "Dispatch: get|create|update|upsert|delete|list|move|copy|search|relabel|manifest|clone|set_mount|remove_mount|mount_cabinet|dismount_cabinet|set_cabinet_ro|stacks_by_anchor|register|unregister|inspect|health|audit|expand_drawer|collapse_drawer|fleet|help. Preferred over action: (legacy)."
         selector:
           select:
             options:
@@ -150,6 +185,7 @@ script:
             - audit
             - help
             - expand_drawer
+            - collapse_drawer
             - tool_manifest
       action_type:
         name: Action Type (legacy)
@@ -181,6 +217,7 @@ script:
             - health
             - audit
             - expand_drawer
+            - collapse_drawer
       volume_entity_id:
         name: Volume Entity ID
         description: Cabinet sensor entity ID to operate on.
@@ -347,7 +384,7 @@ script:
           text:
       target_cabinet:
         name: Target Cabinet (expand_drawer only)
-        description: Entity ID of the expansion cabinet to migrate the drawer into.
+        description: Expansion slot to move the drawer into. Omit to pick a free slot. One expansion holds one drawer and its children; a drawer expands once.
         required: false
         selector:
           text:
@@ -571,7 +608,7 @@ script:
         - condition: template
           value_template: >-
             {{ _vol == '' and _action not in
-               ['register', 'unregister', 'inspect', 'health', 'audit', 'stacks_by_anchor', 'manifest', 'expand_drawer', 'expansion_sitrep', 'fleet'] }}
+               ['register', 'unregister', 'inspect', 'health', 'audit', 'stacks_by_anchor', 'manifest', 'expand_drawer', 'collapse_drawer', 'expansion_sitrep', 'fleet'] }}
         sequence:
         - variables:
             result:
@@ -590,7 +627,7 @@ script:
         - condition: template
           value_template: >-
             {{ _vol != '' and state_attr(_vol, 'variables') is none and
-               _action not in ['register', 'unregister', 'inspect', 'audit', 'expand_drawer'] }}
+               _action not in ['register', 'unregister', 'inspect', 'audit', 'expand_drawer', 'collapse_drawer'] }}
         sequence:
         - variables:
             result:
@@ -831,13 +868,29 @@ script:
     #    acl_audit.
     - variables:
         _g: >-
-          {%- if result is not defined and _vol != '' and _action in ['get', 'list', 'search', 'create', 'update', 'upsert', 'delete', 'move', 'copy',
-                                                                      'relabel', 'set_mount', 'remove_mount', 'mount_cabinet', 'dismount_cabinet', 'set_cabinet_ro'] -%}
+          {%- set _xd_src = (source_cabinet | default('', true) | string | trim) if _action in ['expand_drawer', 'collapse_drawer'] else '' -%}
+          {%- if result is not defined and ((_vol != '' and _action in ['get', 'list', 'search', 'create', 'update', 'upsert', 'delete', 'move', 'copy',
+                                                                      'relabel', 'set_mount', 'remove_mount', 'mount_cabinet', 'dismount_cabinet', 'set_cabinet_ro'])
+                                            or _xd_src != '') -%}
             {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
             {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
             {%- set _through = _action in ['get', 'create', 'update', 'upsert'] and _t.status in ['direct', 'resolved', 'live', 'not_found_in_target'] -%}
-            {%- set _checks = [{'op': CABS.acl_op_class(_action) | trim, 'vol': (_t.vol if _through else _vol), 'key': _key}]
-                            + ([{'op': 'w', 'vol': (_dest_vol if _dest_vol != '' else _vol), 'key': _dest}] if _action in ['move', 'copy'] and _dest != '' else []) -%}
+            {#- Every hop is checked: each mount pointer the chain passes needs r
+                (a caller that cannot read a pointer does not get past it), and the
+                drawer the chain ends on needs the action's op. No hop is skipped. -#}
+            {%- set _hops = _t.visited[:-1] if _through and (_t.depth | int(0)) > 0 else [] -%}
+            {#- set_mount / remove_mount under an expanded root act in the
+                expansion: the host's hop needs r, the drawer there the op. -#}
+            {%- set _xsm = (CABS.expansion_root_of(_vol, _key) | from_json({})) if _action in ['set_mount', 'remove_mount'] and _key not in (state_attr(_vol, 'variables') or {}) else {} -%}
+            {%- set _xsm_t = _xsm.get('target', '') -%}
+            {%- set _hops = [_vol ~ '/' ~ _key] if _xsm_t != '' else _hops -%}
+            {%- set nh = namespace(c=[]) -%}
+            {%- for h in _hops -%}
+              {%- set nh.c = nh.c + [{'op': 'r', 'vol': h[:(h | length) - (_key | length) - 1], 'key': _key}] -%}
+            {%- endfor -%}
+            {%- set _checks = ([{'op': 'a', 'vol': _xd_src, 'key': ''}] if _xd_src != '' else
+                               nh.c + [{'op': CABS.acl_op_class(_action) | trim, 'vol': (_t.vol if _through else (_xsm_t if _xsm_t != '' else _vol)), 'key': _key}]
+                               + ([{'op': 'w', 'vol': (_dest_vol if _dest_vol != '' else _vol), 'key': _dest}] if _action in ['move', 'copy'] and _dest != '' else [])) -%}
             {%- set ns = namespace(out=[], deny=[], ack=false, who=none) -%}
             {%- for c in _checks -%}
               {%- set _acl = CABS.acl_for(c.vol, c.key) | from_json -%}
@@ -894,6 +947,275 @@ script:
                 to provision it before writing.
               trace:
                 caller_token: "{{ _caller_token }}"
+
+    # ── Expanded trees: an expansion is a permanent redirect for one drawer
+    #    and its whole tree. A move, copy or delete that touches one (the key,
+    #    an ancestor or anything below it) or lands in one runs here, on the
+    #    real drawers wherever they live. Pointers are never copied, moved or
+    #    rewritten: expand_drawer creates them, move / delete / collapse_drawer
+    #    remove them. An expansion an operation leaves empty is torn down.
+    #    A softlink under an expanded root lives in the expansion: set_mount and
+    #    remove_mount run there.
+    - variables:
+        _xo: >-
+          {%- if result is not defined and _action in ['move', 'copy', 'delete', 'remove_mount', 'set_mount'] and _vol != '' and _key != '' -%}
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set p = CABS.expansion_plan(_vol, _key) | from_json -%}
+            {%- set dv = _dest_vol if _dest_vol != '' else _vol -%}
+            {%- set dr = (CABS.expansion_root_of(dv, _dest) | from_json) if _action in ['move', 'copy'] and _dest != '' else {'target': ''} -%}
+            {%- set dp = (CABS.expansion_plan(dv, _dest) | from_json) if _action in ['move', 'copy'] and _dest != '' else {'mode': 'none'} -%}
+            {#- xptr: the key is itself one of expand_drawer's pointers (the
+                root's or a child's), never a softlink to manage. -#}
+            {%- set xp = (CABS.expansion_root_of(_vol, _key ~ '/_') | from_json).root == _key -%}
+            {{- {'on': p.mode != 'none' or dr.target != '' or dp.mode != 'none', 'mode': p.mode, 'dv': dv, 'xptr': xp} -}}
+          {%- else -%}{{- {'on': false, 'mode': 'none', 'dv': '', 'xptr': false} -}}{%- endif -%}
+    - if: "{{ _xo.on and _action in ['remove_mount', 'set_mount'] and (_xo.mode == 'self' or _xo.xptr) }}"
+      then:
+        - variables:
+            result:
+              status: error
+              tool: zen_sutra_filecabinet
+              action: "{{ _action }}"
+              key: "{{ _key }}"
+              volume: "{{ _vol }}"
+              reason: "guarded: {{ _key }} is part of an expanded drawer. Its pointer is created by expand_drawer and removed only by move, delete or collapse_drawer."
+              trace:
+                caller_token: "{{ _caller_token }}"
+    - if: "{{ result is not defined and _xo.on and _action in ['remove_mount', 'set_mount'] and _xo.mode == 'ancestor' and _key not in (state_attr(_vol, 'variables') or {}) }}"
+      then:
+        - variables:
+            _xo_host: "{{ _vol }}"
+            _vol: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{- (CABS.expansion_root_of(_vol, _key) | from_json).target -}}
+    - if: "{{ result is not defined and _xo.on and _action in ['move', 'copy', 'delete'] }}"
+      then:
+        - variables:
+            _xo_max: 131072
+            _xo_headroom: 2048
+            # The tree as one: every key of it, where its real drawer lives, and
+            # the pointers this cabinet holds for it.
+            _xo_tree: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {%- set sv = state_attr(_vol, 'variables') or {} -%}
+              {%- set view = CABS.cabinet_expanded_view(_vol) | from_json({}) -%}
+              {%- set _pre = _key ~ '/' -%}
+              {#- Each key where its drawer is stored: the host, or the
+                  expansion behind an expanded root. A softlink (any other mount
+                  pointer or live drawer) is a link: delete removes it like a
+                  drawer, move / copy refuse it unless force_action. -#}
+              {%- set ns = namespace(items=[], ptrs=[], links=[]) -%}
+              {%- for k in view.keys() | list | sort if k == _key or k.startswith(_pre) -%}
+                {%- set e0 = sv.get(k) -%}
+                {%- set v0 = e0.get('value') if e0 is mapping else none -%}
+                {%- set v0 = (v0 | from_json(none)) if v0 is string else v0 -%}
+                {%- set p0 = v0 is mapping and v0.get('mount_point', false) == true -%}
+                {%- set t0 = ((v0.get('target_entity_id') or '') | string) if p0 and v0.get('fc_args') is none else '' -%}
+                {%- set s0 = (CABS.cabinet_slot_status(t0) | from_json({})) if t0 != '' else {} -%}
+                {%- if t0 != '' and s0.get('cabinet_class') == 'expansion' and s0.get('hosted_by') == _vol -%}
+                  {%- set ns.ptrs = ns.ptrs + [k] -%}
+                  {%- set loc = t0 -%}
+                {%- elif e0 is mapping -%}
+                  {%- set loc = _vol -%}
+                {%- else -%}
+                  {%- set loc = (CABS.expansion_root_of(_vol, k) | from_json).target -%}
+                {%- endif -%}
+                {%- set e = (state_attr(loc, 'variables') or {}).get(k) if loc != '' else none -%}
+                {%- set v = e.get('value') if e is mapping else none -%}
+                {%- set v = (v | from_json(none)) if v is string else v -%}
+                {%- if e is mapping and v is mapping and v.get('mount_point', false) == true -%}
+                  {%- set ns.links = ns.links + [{'k': k, 'vol': loc, 'env': e}] -%}
+                {%- elif e is mapping -%}
+                  {%- set ns.items = ns.items + [{'k': k, 'vol': loc, 'env': e}] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- set carry = _action == 'delete' or _force_action -%}
+              {{- {'items': ns.items + (ns.links if carry else []), 'ptrs': ns.ptrs,
+                   'foreign': [] if carry else ns.links | map(attribute='k') | list} -}}
+        - variables:
+            # Where each drawer goes (copy / move): the destination key, resolved
+            # like any write, so a key under an expanded root lands in that
+            # expansion and a pointer is written through, never over.
+            _xo_writes: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {%- set ns = namespace(w=[]) -%}
+              {%- if _action in ['move', 'copy'] -%}
+                {%- for it in _xo_tree['items'] -%}
+                  {%- set d = _dest ~ it.k[_key | length:] -%}
+                  {%- set r = CABS.fc_resolve(_xo.dv, d) | from_json -%}
+                  {%- set ns.w = ns.w + [{'k': it.k, 'd': d, 'dvol': r.vol if r.status in ['direct', 'resolved', 'not_found_in_target'] else _xo.dv,
+                                          'exists': r.status in ['direct', 'resolved'], 'env': it.env}] -%}
+                {%- endfor -%}
+              {%- endif -%}
+              {{- ns.w -}}
+        - variables:
+            _xo_err: >-
+              {%- set _pre = _key ~ '/' -%}
+              {%- if _xo_tree['items'] | count == 0 and _xo_tree.foreign | count == 0 -%}{{ _key }} is not in {{ _vol }}
+              {%- elif _xo_tree.foreign | count > 0 -%}{{ _xo_tree.foreign | join(', ') }} under {{ _key }} is a softlink (a mount or live drawer); {{ _action }} does not carry a mount: create it at the destination with set_mount, or pass force_action to carry the pointer as is
+              {%- elif _action in ['move', 'copy'] and _dest == '' -%}destination_path is required for {{ _action }}
+              {%- elif _action in ['move', 'copy'] and _xo.dv == _vol and (_dest == _key or _dest.startswith(_pre)) -%}destination {{ _dest }} is inside the tree being {{ 'moved' if _action == 'move' else 'copied' }}
+              {%- elif _action in ['move', 'copy'] and _xo_writes | selectattr('exists') | list | count > 0 -%}destination already holds {{ _xo_writes | selectattr('exists') | map(attribute='d') | join(', ') }}
+              {%- else -%}
+                {%- set ns = namespace(by={}) -%}
+                {%- for w in _xo_writes -%}
+                  {%- set ns.by = dict(ns.by, **{w.dvol: (ns.by.get(w.dvol, 0) + ({w.d: w.env} | tojson | length) + 64)}) -%}
+                {%- endfor -%}
+                {%- set nf = namespace(full=[]) -%}
+                {%- for v, b in ns.by.items() -%}
+                  {%- if ((state_attr(v, 'variables') or {}) | tojson | length) + b + (_xo_headroom | int) > (_xo_max | int) -%}{%- set nf.full = nf.full + [v] -%}{%- endif -%}
+                {%- endfor -%}
+                {%- if nf.full | count > 0 -%}insufficient_space: {{ nf.full | join(', ') }}{%- endif -%}
+              {%- endif -%}
+        - if: "{{ _xo_err | trim != '' }}"
+          then:
+            - variables:
+                result:
+                  status: "{{ 'abort' if (_xo_err | trim).startswith('insufficient_space') else 'error' }}"
+                  tool: zen_sutra_filecabinet
+                  action: "{{ _action }}"
+                  key: "{{ _key }}"
+                  volume: "{{ _vol }}"
+                  reason: "{{ _xo_err | trim if (_xo_err | trim).startswith('insufficient_space') else 'guarded: ' ~ (_xo_err | trim) }}"
+                  trace:
+                    caller_token: "{{ _caller_token }}"
+        # Write every drawer at its destination and verify it; a failure takes
+        # back what was written, nothing at the source has changed yet.
+        - if: "{{ result is not defined and _xo_writes | count > 0 }}"
+          then:
+            - repeat:
+                for_each: "{{ _xo_writes }}"
+                sequence:
+                  - if: "{{ _xo_fail is not defined }}"
+                    then:
+                      - event: set_variable_legacy
+                        event_data:
+                          key: "{{- repeat.item.d -}}"
+                          value: "{{ repeat.item.env.get('value') }}"
+                          meta: "{{ repeat.item.env.get('meta') if repeat.item.env.get('meta') is mapping else {} }}"
+                          acl: "{{ repeat.item.env.get('acl') if repeat.item.env.get('acl') is mapping else '' }}"
+                          volume_entity: "{{- repeat.item.dvol -}}"
+                          set_timestamp: true
+                      - wait_template: >-
+                          {%- set t = (state_attr(repeat.item.dvol, 'variables') or {}).get(repeat.item.d) -%}
+                          {{ t is mapping and (t.get('value') | tojson) == (repeat.item.env.get('value') | tojson) }}
+                        timeout: "00:00:15"
+                        continue_on_timeout: true
+                      - if: "{{ not wait.completed }}"
+                        then:
+                          - variables:
+                              _xo_fail: "{{ repeat.item.d }}"
+            - if: "{{ _xo_fail is defined }}"
+              then:
+                - repeat:
+                    for_each: "{{ _xo_writes }}"
+                    sequence:
+                      - event: remove_variable_legacy
+                        event_data:
+                          key: "{{- repeat.item.d -}}"
+                          volume_entity: "{{- repeat.item.dvol -}}"
+                - variables:
+                    result:
+                      status: error
+                      tool: zen_sutra_filecabinet
+                      action: "{{ _action }}"
+                      key: "{{ _key }}"
+                      volume: "{{ _vol }}"
+                      reason: "write_unverified: {{ _xo_fail }}"
+                      message: "Nothing changed: the destination write was not confirmed and what was written was taken back."
+                      trace:
+                        caller_token: "{{ _caller_token }}"
+        # move / delete: the real drawers leave where they live, and this
+        # cabinet's pointers for them go.
+        - if: "{{ result is not defined and _action in ['move', 'delete'] }}"
+          then:
+            - repeat:
+                for_each: "{{ _xo_tree['items'] }}"
+                sequence:
+                  - event: remove_variable_legacy
+                    event_data:
+                      key: "{{- repeat.item.k -}}"
+                      volume_entity: "{{- repeat.item.vol -}}"
+            - repeat:
+                for_each: "{{ _xo_tree.ptrs }}"
+                sequence:
+                  - event: remove_variable_legacy
+                    event_data:
+                      key: "{{- repeat.item -}}"
+                      volume_entity: "{{- _vol -}}"
+            - wait_template: >-
+                {%- set ns = namespace(ok=true) -%}
+                {%- for it in _xo_tree['items'] if it.k in (state_attr(it.vol, 'variables') or {}) -%}{%- set ns.ok = false -%}{%- endfor -%}
+                {%- for k in _xo_tree.ptrs if k in (state_attr(_vol, 'variables') or {}) -%}{%- set ns.ok = false -%}{%- endfor -%}
+                {{ ns.ok }}
+              timeout: "00:00:20"
+              continue_on_timeout: true
+            - variables:
+                _xo_removed: "{{ wait.completed }}"
+            # An expansion left holding nothing is torn down: expansion stamp
+            # off VolumeInfo (nothing else in it changes), dismounted.
+            - variables:
+                _xo_empty: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set ns = namespace(l=[]) -%}
+                  {%- for v in _xo_tree['items'] | map(attribute='vol') | unique | list if v != _vol -%}
+                    {%- set s = CABS.cabinet_slot_status(v) | from_json({}) -%}
+                    {%- if s.get('cabinet_class') == 'expansion' and s.get('hosted_by') == _vol and s.get('user_drawers', []) | count == 0 -%}{%- set ns.l = ns.l + [v] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{- ns.l -}}
+            - repeat:
+                for_each: "{{ _xo_empty }}"
+                sequence:
+                  - variables:
+                      _xo_vi: >-
+                        {%- set e = (state_attr(repeat.item, 'variables') or {}).get('AI_Cabinet_VolumeInfo') -%}
+                        {%- set v = e.get('value') if e is mapping else none -%}
+                        {{- ((v | from_json(none)) if v is string else v) or {} -}}
+                  - event: set_variable_legacy
+                    event_data:
+                      key: AI_Cabinet_VolumeInfo
+                      value: "{{ dict(_xo_vi.items() | rejectattr('0', 'in', ['cabinet_class', 'hosted_by'])) }}"
+                      volume_entity: "{{- repeat.item -}}"
+                      set_timestamp: true
+                  - if: "{{ states(repeat.item) == 'online_mounted' }}"
+                    then:
+                      - event: set_variable_legacy
+                        event_data:
+                          key: meta
+                          value: "{{ {'mounted': false} }}"
+                          volume_entity: "{{- repeat.item -}}"
+                          set_timestamp: true
+            - wait_template: >-
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set ns = namespace(ok=true) -%}
+                {%- for v in _xo_empty -%}
+                  {%- set s = CABS.cabinet_slot_status(v) | from_json({}) -%}
+                  {%- if s.get('cabinet_class') is not none or states(v) != 'online_unmounted' -%}{%- set ns.ok = false -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.ok }}
+              timeout: "00:00:20"
+              continue_on_timeout: true
+            - variables:
+                _xo_torn: "{{ wait.completed }}"
+        - if: "{{ result is not defined }}"
+          then:
+            - variables:
+                result:
+                  status: "{{ 'success' if (_action == 'copy' or (_xo_removed and _xo_torn)) else 'warning' }}"
+                  tool: zen_sutra_filecabinet
+                  action: "{{ _action }}"
+                  key: "{{ _key }}"
+                  volume: "{{ _vol }}"
+                  destination: "{{ _dest if _action in ['move', 'copy'] else '' }}"
+                  keys: "{{ _xo_tree['items'] | map(attribute='k') | list }}"
+                  written_to: "{{ _xo_writes | map(attribute='dvol') | unique | list }}"
+                  pointers_removed: "{{ _xo_tree.ptrs if _action in ['move', 'delete'] else [] }}"
+                  expansions_torn_down: "{{ _xo_empty if _action in ['move', 'delete'] else [] }}"
+                  expanded_tree: true
+                  message: >-
+                    {{ '' if (_action == 'copy' or (_xo_removed and _xo_torn)) else 'Done, but the cabinets did not confirm every removal or teardown in time: check expansion_sitrep.' }}
+                  trace:
+                    caller_token: "{{ _caller_token }}"
 
     # --- RELABEL ---
     - choose:
@@ -1094,7 +1416,12 @@ script:
           value_template: "{{ result is not defined and _action == 'get' }}"
         sequence:
         - variables:
-            _g_vol0: "{{ state_attr(_vol, 'variables') | default({}, true) }}"
+            # The cabinet as one tree: children an expanded drawer gained after
+            # its move live in the expansion and are listed here too.
+            _g_vol0: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {%- if CABS.cabinet_hosts_expansion(_vol) | trim == 'true' -%}{{- CABS.cabinet_expanded_view(_vol) | from_json({}) -}}
+              {%- else -%}{{- state_attr(_vol, 'variables') | default({}, true) -}}{%- endif -%}
         - variables:
             _g_trav: >-
               {%- set _t0 = _t if _t is mapping else {} -%}
@@ -2158,7 +2485,8 @@ script:
         - variables:
             _vars: >-
               {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-              {%- set _r = (state_attr(_vol, 'variables') if state_attr(_vol, 'variables') is mapping else {}) -%}
+              {%- set _r = (CABS.cabinet_expanded_view(_vol) | from_json({})) if CABS.cabinet_hosts_expansion(_vol) | trim == 'true'
+                           else (state_attr(_vol, 'variables') if state_attr(_vol, 'variables') is mapping else {}) -%}
               {%- if _r is mapping -%}{{ _r }}
               {%- elif _r is string and _r | trim not in ['', '{}'] -%}{{ _r | from_json | default({}) }}
               {%- else -%}{{ {} }}{%- endif -%}
@@ -3782,340 +4110,720 @@ script:
       - condition: template
         value_template: "{{ result is not defined and _action == 'expand_drawer' }}"
       then:
-      # Step 0: Validate inputs
+      # expand_drawer: moves a drawer and its whole subtree (path, path/...) into
+      # an expansion slot unchanged (value, meta and the drawer's own acl), and
+      # leaves one mount pointer per key in the source. The expansion answers
+      # with its host's ACL (CABS.acl_record). Order: plan, mount the slot,
+      # stamp it (VolumeInfo merged, nothing else in it changes), copy, verify,
+      # cut over, prove each read resolves. A failed step puts everything back.
       - variables:
           _ed_src: "{{ source_cabinet | default('', true) | string | trim }}"
-          _ed_tgt: "{{ target_cabinet | default('', true) | string | trim }}"
+          _ed_tgt_in: "{{ target_cabinet | default('', true) | string | trim }}"
           _ed_key: "{{ _key }}"
-          _ed_thresh: "{{ space_threshold | default(85) | int(85) }}"
+          _ed_thresh: "{{ space_threshold | default(85, true) | int(85) }}"
           _ed_max: 131072
-      - choose:
-        - conditions:
-          - condition: template
-            value_template: "{{ _ed_src == '' or _ed_tgt == '' or _ed_key == '' }}"
-          sequence:
+          _ed_headroom: 2048
+          _ed_max_keys: 30
+      - variables:
+          _ed_src_vars: "{{ (state_attr(_ed_src, 'variables') if _ed_src != '' else none) or {} }}"
+      # The subtree. Any key that is already a mount pointer (an earlier move,
+      # set_mount or a live drawer) refuses the whole call below.
+      - variables:
+          _ed_plan: >-
+            {%- set _pre = _ed_key ~ '/' -%}
+            {#- The root must be a plain drawer. A softlink below it moves as
+                is (its pointer, unchanged); a pointer into an expansion never
+                sits below a root. -#}
+            {%- set ns = namespace(all=[], move=[], stay=[], links=[], xptr=[]) -%}
+            {%- for k in (_ed_src_vars.keys() | list | sort) if _ed_key != '' and (k == _ed_key or k.startswith(_pre)) -%}
+              {%- set e = _ed_src_vars[k] -%}
+              {%- set v = e.get('value') if e is mapping else none -%}
+              {%- set v = (v | from_json(none)) if v is string else v -%}
+              {%- set ns.all = ns.all + [k] -%}
+              {%- set _tg = ((v.get('target_entity_id') or '') | string) if v is mapping and v.get('mount_point', false) == true and v.get('fc_args') is none else '' -%}
+              {%- set _te = (state_attr(_tg, 'variables') or {}).get('AI_Cabinet_VolumeInfo') if _tg != '' else none -%}
+              {%- set _tvi = _te.get('value') if _te is mapping else none -%}
+              {%- set _tvi = (_tvi | from_json(none)) if _tvi is string else _tvi -%}
+              {%- if k == _ed_key and v is mapping and v.get('mount_point', false) == true -%}
+                {%- set ns.stay = ns.stay + [k] -%}
+              {%- elif _tvi is mapping and _tvi.get('cabinet_class') == 'expansion' -%}
+                {%- set ns.xptr = ns.xptr + [k] -%}
+              {%- else -%}
+                {%- set ns.move = ns.move + [k] -%}
+                {%- if v is mapping and v.get('mount_point', false) == true -%}{%- set ns.links = ns.links + [{'k': k, 'target': _tg}] -%}{%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{- {'all': ns.all, 'move': ns.move, 'stay': ns.stay, 'links': ns.links, 'xptr': ns.xptr} -}}
+      - variables:
+          _ed_env: >-
+            {%- set ns = namespace(d={}) -%}
+            {%- for k in _ed_plan.move -%}
+              {%- set ns.d = dict(ns.d, **{k: _ed_src_vars[k]}) -%}
+            {%- endfor -%}
+            {{- ns.d -}}
+      - variables:
+          _ed_move_bytes: "{{ _ed_env | tojson | length }}"
+          _ed_src_size: "{{ _ed_src_vars | tojson | length }}"
+          _ed_ptr_bytes: "{{ (_ed_plan.move | map('length') | sum) + 160 * (_ed_plan.move | count) }}"
+          _ed_src_slot: >-
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {{- (CABS.cabinet_slot_status(_ed_src) | from_json({})) if _ed_src != '' else {} -}}
+          _ed_slots: >-
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {{- CABS.cabinet_slot_candidates() | from_json([]) -}}
+      - variables:
+          _ed_err: >-
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set _sys = ['AI_Cabinet_VolumeInfo', 'meta', '_label_index', '_zen_relationships'] -%}
+            {%- set ns = namespace(locked=[]) -%}
+            {%- for k in _ed_plan.move -%}
+              {%- if CABS.acl_builtin_ops(k) | from_json({}) | count > 0 -%}{%- set ns.locked = ns.locked + [k] -%}{%- endif -%}
+            {%- endfor -%}
+            {%- if _ed_src == '' or _ed_key == '' -%}source_cabinet and path are required
+            {%- elif _ed_key in _sys or _ed_key.startswith('_') -%}{{ _ed_key }} is a system drawer and does not move
+            {%- elif '/' in _ed_key -%}{{ _ed_key }} is not a root drawer; an expansion mounts at a root drawer and takes its whole tree
+            {%- elif not (state_attr(_ed_src, 'variables') is mapping) or states(_ed_src) in ['init', 'unavailable', 'unknown'] -%}{{ _ed_src }} is not a ready cabinet
+            {%- elif _ed_src in _ed_slots or _ed_src_slot.get('cabinet_class') is not none -%}{{ _ed_src }} is an expansion slot; move from its host
+            {%- elif _ed_plan.all | count == 0 -%}{{ _ed_key }} is not in {{ _ed_src }}
+            {%- elif ns.locked | count > 0 -%}{{ ns.locked | join(', ') }}: credential and approval drawers do not move
+            {%- elif _ed_key in _ed_plan.stay -%}{{ _ed_key }} is already expanded (a mount pointer); expand_drawer runs once per drawer
+            {%- elif _ed_plan.xptr | count > 0 -%}{{ _ed_plan.xptr | join(', ') }} under {{ _ed_key }} is an expanded drawer; expansions mount at root drawers only
+            {%- elif _ed_plan.move | count > _ed_max_keys -%}{{ _ed_plan.move | count }} keys under {{ _ed_key }}; one call moves at most {{ _ed_max_keys }} (move a deeper path first)
+            {%- endif -%}
+      - if: "{{ _ed_err | trim != '' }}"
+        then:
+        - variables:
+            result:
+              status: error
+              tool: zen_sutra_filecabinet
+              action: expand_drawer
+              step_failed: validate
+              reason: "guarded: {{ _ed_err | trim }}"
+              source_cabinet: "{{ _ed_src }}"
+              source_drawer: "{{ _ed_key }}"
+              caller_token: "{{ _caller_token }}"
+      # Target: the slot named, else the first free slot that has room. One
+      # expansion holds one drawer and its children, so a slot holding any
+      # drawer is never a target (an empty expansion of this source may be
+      # reused: it holds nothing).
+      - if: "{{ result is not defined }}"
+        then:
+        - variables:
+            _ed_pick: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {%- set _need = (_ed_move_bytes | int) + 64 * (_ed_plan.move | count) + (_ed_headroom | int) -%}
+              {%- set ns = namespace(rows=[]) -%}
+              {%- for eid in _ed_slots -%}
+                {%- set s = CABS.cabinet_slot_status(eid) | from_json({}) -%}
+                {%- set _sz = ((state_attr(eid, 'variables') or {}) | tojson | length) -%}
+                {%- set _pre = _ed_key ~ '/' -%}
+                {%- set no = namespace(l=[]) -%}
+                {%- for k in s.get('user_drawers', []) if k != _ed_key and not k.startswith(_pre) -%}{%- set no.l = no.l + [k] -%}{%- endfor -%}
+                {%- set _other = no.l -%}
+                {%- set _host_ok = s.get('cabinet_class') == 'expansion' and s.get('hosted_by') == _ed_src and s.get('ready', false) and s.get('state') not in ['init', 'unavailable', 'unknown'] -%}
+                {%- set _mine = _host_ok and s.get('user_drawers', []) | count == 0 -%}
+                {%- set _free = s.get('free', false) and s.get('ready', false) and s.get('state') not in ['init', 'unavailable', 'unknown'] -%}
+                {%- set _why = '' if (_mine or _free) and _sz + _need <= (_ed_max | int)
+                               else ('insufficient_target_space' if (_mine or _free)
+                               else ('target_holds_another_drawer: ' ~ (_other | join(', ')) if _host_ok
+                               else ('target_is_expansion_of_' ~ s.get('hosted_by') if s.get('cabinet_class') is not none
+                               else ('target_cabinet_not_empty' if s.get('user_drawers', []) | count > 0 else 'target_cabinet_not_ready')))) -%}
+                {%- set ns.rows = ns.rows + [{'eid': eid, 'kind': 'expansion_of_source' if _mine else 'free', 'size': _sz, 'why': _why}] -%}
+              {%- endfor -%}
+              {%- set _ok = ns.rows | selectattr('why', 'equalto', '') | list -%}
+              {%- if _ed_tgt_in != '' -%}
+                {%- set _r = ns.rows | selectattr('eid', 'equalto', _ed_tgt_in) | list -%}
+                {%- if _r | count == 0 -%}
+                  {{- {'eid': '', 'why': 'target_not_an_expansion_slot', 'chosen': 'given', 'need': _need} -}}
+                {%- else -%}
+                  {{- dict(_r[0], chosen='given', need=_need) -}}
+                {%- endif -%}
+              {%- else -%}
+                {%- set _m = _ok | selectattr('kind', 'equalto', 'expansion_of_source') | list -%}
+                {%- set _f = _ok | selectattr('kind', 'equalto', 'free') | list -%}
+                {%- set _c = (_m + _f) -%}
+                {{- dict(_c[0], chosen='auto', need=_need) if _c | count > 0 else {'eid': '', 'why': 'no_expansion_slot_has_room', 'chosen': 'auto', 'need': _need} -}}
+              {%- endif -%}
+        - if: "{{ _ed_pick.why != '' }}"
+          then:
+          - variables:
+              result:
+                status: "{{ 'abort' if _ed_pick.why in ['insufficient_target_space', 'no_expansion_slot_has_room'] else 'error' }}"
+                tool: zen_sutra_filecabinet
+                action: expand_drawer
+                step_failed: target
+                reason: "{{ _ed_pick.why if _ed_pick.why in ['insufficient_target_space', 'no_expansion_slot_has_room'] else 'guarded: ' ~ _ed_pick.why }}"
+                target_cabinet: "{{ _ed_pick.eid if _ed_pick.eid != '' else _ed_tgt_in }}"
+                bytes_needed: "{{ _ed_pick.need }}"
+                message: >-
+                  One expansion holds one drawer and its children. The target must be a
+                  free slot (empty, ready, not hosted, or an empty expansion of
+                  {{ _ed_src }}) with room for {{ _ed_pick.need }} bytes.
+                  expansion_sitrep lists the slots.
+                caller_token: "{{ _caller_token }}"
+      - if: "{{ result is not defined }}"
+        then:
+        - variables:
+            _ed_tgt: "{{ _ed_pick.eid }}"
+            _ed_src_pre_pct: "{{ ((_ed_src_size | int) * 100 / (_ed_max | int)) | round(1) }}"
+            _ed_src_post_pct: "{{ (((_ed_src_size | int) - (_ed_move_bytes | int) + (_ed_ptr_bytes | int)) * 100 / (_ed_max | int)) | round(1) }}"
+        - variables:
+            _ed_selflinks: "{{ _ed_plan.links | selectattr('target', 'equalto', _ed_tgt) | map(attribute='k') | list }}"
+        - if: "{{ _ed_selflinks | count > 0 }}"
+          then:
           - variables:
               result:
                 status: error
                 tool: zen_sutra_filecabinet
                 action: expand_drawer
                 step_failed: validate
-                reason: source_cabinet, target_cabinet, and path are all required
+                reason: "guarded: {{ _ed_selflinks | join(', ') }} is a softlink into {{ _ed_tgt }}; in the expansion it would point at its own cabinet. Remove or repoint it first."
+                source_cabinet: "{{ _ed_src }}"
+                target_cabinet: "{{ _ed_tgt }}"
                 caller_token: "{{ _caller_token }}"
-      - if: "{{ result is not defined }}"
-        then:
-        - choose:
-          - conditions:
-            - condition: template
-              value_template: "{{ _ed_key == '_label_index' }}"
-            sequence:
-            - variables:
-                result:
-                  status: error
-                  tool: zen_sutra_filecabinet
-                  action: expand_drawer
-                  step_failed: label_index_block
-                  reason: >-
-                    Offloading _label_index is not yet supported. The label index is read
-                    directly during cabinet traversal — mount-pointer following for this
-                    system drawer requires dedicated work. Planned for a future release.
-                  caller_token: "{{ _caller_token }}"
-        - if: "{{ result is not defined }}"
+        - if: "{{ result is not defined and _ed_src_post_pct | float >= _ed_thresh | float }}"
           then:
           - variables:
-              _ed_src_vars: "{{ state_attr(_ed_src, 'variables') or {} }}"
-              _ed_tgt_vars: "{{ state_attr(_ed_tgt, 'variables') or {} }}"
-          - variables:
-              _ed_subtree_keys: >-
-                {%- set _prefix = _ed_key ~ '/' -%}
-                {%- set ns = namespace(keys=[]) -%}
-                {%- for k in (_ed_src_vars.keys() | list) -%}
-                  {%- if k == _ed_key or k.startswith(_prefix) -%}
-                    {%- set ns.keys = ns.keys + [k] -%}
-                  {%- endif -%}
-                {%- endfor -%}
-                {{ ns.keys }}
-          - choose:
-            - conditions:
-              - condition: template
-                value_template: "{{ _ed_key not in _ed_src_vars }}"
-              sequence:
-              - variables:
-                  result:
-                    status: error
-                    tool: zen_sutra_filecabinet
-                    action: expand_drawer
-                    step_failed: validate
-                    reason: source_drawer key not found in source_cabinet
-                    source_cabinet: "{{ _ed_src }}"
-                    source_drawer: "{{ _ed_key }}"
-                    caller_token: "{{ _caller_token }}"
-          - if: "{{ result is not defined }}"
+              result:
+                status: abort
+                tool: zen_sutra_filecabinet
+                action: expand_drawer
+                step_failed: space_check
+                reason: source_will_remain_above_threshold
+                source_cabinet: "{{ _ed_src }}"
+                space_before_pct: "{{ _ed_src_pre_pct }}"
+                space_after_pct: "{{ _ed_src_post_pct }}"
+                threshold: "{{ _ed_thresh }}"
+                caller_token: "{{ _caller_token }}"
+      # Step 1: mount the slot (its meta is put back if anything fails).
+      - if: "{{ result is not defined }}"
+        then:
+        - variables:
+            _ed_tvars0: "{{ state_attr(_ed_tgt, 'variables') or {} }}"
+        - variables:
+            _ed_meta0: "{{ (_ed_tvars0.get('meta') or {}).get('value') if _ed_tvars0.get('meta') is mapping else none }}"
+            _ed_vi0: >-
+              {%- set e = _ed_tvars0.get('AI_Cabinet_VolumeInfo') -%}
+              {%- set v = e.get('value') if e is mapping else none -%}
+              {{- ((v | from_json(none)) if v is string else v) or {} -}}
+            _ed_did_mount: "{{ states(_ed_tgt) == 'online_unmounted' }}"
+            _ed_did_stamp: "{{ _ed_pick.kind == 'free' }}"
+        - if: "{{ _ed_did_mount }}"
+          then:
+          - event: set_variable_legacy
+            event_data:
+              key: meta
+              value: "{{ {'mounted': true} }}"
+              volume_entity: "{{- _ed_tgt -}}"
+              set_timestamp: true
+          - wait_template: "{{ states(_ed_tgt) == 'online_mounted' }}"
+            timeout: "00:00:10"
+            continue_on_timeout: true
+          - if: "{{ not wait.completed }}"
             then:
-            - choose:
-              - conditions:
-                - condition: template
-                  value_template: "{{ _ed_subtree_keys | length > 1 }}"
-                sequence:
-                - variables:
-                    result:
-                      status: error
-                      tool: zen_sutra_filecabinet
-                      action: expand_drawer
-                      step_failed: validate
-                      reason: >-
-                        subtree_not_supported — drawer has Cabception children.
-                        expand_drawer requires a leaf key only.
-                      subtree_keys: "{{ _ed_subtree_keys }}"
-                      caller_token: "{{ _caller_token }}"
-            - if: "{{ result is not defined }}"
+            - variables:
+                _ed_fail: {step: mount, reason: target_mount_not_confirmed, key: ''}
+      # Step 2: stamp the slot as an expansion of the source: VolumeInfo is
+      # merged, so its id, flags and acls stay. From here it answers with the
+      # source's ACL.
+      - if: "{{ result is not defined and _ed_fail is not defined and _ed_did_stamp }}"
+        then:
+        - event: set_variable_legacy
+          event_data:
+            key: AI_Cabinet_VolumeInfo
+            value: "{{ dict(_ed_vi0, cabinet_class='expansion', hosted_by=_ed_src) }}"
+            volume_entity: "{{- _ed_tgt -}}"
+            set_timestamp: true
+        - wait_template: >-
+            {%- set e = (state_attr(_ed_tgt, 'variables') or {}).get('AI_Cabinet_VolumeInfo') -%}
+            {%- set v = e.get('value') if e is mapping else none -%}
+            {%- set v = (v | from_json(none)) if v is string else v -%}
+            {{ v is mapping and v.get('cabinet_class') == 'expansion' and v.get('hosted_by') == _ed_src
+               and v.get('id') == _ed_vi0.get('id') }}
+          timeout: "00:00:15"
+          continue_on_timeout: true
+        - if: "{{ not wait.completed }}"
+          then:
+          - variables:
+              _ed_fail: {step: stamp, reason: expansion_stamp_not_confirmed, key: ''}
+      # Step 3: copy each key with its whole envelope.
+      - if: "{{ result is not defined and _ed_fail is not defined }}"
+        then:
+        - repeat:
+            for_each: "{{ _ed_plan.move }}"
+            sequence:
+            - if: "{{ _ed_fail is not defined }}"
               then:
               - variables:
-                  _ed_tgt_user_drawers: >-
-                    {%- set _sys = ['AI_Cabinet_VolumeInfo', 'meta', '_label_index', '_zen_relationships'] -%}
-                    {{ (_ed_tgt_vars.keys() | list) | reject('in', _sys) | list }}
-              - choose:
-                - conditions:
-                  - condition: template
-                    value_template: >-
-                      {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                      {%- set _slot = CABS.cabinet_slot_status(_ed_tgt) | from_json({}) -%}
-                      {{ not (_slot.get('free', false) and _slot.get('ready', false)) }}
-                  sequence:
-                  - variables:
-                      result:
-                        status: error
-                        tool: zen_sutra_filecabinet
-                        action: expand_drawer
-                        step_failed: validate
-                        reason: >-
-                          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                          {%- set _slot = CABS.cabinet_slot_status(_ed_tgt) | from_json({}) -%}
-                          {%- if _slot.get('cabinet_class') is not none -%}target_is_expansion_slave
-                          {%- elif _slot.get('user_drawers', []) | length > 0 -%}target_cabinet_not_empty
-                          {%- else -%}target_cabinet_not_ready{%- endif -%}
-                        target_cabinet: "{{ _ed_tgt }}"
-                        existing_drawers: "{{ _ed_tgt_user_drawers }}"
-                        message: >-
-                          target_cabinet must be a free, initialized slot (empty, booted, and not already an expansion slave) before expand_drawer. Expansion cabinets are
-                          dedicated and locked after first use. Provision an empty cabinet as the target.
-                        caller_token: "{{ _caller_token }}"
-              - if: "{{ result is not defined }}"
+                  _ed_e: "{{ _ed_env[repeat.item] }}"
+              - event: set_variable_legacy
+                event_data:
+                  key: "{{- repeat.item -}}"
+                  value: "{{ _ed_e.get('value') }}"
+                  meta: "{{ _ed_e.get('meta') if _ed_e.get('meta') is mapping else {} }}"
+                  acl: "{{ _ed_e.get('acl') if _ed_e.get('acl') is mapping else '' }}"
+                  volume_entity: "{{- _ed_tgt -}}"
+                  set_timestamp: true
+              - wait_template: >-
+                  {%- set t = (state_attr(_ed_tgt, 'variables') or {}).get(repeat.item) -%}
+                  {{ t is mapping and (t.get('value') | tojson) == (_ed_e.get('value') | tojson) }}
+                timeout: "00:00:15"
+                continue_on_timeout: true
+              - if: "{{ not wait.completed }}"
                 then:
                 - variables:
-                    _ed_drawer_size: >-
-                      {{ {_ed_key: _ed_src_vars.get(_ed_key, {})} | tojson | length }}
-                    _ed_src_size: "{{ _ed_src_vars | tojson | length }}"
-                    _ed_tgt_size: "{{ _ed_tgt_vars | tojson | length }}"
+                    _ed_fail: "{{ {'step': 'copy', 'reason': 'copy_to_target_not_confirmed', 'key': repeat.item} }}"
+      # Step 4: verify every copy is the source envelope, byte for byte.
+      - if: "{{ result is not defined and _ed_fail is not defined }}"
+        then:
+        - variables:
+            _ed_diff: >-
+              {%- set tv = state_attr(_ed_tgt, 'variables') or {} -%}
+              {%- set ns = namespace(bad=[]) -%}
+              {%- for k in _ed_plan.move -%}
+                {%- set s = _ed_env[k] -%}
+                {%- set t = tv.get(k) if tv.get(k) is mapping else {} -%}
+                {%- if (t.get('value') | tojson) != (s.get('value') | tojson)
+                       or ((t.get('meta') or {}) | tojson) != ((s.get('meta') or {}) | tojson)
+                       or ((t.get('acl') or {}) | tojson) != ((s.get('acl') or {}) | tojson) -%}
+                  {%- set ns.bad = ns.bad + [k] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{- ns.bad -}}
+        - if: "{{ _ed_diff | count > 0 }}"
+          then:
+          - variables:
+              _ed_fail: "{{ {'step': 'verify', 'reason': 'copy_differs_from_source', 'key': _ed_diff | join(', ')} }}"
+      # Step 5: cut over. Each source key becomes a pointer; the envelope's
+      # meta and acl stay on it.
+      - if: "{{ result is not defined and _ed_fail is not defined }}"
+        then:
+        - variables:
+            _ed_ptr: "{{ {'mount_point': true, 'target_entity_id': _ed_tgt, 'target_guid': _ed_vi0.get('id', '')} }}"
+        - repeat:
+            for_each: "{{ _ed_plan.move }}"
+            sequence:
+            - if: "{{ _ed_fail is not defined }}"
+              then:
+              - event: set_variable_legacy
+                event_data:
+                  key: "{{- repeat.item -}}"
+                  value: "{{ _ed_ptr }}"
+                  volume_entity: "{{- _ed_src -}}"
+                  set_timestamp: true
+              - wait_template: >-
+                  {%- set e = (state_attr(_ed_src, 'variables') or {}).get(repeat.item) -%}
+                  {%- set v = e.get('value') if e is mapping else none -%}
+                  {%- set v = (v | from_json(none)) if v is string else v -%}
+                  {{ v is mapping and v.get('mount_point', false) == true and v.get('target_entity_id') == _ed_tgt }}
+                timeout: "00:00:15"
+                continue_on_timeout: true
+              - if: "{{ not wait.completed }}"
+                then:
                 - variables:
-                    _ed_tgt_post_size: "{{ _ed_tgt_size + _ed_drawer_size }}"
-                    _ed_src_post_pct: "{{ ((_ed_src_size - _ed_drawer_size + 100) * 100 / _ed_max) | round(1) }}"
-                    _ed_src_pre_pct: "{{ (_ed_src_size * 100 / _ed_max) | round(1) }}"
-                - choose:
-                  - conditions:
-                    - condition: template
-                      value_template: "{{ _ed_tgt_post_size > _ed_max }}"
-                    sequence:
-                    - variables:
-                        result:
-                          status: abort
-                          tool: zen_sutra_filecabinet
-                          action: expand_drawer
-                          step_failed: space_check
-                          reason: insufficient_target_space
-                          target_cabinet: "{{ _ed_tgt }}"
-                          target_current_size: "{{ _ed_tgt_size }}"
-                          drawer_size: "{{ _ed_drawer_size }}"
-                          target_max: "{{ _ed_max }}"
-                          caller_token: "{{ _caller_token }}"
-                - if: "{{ result is not defined }}"
-                  then:
-                  - choose:
-                    - conditions:
-                      - condition: template
-                        value_template: "{{ _ed_src_post_pct | float >= _ed_thresh }}"
-                      sequence:
-                      - variables:
-                          result:
-                            status: abort
-                            tool: zen_sutra_filecabinet
-                            action: expand_drawer
-                            step_failed: space_check
-                            reason: source_will_remain_above_threshold
-                            source_cabinet: "{{ _ed_src }}"
-                            space_before_pct: "{{ _ed_src_pre_pct }}"
-                            space_after_pct: "{{ _ed_src_post_pct }}"
-                            threshold: "{{ _ed_thresh }}"
-                            caller_token: "{{ _caller_token }}"
-                  - if: "{{ result is not defined }}"
-                    then:
-                    - variables:
-                        _ed_copy_value: "{{ _ed_src_vars.get(_ed_key, {}).get('value') }}"
-                    - event: set_variable_legacy
-                      event_data:
-                        key: "{{- _ed_key -}}"
-                        value: "{{ _ed_copy_value }}"
-                        volume_entity: "{{- _ed_tgt -}}"
-                        set_timestamp: true
-                    - wait_template: >-
-                        {{ (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) is not none }}
-                      timeout: "00:00:15"
-                      continue_on_timeout: true
-                    - variables:
-                        _ed_copy_ok: "{{ wait.completed }}"
-                    - choose:
-                      - conditions:
-                        - condition: template
-                          value_template: "{{ not _ed_copy_ok }}"
-                        sequence:
-                        - variables:
-                            result:
-                              status: error
-                              tool: zen_sutra_filecabinet
-                              action: expand_drawer
-                              step_failed: copy
-                              reason: copy_to_target_not_confirmed
-                              source_cabinet: "{{ _ed_src }}"
-                              target_cabinet: "{{ _ed_tgt }}"
-                              source_drawer: "{{ _ed_key }}"
-                              caller_token: "{{ _caller_token }}"
-                    - if: "{{ result is not defined }}"
-                      then:
-                      - event: set_variable_legacy
-                        event_data:
-                          key: "{{- _ed_key -}}"
-                          value: '{"mount_point": true, "target_entity_id": "{{ _ed_tgt }}"}'
-                          volume_entity: "{{- _ed_src -}}"
-                          set_timestamp: true
-                      - wait_template: >-
-                          {%- set _dr = (state_attr(_ed_src, 'variables') or {}).get(_ed_key) -%}
-                          {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                          {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
-                          {{ _dv is mapping and _dv.get('mount_point', false) == true }}
-                        timeout: "00:00:15"
-                        continue_on_timeout: true
-                      - variables:
-                          _ed_mount_set: "{{ wait.completed }}"
-                      - choose:
-                        - conditions:
-                          - condition: template
-                            value_template: "{{ not _ed_mount_set }}"
-                          sequence:
-                          # Undo: restore original data to source, delete target copy
-                          - event: set_variable_legacy
-                            event_data:
-                              key: "{{- _ed_key -}}"
-                              value: "{{ _ed_copy_value }}"
-                              volume_entity: "{{- _ed_src -}}"
-                              set_timestamp: true
-                          - event: remove_variable_legacy
-                            event_data:
-                              key: "{{- _ed_key -}}"
-                              volume_entity: "{{- _ed_tgt -}}"
-                          - variables:
-                              result:
-                                status: error
-                                tool: zen_sutra_filecabinet
-                                action: expand_drawer
-                                step_failed: mount_set
-                                reason: mount_pointer_not_confirmed_in_source
-                                source_cabinet: "{{ _ed_src }}"
-                                source_drawer: "{{ _ed_key }}"
-                                caller_token: "{{ _caller_token }}"
-                      - if: "{{ result is not defined }}"
-                        then:
-                        - variables:
-                            _ed_rt_sentinel: >-
-                              {{ _ed_copy_value | combine({'_ed_rt': true}) if _ed_copy_value is mapping
-                                 else {'_ed_rt': true} }}
-                        - event: set_variable_legacy
-                          event_data:
-                            key: "{{- _ed_key -}}"
-                            value: "{{ _ed_rt_sentinel }}"
-                            volume_entity: "{{- _ed_tgt -}}"
-                            set_timestamp: true
-                        - wait_template: >-
-                            {%- set _dr = (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) -%}
-                            {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                            {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
-                            {{ _dv is mapping and _dv.get('_ed_rt') == true }}
-                          timeout: "00:00:15"
-                          continue_on_timeout: true
-                        - variables:
-                            _ed_rt_ok: "{{ wait.completed }}"
-                        # Restore original data to target (undo sentinel)
-                        - event: set_variable_legacy
-                          event_data:
-                            key: "{{- _ed_key -}}"
-                            value: "{{ _ed_copy_value }}"
-                            volume_entity: "{{- _ed_tgt -}}"
-                            set_timestamp: true
-                        - wait_template: >-
-                            {%- set _dr = (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) -%}
-                            {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                            {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
-                            {{ not (_dv is mapping and _dv.get('_ed_rt') == true) }}
-                          timeout: "00:00:15"
-                          continue_on_timeout: true
-                        - choose:
-                          - conditions:
-                            - condition: template
-                              value_template: "{{ not _ed_rt_ok }}"
-                            sequence:
-                            # Undo: restore original to source, remove target copy
-                            - event: set_variable_legacy
-                              event_data:
-                                key: "{{- _ed_key -}}"
-                                value: "{{ _ed_copy_value }}"
-                                volume_entity: "{{- _ed_src -}}"
-                                set_timestamp: true
-                            - event: remove_variable_legacy
-                              event_data:
-                                key: "{{- _ed_key -}}"
-                                volume_entity: "{{- _ed_tgt -}}"
-                            - variables:
-                                result:
-                                  status: error
-                                  tool: zen_sutra_filecabinet
-                                  action: expand_drawer
-                                  step_failed: round_trip
-                                  reason: target_write_not_verified
-                                  source_cabinet: "{{ _ed_src }}"
-                                  target_cabinet: "{{ _ed_tgt }}"
-                                  source_drawer: "{{ _ed_key }}"
-                                  caller_token: "{{ _caller_token }}"
-                        - if: "{{ result is not defined }}"
-                          then:
-                          - event: set_variable_legacy
-                            event_data:
-                              key: AI_Cabinet_VolumeInfo
-                              value:
-                                cabinet_class: expansion
-                                hosted_by: "{{ _ed_src }}"
-                              volume_entity: "{{- _ed_tgt -}}"
-                              set_timestamp: true
-                          - wait_template: >-
-                              {%- set _vi = (state_attr(_ed_tgt, 'variables') or {}).get('AI_Cabinet_VolumeInfo') -%}
-                              {%- set _viv = (_vi.get('value') or none) if _vi is mapping else none -%}
-                              {%- set _viv = _viv if _viv is mapping else (_viv | from_json(none) if _viv is string else none) -%}
-                              {{ _viv is mapping and _viv.get('cabinet_class') == 'expansion' }}
-                            timeout: "00:00:15"
-                            continue_on_timeout: true
-                          # SUCCESS
-                          - variables:
-                              result:
-                                status: success
-                                tool: zen_sutra_filecabinet
-                                action: expand_drawer
-                                source_cabinet: "{{ _ed_src }}"
-                                source_drawer: "{{ _ed_key }}"
-                                target_cabinet: "{{ _ed_tgt }}"
-                                space_before_pct: "{{ _ed_src_pre_pct }}"
-                                space_after_pct: "{{ _ed_src_post_pct }}"
-                                drawer_size_bytes: "{{ _ed_drawer_size }}"
-                                mount_installed: true
-                                round_trip_verified: true
-                                caller_token: "{{ _caller_token }}"
+                    _ed_fail: "{{ {'step': 'cutover', 'reason': 'mount_pointer_not_confirmed_in_source', 'key': repeat.item} }}"
+      # Step 6: prove each key read through the source lands on the copy.
+      - if: "{{ result is not defined and _ed_fail is not defined }}"
+        then:
+        - variables:
+            _ed_unres: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {%- set ns = namespace(bad=[]) -%}
+              {%- for k in _ed_plan.move -%}
+                {#- The chain's first hop lands on the copy (a softlink in the
+                    tree is chased on from there). -#}
+                {%- set r = CABS.fc_resolve(_ed_src, k) | from_json -%}
+                {%- set ent = (state_attr(_ed_tgt, 'variables') or {}).get(k) -%}
+                {%- set ent = ent if ent is mapping else {} -%}
+                {%- if (r.visited | count) < 2 or r.visited[1] != _ed_tgt ~ '/' ~ k or (ent.get('value') | tojson) != (_ed_env[k].get('value') | tojson) -%}
+                  {%- set ns.bad = ns.bad + [k] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{- ns.bad -}}
+        - if: "{{ _ed_unres | count > 0 }}"
+          then:
+          - variables:
+              _ed_fail: "{{ {'step': 'resolve', 'reason': 'read_through_source_not_proven', 'key': _ed_unres | join(', ')} }}"
+      # Any failure: every source key gets its value back (meta and acl never
+      # left it), the copies go, and the slot's VolumeInfo and meta are restored.
+      - if: "{{ result is not defined and _ed_fail is defined }}"
+        then:
+        - repeat:
+            for_each: "{{ _ed_plan.move }}"
+            sequence:
+            - if: >-
+                {%- set e = (state_attr(_ed_src, 'variables') or {}).get(repeat.item) -%}
+                {{ e is not mapping or (e.get('value') | tojson) != (_ed_env[repeat.item].get('value') | tojson) }}
+              then:
+              - event: set_variable_legacy
+                event_data:
+                  key: "{{- repeat.item -}}"
+                  value: "{{ _ed_env[repeat.item].get('value') }}"
+                  volume_entity: "{{- _ed_src -}}"
+                  set_timestamp: true
+            - event: remove_variable_legacy
+              event_data:
+                key: "{{- repeat.item -}}"
+                volume_entity: "{{- _ed_tgt -}}"
+        - if: "{{ _ed_did_stamp }}"
+          then:
+          - event: set_variable_legacy
+            event_data:
+              key: AI_Cabinet_VolumeInfo
+              value: "{{ _ed_vi0 }}"
+              volume_entity: "{{- _ed_tgt -}}"
+              set_timestamp: true
+        - if: "{{ _ed_did_mount }}"
+          then:
+          - event: set_variable_legacy
+            event_data:
+              key: meta
+              value: "{{ _ed_meta0 if _ed_meta0 is mapping else {'mounted': false} }}"
+              volume_entity: "{{- _ed_tgt -}}"
+              set_timestamp: true
+        - wait_template: >-
+            {%- set sv = state_attr(_ed_src, 'variables') or {} -%}
+            {%- set tv = state_attr(_ed_tgt, 'variables') or {} -%}
+            {%- set ns = namespace(ok=true) -%}
+            {%- for k in _ed_plan.move -%}
+              {%- set e = sv.get(k) -%}
+              {%- if not (e is mapping and (e.get('value') | tojson) == (_ed_env[k].get('value') | tojson)) or k in tv -%}
+                {%- set ns.ok = false -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.ok }}
+          timeout: "00:00:20"
+          continue_on_timeout: true
+        - variables:
+            result:
+              status: error
+              tool: zen_sutra_filecabinet
+              action: expand_drawer
+              step_failed: "{{ _ed_fail.step }}"
+              reason: "{{ _ed_fail.reason }}"
+              failed_key: "{{ _ed_fail.key }}"
+              rolled_back: "{{ wait.completed }}"
+              source_cabinet: "{{ _ed_src }}"
+              target_cabinet: "{{ _ed_tgt }}"
+              source_drawer: "{{ _ed_key }}"
+              message: >-
+                {{ 'Nothing moved: every source key holds its original value again and the slot is as it was.'
+                   if wait.completed else
+                   'Rollback not confirmed in time: check ' ~ _ed_src ~ ' and ' ~ _ed_tgt ~ ' before retrying.' }}
+              caller_token: "{{ _caller_token }}"
+      # Success.
+      - if: "{{ result is not defined }}"
+        then:
+        - variables:
+            _ed_tgt_post_pct: "{{ (((state_attr(_ed_tgt, 'variables') or {}) | tojson | length) * 100 / (_ed_max | int)) | round(1) }}"
+            _ed_src_now_pct: "{{ (((state_attr(_ed_src, 'variables') or {}) | tojson | length) * 100 / (_ed_max | int)) | round(1) }}"
+        - event: zen_event
+          event_data:
+            event:
+              timestamp: "{{ now().isoformat() }}"
+              component: zen_sutra_filecabinet
+              severity: info
+              kind: drawer_expanded
+              summary: "{{ _ed_src }}/{{ _ed_key }}: {{ _ed_plan.move | count }} key(s) moved to {{ _ed_tgt }}"
+              metadata:
+                source_cabinet: "{{ _ed_src }}"
+                target_cabinet: "{{ _ed_tgt }}"
+                moved_keys: "{{ _ed_plan.move }}"
+                bytes_moved: "{{ _ed_move_bytes }}"
+              content_redacted: true
+            trace:
+              caller_token: "{{ _caller_token }}"
+        - variables:
+            result:
+              status: success
+              tool: zen_sutra_filecabinet
+              action: expand_drawer
+              source_cabinet: "{{ _ed_src }}"
+              source_drawer: "{{ _ed_key }}"
+              target_cabinet: "{{ _ed_tgt }}"
+              target_chosen: "{{ _ed_pick.chosen }}"
+              target_was: "{{ _ed_pick.kind }}"
+              target_mounted: "{{ _ed_did_mount }}"
+              moved_keys: "{{ _ed_plan.move }}"
+              kept_pointers: "{{ _ed_plan.stay }}"
+              bytes_moved: "{{ _ed_move_bytes }}"
+              space_before_pct: "{{ _ed_src_pre_pct }}"
+              space_after_pct: "{{ _ed_src_now_pct }}"
+              target_pct: "{{ _ed_tgt_post_pct }}"
+              acl: "{{ _ed_tgt }} answers with the ACL of {{ _ed_src }}; each drawer keeps its own acl"
+              mount_installed: true
+              round_trip_verified: true
+              caller_token: "{{ _caller_token }}"
+    - if:
+      - condition: template
+        value_template: "{{ result is not defined and _action == 'collapse_drawer' }}"
+      then:
+      # collapse_drawer: undoes expand_drawer. The drawer and its whole tree
+      # (path, path/...) come back from the expansion into the source unchanged
+      # (value, meta, acl) over their pointers, are verified, and the slot is
+      # torn down: its copies removed, the expansion stamp taken off VolumeInfo
+      # (nothing else in it changes) and the slot dismounted. Until the copy
+      # back verifies nothing in the expansion is touched; a failure there puts
+      # the pointers back.
+      - variables:
+          _cd_src: "{{ source_cabinet | default('', true) | string | trim }}"
+          _cd_key: "{{ _key }}"
+          _cd_max: 131072
+          _cd_headroom: 2048
+      - variables:
+          _cd_svars: "{{ (state_attr(_cd_src, 'variables') if _cd_src != '' else none) or {} }}"
+          _cd_root: >-
+            {%- set e = ((state_attr(_cd_src, 'variables') if _cd_src != '' else none) or {}).get(_cd_key) -%}
+            {%- set v = e.get('value') if e is mapping else none -%}
+            {%- set v = (v | from_json(none)) if v is string else v -%}
+            {{- v if v is mapping else {} -}}
+      - variables:
+          _cd_tgt: "{{ (_cd_root.get('target_entity_id') or '') | string if _cd_root.get('mount_point', false) == true and _cd_root.get('fc_args') is none else '' }}"
+      - variables:
+          _cd_tslot: >-
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {{- (CABS.cabinet_slot_status(_cd_tgt) | from_json({})) if _cd_tgt != '' else {} -}}
+          _cd_tvars: "{{ (state_attr(_cd_tgt, 'variables') if _cd_tgt != '' else none) or {} }}"
+      # The tree as the expansion holds it, and what the source holds under it.
+      - variables:
+          _cd_keys: >-
+            {%- set _pre = _cd_key ~ '/' -%}
+            {%- set ns = namespace(l=[]) -%}
+            {%- for k in _cd_tvars.keys() | list | sort if k.startswith(_pre) -%}{%- set ns.l = ns.l + [k] -%}{%- endfor -%}
+            {#- Children first, the root last: until the root is back, a child
+                with no pointer of its own still resolves through it. -#}
+            {{- ns.l + ([_cd_key] if _cd_key in _cd_tvars else []) -}}
+          _cd_conflicts: >-
+            {%- set _pre = _cd_key ~ '/' -%}
+            {%- set ns = namespace(l=[]) -%}
+            {%- for k, e in _cd_svars.items() if k == _cd_key or k.startswith(_pre) -%}
+              {%- set v = e.get('value') if e is mapping else none -%}
+              {%- set v = (v | from_json(none)) if v is string else v -%}
+              {%- if not (v is mapping and v.get('mount_point', false) == true and v.get('target_entity_id') == _cd_tgt) -%}{%- set ns.l = ns.l + [k] -%}{%- endif -%}
+            {%- endfor -%}
+            {{- ns.l -}}
+      - variables:
+          _cd_other: >-
+            {%- set _pre = _cd_key ~ '/' -%}
+            {%- set ns = namespace(l=[]) -%}
+            {%- for k in _cd_tslot.get('user_drawers', []) if k != _cd_key and not k.startswith(_pre) -%}{%- set ns.l = ns.l + [k] -%}{%- endfor -%}
+            {{- ns.l -}}
+          _cd_selflinks: >-
+            {%- set ns = namespace(l=[]) -%}
+            {%- for k in _cd_keys -%}
+              {%- set v = _cd_tvars[k].get('value') if _cd_tvars[k] is mapping else none -%}
+              {%- set v = (v | from_json(none)) if v is string else v -%}
+              {%- if v is mapping and v.get('mount_point', false) == true and v.get('fc_args') is none and (v.get('target_entity_id') or '') == _cd_src -%}{%- set ns.l = ns.l + [k] -%}{%- endif -%}
+            {%- endfor -%}
+            {{- ns.l -}}
+          _cd_back_bytes: >-
+            {%- set ns = namespace(d={}) -%}
+            {%- for k in _cd_keys -%}{%- set ns.d = dict(ns.d, **{k: _cd_tvars[k]}) -%}{%- endfor -%}
+            {{- ns.d | tojson | length -}}
+          _cd_ptr_bytes: >-
+            {%- set _pre = _cd_key ~ '/' -%}
+            {%- set ns = namespace(d={}) -%}
+            {%- for k, e in _cd_svars.items() if k == _cd_key or k.startswith(_pre) -%}{%- set ns.d = dict(ns.d, **{k: e}) -%}{%- endfor -%}
+            {{- ns.d | tojson | length -}}
+      - variables:
+          _cd_err: >-
+            {%- if _cd_src == '' or _cd_key == '' -%}source_cabinet and path are required
+            {%- elif not (state_attr(_cd_src, 'variables') is mapping) -%}{{ _cd_src }} is not a ready cabinet
+            {%- elif _cd_key not in _cd_svars -%}{{ _cd_key }} is not in {{ _cd_src }}
+            {%- elif _cd_tgt == '' or _cd_tslot.get('cabinet_class') != 'expansion' or _cd_tslot.get('hosted_by') != _cd_src -%}{{ _cd_key }} is not expanded (not a mount pointer into an expansion {{ _cd_src }} hosts); nothing to collapse
+            {%- elif _cd_key not in _cd_tvars -%}{{ _cd_tgt }} does not hold {{ _cd_key }}; nothing to bring back (fix the pointer by hand)
+            {%- elif _cd_conflicts | count > 0 -%}{{ _cd_conflicts | join(', ') }} in {{ _cd_src }} is not a pointer into {{ _cd_tgt }}; resolve that before collapsing
+            {%- elif _cd_other | count > 0 -%}{{ _cd_tgt }} also holds {{ _cd_other | join(', ') }}; one expansion holds one drawer
+            {%- elif _cd_selflinks | count > 0 -%}{{ _cd_selflinks | join(', ') }} in {{ _cd_tgt }} is a softlink into {{ _cd_src }}; back in {{ _cd_src }} it would point at its own cabinet. Remove or repoint it first
+            {%- elif (_cd_svars | tojson | length) - (_cd_ptr_bytes | int) + (_cd_back_bytes | int) + 64 * (_cd_keys | count) + (_cd_headroom | int) > (_cd_max | int) -%}insufficient_source_space
+            {%- endif -%}
+      - if: "{{ _cd_err | trim != '' }}"
+        then:
+        - variables:
+            result:
+              status: "{{ 'abort' if _cd_err | trim == 'insufficient_source_space' else 'error' }}"
+              tool: zen_sutra_filecabinet
+              action: collapse_drawer
+              step_failed: validate
+              reason: "{{ _cd_err | trim if _cd_err | trim == 'insufficient_source_space' else 'guarded: ' ~ (_cd_err | trim) }}"
+              source_cabinet: "{{ _cd_src }}"
+              source_drawer: "{{ _cd_key }}"
+              target_cabinet: "{{ _cd_tgt }}"
+              caller_token: "{{ _caller_token }}"
+      # Step 1: copy back over each pointer (or into the source for a child the
+      # expansion gained after the move).
+      - if: "{{ result is not defined }}"
+        then:
+        - variables:
+            _cd_ptrs: >-
+              {%- set ns = namespace(d={}) -%}
+              {%- for k in _cd_keys if k in _cd_svars -%}{%- set ns.d = dict(ns.d, **{k: _cd_svars[k].get('value')}) -%}{%- endfor -%}
+              {{- ns.d -}}
+        - repeat:
+            for_each: "{{ _cd_keys }}"
+            sequence:
+            - if: "{{ _cd_fail is not defined }}"
+              then:
+              - variables:
+                  _cd_e: "{{ _cd_tvars[repeat.item] }}"
+              - event: set_variable_legacy
+                event_data:
+                  key: "{{- repeat.item -}}"
+                  value: "{{ _cd_e.get('value') }}"
+                  meta: "{{ _cd_e.get('meta') if _cd_e.get('meta') is mapping else {} }}"
+                  acl: "{{ _cd_e.get('acl') if _cd_e.get('acl') is mapping else '' }}"
+                  volume_entity: "{{- _cd_src -}}"
+                  set_timestamp: true
+              - wait_template: >-
+                  {%- set s = (state_attr(_cd_src, 'variables') or {}).get(repeat.item) -%}
+                  {{ s is mapping and (s.get('value') | tojson) == (_cd_e.get('value') | tojson) }}
+                timeout: "00:00:15"
+                continue_on_timeout: true
+              - if: "{{ not wait.completed }}"
+                then:
+                - variables:
+                    _cd_fail: "{{ {'step': 'copy_back', 'reason': 'copy_to_source_not_confirmed', 'key': repeat.item} }}"
+      # Step 2: verify each source drawer is the expansion's, byte for byte.
+      - if: "{{ result is not defined and _cd_fail is not defined }}"
+        then:
+        - variables:
+            _cd_diff: >-
+              {%- set sv = state_attr(_cd_src, 'variables') or {} -%}
+              {%- set ns = namespace(bad=[]) -%}
+              {%- for k in _cd_keys -%}
+                {%- set t = _cd_tvars[k] -%}
+                {%- set s = sv.get(k) if sv.get(k) is mapping else {} -%}
+                {%- if (s.get('value') | tojson) != (t.get('value') | tojson)
+                       or ((s.get('meta') or {}) | tojson) != ((t.get('meta') or {}) | tojson)
+                       or ((s.get('acl') or {}) | tojson) != ((t.get('acl') or {}) | tojson) -%}
+                  {%- set ns.bad = ns.bad + [k] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{- ns.bad -}}
+        - if: "{{ _cd_diff | count > 0 }}"
+          then:
+          - variables:
+              _cd_fail: "{{ {'step': 'verify', 'reason': 'source_differs_from_expansion', 'key': _cd_diff | join(', ')} }}"
+      # A failure before teardown: the pointers go back, a key that had none is
+      # removed again. The expansion was never touched.
+      - if: "{{ result is not defined and _cd_fail is defined }}"
+        then:
+        - repeat:
+            for_each: "{{ _cd_keys }}"
+            sequence:
+            - if: "{{ repeat.item in _cd_ptrs }}"
+              then:
+              - event: set_variable_legacy
+                event_data:
+                  key: "{{- repeat.item -}}"
+                  value: "{{ _cd_ptrs[repeat.item] }}"
+                  volume_entity: "{{- _cd_src -}}"
+                  set_timestamp: true
+              else:
+              - event: remove_variable_legacy
+                event_data:
+                  key: "{{- repeat.item -}}"
+                  volume_entity: "{{- _cd_src -}}"
+        - wait_template: >-
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set ns = namespace(ok=true) -%}
+            {%- for k in _cd_keys -%}
+              {%- set r = CABS.fc_resolve(_cd_src, k) | from_json -%}
+              {%- if (r.visited | count) < 2 or r.visited[1] != _cd_tgt ~ '/' ~ k -%}{%- set ns.ok = false -%}{%- endif -%}
+            {%- endfor -%}
+            {{ ns.ok }}
+          timeout: "00:00:20"
+          continue_on_timeout: true
+        - variables:
+            result:
+              status: error
+              tool: zen_sutra_filecabinet
+              action: collapse_drawer
+              step_failed: "{{ _cd_fail.step }}"
+              reason: "{{ _cd_fail.reason }}"
+              failed_key: "{{ _cd_fail.key }}"
+              rolled_back: "{{ wait.completed }}"
+              source_cabinet: "{{ _cd_src }}"
+              target_cabinet: "{{ _cd_tgt }}"
+              source_drawer: "{{ _cd_key }}"
+              message: >-
+                {{ 'Nothing changed: the drawer still lives in ' ~ _cd_tgt ~ ' behind its pointers.'
+                   if wait.completed else
+                   'Rollback not confirmed in time: check ' ~ _cd_src ~ ' before retrying (the expansion copy is intact).' }}
+              caller_token: "{{ _caller_token }}"
+      # Step 3: teardown. The source holds the tree now; the slot goes back to
+      # free: copies removed, expansion stamp off VolumeInfo, dismounted.
+      - if: "{{ result is not defined }}"
+        then:
+        - repeat:
+            for_each: "{{ _cd_keys }}"
+            sequence:
+            - event: remove_variable_legacy
+              event_data:
+                key: "{{- repeat.item -}}"
+                volume_entity: "{{- _cd_tgt -}}"
+        - variables:
+            _cd_vi: >-
+              {%- set e = (state_attr(_cd_tgt, 'variables') or {}).get('AI_Cabinet_VolumeInfo') -%}
+              {%- set v = e.get('value') if e is mapping else none -%}
+              {{- ((v | from_json(none)) if v is string else v) or {} -}}
+        - event: set_variable_legacy
+          event_data:
+            key: AI_Cabinet_VolumeInfo
+            value: "{{ dict(_cd_vi.items() | rejectattr('0', 'in', ['cabinet_class', 'hosted_by'])) }}"
+            volume_entity: "{{- _cd_tgt -}}"
+            set_timestamp: true
+        - if: "{{ states(_cd_tgt) == 'online_mounted' }}"
+          then:
+          - event: set_variable_legacy
+            event_data:
+              key: meta
+              value: "{{ {'mounted': false} }}"
+              volume_entity: "{{- _cd_tgt -}}"
+              set_timestamp: true
+        - wait_template: >-
+            {%- set tv = state_attr(_cd_tgt, 'variables') or {} -%}
+            {%- set e = tv.get('AI_Cabinet_VolumeInfo') -%}
+            {%- set v = e.get('value') if e is mapping else none -%}
+            {%- set v = ((v | from_json(none)) if v is string else v) or {} -%}
+            {{ (_cd_keys | select('in', tv.keys() | list) | list | count) == 0 and 'cabinet_class' not in v
+               and v.get('id') == _cd_vi.get('id') and states(_cd_tgt) == 'online_unmounted' }}
+          timeout: "00:00:20"
+          continue_on_timeout: true
+        - variables:
+            _cd_torn: "{{ wait.completed }}"
+        - event: zen_event
+          event_data:
+            event:
+              timestamp: "{{ now().isoformat() }}"
+              component: zen_sutra_filecabinet
+              severity: "{{ 'info' if _cd_torn else 'warning' }}"
+              kind: drawer_collapsed
+              summary: "{{ _cd_src }}/{{ _cd_key }}: {{ _cd_keys | count }} key(s) back from {{ _cd_tgt }}{{ '' if _cd_torn else ' (slot teardown not confirmed)' }}"
+              metadata:
+                source_cabinet: "{{ _cd_src }}"
+                target_cabinet: "{{ _cd_tgt }}"
+                keys: "{{ _cd_keys }}"
+              content_redacted: true
+            trace:
+              caller_token: "{{ _caller_token }}"
+        - variables:
+            result:
+              status: "{{ 'success' if _cd_torn else 'warning' }}"
+              tool: zen_sutra_filecabinet
+              action: collapse_drawer
+              source_cabinet: "{{ _cd_src }}"
+              source_drawer: "{{ _cd_key }}"
+              target_cabinet: "{{ _cd_tgt }}"
+              keys_back: "{{ _cd_keys }}"
+              bytes_back: "{{ _cd_back_bytes }}"
+              verified: true
+              slot_torn_down: "{{ _cd_torn }}"
+              message: >-
+                {{ 'The drawer and its tree live in ' ~ _cd_src ~ ' again; ' ~ _cd_tgt ~ ' is a free slot.'
+                   if _cd_torn else
+                   'The drawer and its tree live in ' ~ _cd_src ~ ' again (verified), but ' ~ _cd_tgt ~ ' did not confirm its teardown: check expansion_sitrep.' }}
+              caller_token: "{{ _caller_token }}"
     - if: "{{ result is not defined }}"
       then:
       - variables:
@@ -4125,7 +4833,7 @@ script:
             action: "{{ _action }}"
             message: >-
               Unknown action: {{ _action }}.
-              Use get|create|update|upsert|delete|list|move|copy|search|relabel|
+              Use get|create|update|upsert|delete|list|move|copy|search|relabel|expand_drawer|collapse_drawer|
               manifest|clone|set_mount|remove_mount|mount_cabinet|dismount_cabinet|set_cabinet_ro|
               stacks_by_anchor|register|unregister|inspect|health (no volume = system status)|audit.
 
@@ -4154,7 +4862,7 @@ script:
     icon: mdi:bookshelf
     fields:
       action_type:
-        description: "list|get|create|update|upsert|delete|move|copy|relabel|search|manifest|clone|set_mount|remove_mount|mount_cabinet|dismount_cabinet|set_cabinet_ro|stacks_by_anchor|register|unregister|inspect|health|audit|expansion_sitrep|fleet|help|expand_drawer|weave|weave_preview|weave_save. Aliases: read=get, write=upsert, scan=list"
+        description: "list|get|create|update|upsert|delete|move|copy|relabel|search|manifest|clone|set_mount|remove_mount|mount_cabinet|dismount_cabinet|set_cabinet_ro|stacks_by_anchor|register|unregister|inspect|health|audit|expansion_sitrep|fleet|help|expand_drawer|collapse_drawer|weave|weave_preview|weave_save. Aliases: read=get, write=upsert, scan=list"
         required: true
         selector:
           select:
@@ -4184,6 +4892,7 @@ script:
             - audit
             - help
             - expand_drawer
+            - collapse_drawer
             - fleet
             - expansion_sitrep
             - read
@@ -4372,13 +5081,13 @@ script:
           text:
         name: Anchor IDs
       source_cabinet:
-        description: "expand_drawer: entity ID of the cabinet that currently holds the drawer."
+        description: "expand_drawer / collapse_drawer: the cabinet that holds the drawer. path = the drawer; its children (path/...) move with it. collapse_drawer brings an expanded drawer back and frees its slot."
         required: false
         selector:
           text:
         name: Source Cabinet
       target_cabinet:
-        description: "expand_drawer: entity ID of the expansion cabinet to migrate the drawer into."
+        description: "expand_drawer: expansion slot to move into. Omit to pick a free slot. One expansion holds one drawer and its children; a drawer expands once."
         required: false
         selector:
           text:
@@ -4583,7 +5292,7 @@ script:
               {{-
                 {
                   "tool": "zen_dojotools_filecabinet",
-                  "version": "6.26.0",
+                  "version": "6.31.0",
                   "intent": "Stack-agnostic knowledge surface. stack=cabinet is always available (built-in FileCabinet key-value store). stack=wiki is optional — requires zen_sutra_wikijs installed and registered; returns stack_not_available if missing. HA Labels are the shared tag/anchor system across both stacks.",
                   "you_should_use_this_tool_when": [
                     "You need to read, write, or manage key-value knowledge drawers in a FileCabinet volume (stack=cabinet — always available).",
@@ -4604,9 +5313,9 @@ script:
                     },
                     "cabinet": {
                       "description": "FileCabinet key-value store. HA Labels as tags, mount traversal, GC metadata envelope. Path slugified to drawer key.",
-                      "actions": ["get", "create", "update", "upsert", "delete", "list", "move", "copy", "relabel", "search", "stacks_by_anchor", "clone", "set_mount", "remove_mount", "mount_cabinet", "dismount_cabinet", "set_cabinet_ro", "manifest", "register", "unregister", "inspect", "health", "audit"],
+                      "actions": ["get", "create", "update", "upsert", "delete", "list", "move", "copy", "relabel", "search", "stacks_by_anchor", "clone", "set_mount", "remove_mount", "mount_cabinet", "dismount_cabinet", "set_cabinet_ro", "expand_drawer", "collapse_drawer", "expansion_sitrep", "manifest", "register", "unregister", "inspect", "health", "audit"],
                       "not_supported": ["render"],
-                      "infra_native": ["clone", "set_mount", "remove_mount", "mount_cabinet", "dismount_cabinet", "set_cabinet_ro"],
+                      "infra_native": ["clone", "set_mount", "remove_mount", "mount_cabinet", "dismount_cabinet", "set_cabinet_ro", "expand_drawer", "collapse_drawer"],
                       "infra_delegated": ["manifest"]
                     },
                     "all": {
@@ -4698,7 +5407,7 @@ script:
                     "Example 11 — Nested drawer write (Cabception)": {"mode": "upsert", "stack": "cabinet", "volume_entity_id": "sensor.zenos_dojo_cabinet", "path": "projects/alpha/status", "title": "Alpha Status", "value": {"state": "active"}},
                     "Example 12 — Get parent node (shows subdrawers)": {"mode": "get", "stack": "cabinet", "volume_entity_id": "sensor.zenos_dojo_cabinet", "path": "projects/alpha"},
                     "Example 13 — List subtree": {"mode": "list", "stack": "cabinet", "volume_entity_id": "sensor.zenos_dojo_cabinet", "path_prefix": "projects/alpha"},
-                    "Example 14 — Virtual drawer (cross-cabinet mount)": {"_what": "Drawer 'shared/config' in expansion cab transparently reads from dojo cab. Get target_guid from action_type=manifest first.", "mode": "set_mount", "stack": "cabinet", "volume_entity_id": "sensor.zenos_expansion_cabinet_1", "path": "shared/config", "target_guid": "<guid from manifest>"},
+                    "Example 14 — Virtual drawer (cross-cabinet mount)": {"_what": "Drawer 'shared/config' in the household cabinet transparently reads from the dojo cabinet. Get target_guid from action_type=manifest first. To softlink under an expanded drawer, set_mount on the host cabinet; it lands in the expansion.", "mode": "set_mount", "stack": "cabinet", "volume_entity_id": "sensor.zenos_default_household_cabinet", "path": "shared/config", "target_guid": "<guid from manifest>"},
                     "Example 15 — Live drawer (tool-backed mount)": {"_what": "Drawer 'rooms/snapshot' returns live room list on every read — no stored data. tool must be a zen_* script name; params are passed through to that script.", "mode": "set_mount", "stack": "cabinet", "volume_entity_id": "sensor.zenos_dojo_cabinet", "path": "rooms/snapshot", "fc_args": {"tool": "zen_dojotools_room_manager", "params": {"mode": "list"}}}
                   },
                   "mount_system": {
@@ -4721,6 +5430,8 @@ script:
                     },
                     "traversal": {
                       "trigger": "Automatic on read (get/list) when drawer value has mount_point=true.",
+                      "one_chain": "Softlinks and expansions are one chain: at any cabinet on the way, a key under an expanded root hops into that expansion, and a softlink there is followed on. Softlinks from or to an expanded drawer are normal.",
+                      "acl_every_hop": "Every hop is checked, none skipped: each pointer the chain passes needs r (a pointer answers with its cabinet's ACL), and the drawer the chain ends on needs the action's op. A caller that cannot read a pointer does not get past it. Audit only for now: a would-deny rides on the answer as acl_audit.",
                       "max_depth": 8,
                       "loop_detection": "Tracks visited entity_id/key pairs. Returns loop_detected if the chain revisits any location.",
                       "same_key_policy": "The SAME key name is followed at each hop. If drawer 'config' is a mount, FC looks for 'config' in the target cabinet too. The key does not change across hops.",
@@ -4747,15 +5458,27 @@ script:
                       "required_fields": ["path", "volume_entity_id"],
                       "behavior": "Deletes the mount point drawer entirely. Does NOT touch the target cabinet. Any reader that relied on this mount will get key_not_found after removal."
                     },
+                    "in_expanded_trees": "set_mount and remove_mount on a key under an expanded drawer act in the expansion that holds the tree. The pointers expand_drawer made (root and children) are not softlinks: set_mount / remove_mount refuse them.",
                     "caveats": [
                       "SAME-VOLUME MOUNTS ARE BLOCKED at creation time — a mount in cabinet V pointing back to V is a loop. Read the drawer directly.",
-                      "Mount point drawers CANNOT be moved or copied — set_mount/remove_mount are the only management operations.",
+                      "Mount point drawers are not moved or copied (move/copy refuse them, also inside an expanded tree; force_action carries the pointer as is). delete removes one. set_mount/remove_mount manage them.",
                       "DON'T create many mounts pointing to each other within the same cabinet — loop detection catches this at read time but NOT at creation time (only same-volume is blocked at creation).",
                       "fc_args action_type MUST be whitelisted in syscab. Unwhitelisted calls return tool_call_blocked — not an error, but the value is unreadable.",
                       "Max traversal depth is 8 hops. Deep chains return depth_limit_exceeded.",
                       "target_guid must match a live zen_cabinet entity at traversal time (cross-cabinet mounts only). Deleted or dismounted cabinets leave dangling mounts that return unresolvable.",
                       "The SAME KEY is followed at every hop — if you mount 'config' to cabinet B, FC looks for 'config' in B, not some other key."
                     ]
+                  },
+                  "expansion_system": {
+                    "overview": "expand_drawer moves a ROOT drawer and its whole tree (path, path/...) into a free expansion slot unchanged (value, meta, acl), verified, and leaves a pointer per key in the source. The drawer is then a permanent redirect: reads, writes and new children under it land in the expansion. collapse_drawer brings it back and frees the slot.",
+                    "expand_drawer": {"required_fields": ["source_cabinet", "path (a root drawer, no '/')"], "optional_fields": ["target_cabinet (a free slot; omitted = pick one)", "space_threshold (abort if the source stays at or above this %, default 85)"],
+                                      "refused": ["a nested path (expansions mount at roots only)", "a drawer already expanded (runs once per drawer)", "system, credential and approval drawers", "a slot that already holds another drawer (one expansion holds one drawer)", "more than 30 keys in one call", "a softlink in the tree that would point at its own cabinet afterwards"]},
+                    "collapse_drawer": {"required_fields": ["source_cabinet", "path"], "behavior": "Size preflight first (refused with insufficient_source_space if the tree will not fit back). Copies the tree back over its pointers, verifies byte for byte, then tears the slot down. A failure puts the pointers back and leaves the expansion untouched."},
+                    "transparent_ops": "get, list, move, copy and delete work on the real drawers wherever they live; a destination under an expanded root lands in its expansion. An operation that empties an expansion (moving or deleting the expanded drawer) tears it down: no orphans.",
+                    "pointers_immutable": "expand_drawer creates the pointers; only move, delete or collapse_drawer remove them. They are never copied, moved or rewritten.",
+                    "acl": "An expansion answers with its host cabinet's ACL (it cannot get its own: identity acl_set refuses it). A drawer's own ACL travels with it.",
+                    "softlinks": "Allowed from and to expanded drawers (see mount_system.in_expanded_trees). expand and collapse carry them unchanged.",
+                    "sitrep": "expansion_sitrep lists the slots, what each holds, and how full."
                   },
                   "tapestry_system": {
                     "overview": "Tapestry (mode=weave/weave_preview/weave_save) is a READ-ONLY report compiler — it composes multiple existing cabinet drawers into a single nested dict. It does NOT create a mount and does NOT write to the source drawers. The compiled output is either returned inline (mode=weave) or saved as its own new drawer (mode=weave_save) that other callers can then read like any other drawer.",
