@@ -13,7 +13,7 @@ Security goes to eleven.
 
 Tron made admission explicit and put a badge in every agent's hands. This release makes the badge matter, and puts locks on the cabinets behind it. FileCabinet holds identity state, component definitions, configuration, mounts and the material that becomes agent context, and its live drawers can invoke tools. Permission to change a drawer can change what the system later believes or does, so the drawer is the next boundary to enforce.
 
-The rule is the one the guitar's owner laid down: don't touch it, don't look at it, don't even point at it. A cabinet your agent has no pass for doesn't just refuse the read. It never shows up in the listing.
+The rule is the one the guitar's owner laid down: don't touch it, don't look at it, don't even point at it. Once enforcement is on, a cabinet your agent has no pass for won't just refuse the read. It won't show up in the listing.
 
 **Backstage passes for agents, locks on the cabinets, and a working screen for the show.**
 
@@ -63,7 +63,7 @@ Every lock in this release is built, wired to its door, and running in **audit m
 | FileCabinet security | One gate, on the resolved mount target. Separate read, write, delete and admin rules. Default rules for every cabinet class, and locks on credential and approval drawers. Effective access per drawer (`CABS.acl_for`). | Refusing for real. Hiding unreadable drawers from listings and search. |
 | Trusted entry points | The gate tells an agent from a tool (caller origin). Boot, Flynn and automations are exempt at the admin door. Provisioning and Flynn's cabinet setup are named lifecycle principals. | Separating System and Default Agent authority. |
 | Admission enforcement | | The admission-token contract with `zen_root_authentik`. |
-| Bootstrap and recovery | A fresh install migrates and stamps its own schema; an upgrade migrates once and stamps it. | Revocation and recovery on the trusted path. |
+| Bootstrap and recovery | Flynn's bootstrap is built to migrate and stamp a fresh install. An upgrade migrates and stamps when the bootstrap next runs, or on `acl_migrate` / `cabinet_schema_upgrade`. | A cold fresh-install run with the stamp. Revocation and recovery on the trusted path. |
 | Audit-only rollout | Shipping now: `fc_acl_audit` and `door_gate_audit`. | Enforcement. |
 | Operator permission report | | The report. |
 
@@ -105,8 +105,9 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 
 ## Read this before upgrading
 
-- **The ACL v2 migration is mandatory.** Identity setup refuses an old-schema household or family with `acl_schema_upgrade_required`. After reloading (templates, automations, template entities, then scripts), run `zen_dojotools_identity mode=acl_migrate` to see the plan (a dry run is the default). Check every proposed cabinet `class`, especially any it calls `scratchpad`. Then apply it with `dry_run: false` and `confirm_action: true`, or run `zen_dojotools_systemtools tool=cabinet_schema_upgrade`, which applies it when the schema stamp is behind. A second dry run should plan nothing, and the system cabinet then holds `acl_schema` version 3. Flynn's bootstrap runs the same migration on its own until the stamp is current: on a fresh install, and on an existing one the next time the bootstrap runs. Drawers need no migration of their own; existing ones read as before.
+- **The ACL v2 migration is mandatory.** Identity setup refuses an old-schema household or family with `acl_schema_upgrade_required`. The migration also stamps each cabinet's class; until it does, a cabinet already on v2 gets the unclassified defaults. After reloading (templates, automations, template entities, then scripts), run `zen_dojotools_identity mode=acl_migrate` to see the plan (a dry run is the default). Check every proposed cabinet `class`, especially any it calls `scratchpad`. Then apply it with `dry_run: false` and `confirm_action: true`, or run `zen_dojotools_systemtools tool=cabinet_schema_upgrade`, which applies it when the schema stamp is behind. A second dry run should plan nothing, and the system cabinet then holds `acl_schema` version 3. Flynn's bootstrap runs the same migration on its own until the stamp is current: on a fresh install, and on an existing one the next time the bootstrap runs. Drawers need no migration of their own; existing ones read as before.
 - **Expect audit lines.** Agents that don't hold `zenos.system.cabinet_admin` log `door_gate_audit` lines, and the FileCabinet gate logs `fc_acl_audit` wherever enforcement would have refused or asked. They are the preview of enforcement, not errors.
+- **Re-grant `zenos_agent_basic` if to-do writes fail.** `todo_control` level 1 joined the bundle in 2026.10.1, but an agent that was granted the bundle's certs before then doesn't inherit it. Re-grant `zenos_agent_basic`, or grant `todo_control` level 1, before to-do writes work.
 - **FileCabinet reads return content in `value`.** The `{path: value}` map that `read` put in `result` is retired; `result` is only the tool envelope, and `read` is a plain alias of `get`. Anything of your own that reads `result.<path>` needs to read `value`.
 - **FileCabinet writes are honest.** A create, update, upsert or delete the cabinet never confirmed answers `status: error`, `code: write_unverified` instead of success. `update` on a missing key answers `not_found` (`force_action` creates it), and `create` on an existing key is an error unless `force_action`.
 - **Every write is a merge or a replace.** `upsert` deep-merges by default and `update` replaces. A read-modify-write caller passes `mode: replace`; under a merge, a key you removed comes back.
@@ -126,6 +127,7 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **Who knows where a member belongs.** `identity resolve` returns `name`, `person_entity`, `member_type` and `memberships`, and finds a person anywhere in the household tree, not only among the household's own users.
 - **The ACL record, cabinet classes, built-in locks, caller origin, both audit gates, and Identity's `acl_migrate`, `acl_set` and `take_ownership`.** See [The Locks, in Audit Mode](#the-locks-in-audit-mode).
 - **FileCabinet GC `repair` mode.** Normalizes one drawer to the `{value, meta}` envelope, with `dry_run`.
+- **Cabinet capacity.** `sensor.zen_cabinet_health` gains a `cabinet_capacity` attribute: each cabinet's size as a percentage of the 128 KB cap, the fullest cabinet, and a warning list at 90% and over. The sensor's state is unchanged.
 
 ## Changed
 
@@ -157,6 +159,20 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **`move` onto its own key refuses** with `code: same_key` instead of writing the drawer onto itself and deleting it.
 - **Identity VolumeInfo writes touch only the changed keys,** so an empty read can no longer replace the whole drawer.
 - **Flynn's history mount** reads the mount pointer from the drawer's value and stops re-sending `set_mount` on every bootstrap; a failed mount logs a warning. Flynn's primary-user picker now hides the head of household.
+- **Scribe writes only its own artifacts,** and Inspect never dumps a whole cabinet; its drawer peek follows FileCabinet's read rule.
+- **`query` without `filter_json` no longer crashes,** including calls that pass `domain`, `label` or `areas` at the top level.
+- **Music Assistant `get_library` without a search** no longer sends `search: None` and gets a 400; a missing Music Assistant entry or a failed call answers `error`.
+- **Infra survives update entities with no title,** which had taken down the tool scan, the manifest, Identity's `cert_list` and the KFC bootstrap with it.
+- **Ansible's `omit` is gone from service calls.** It rendered as an empty string, so Lights sent `color_temp_kelvin: ''`, Ectoplasm's `repair_list` sent `domain: ''`, and Identity's `cert_list` sent `target: ''`.
+- **Live-ack alerts clear** as soon as they are answered or time out, instead of staying active for a day.
+- **Grocy by-name stock adds work** for a product whose stock unit key is absent; only a key that is present and null is refused.
+- **The cert-denial hint names the real mode,** `cert_req_grant`.
+- **Zammad agrees with itself about configuration:** both readers unwrap `integrations_config` stored as JSON text or wrapped in `value`.
+- **CertAdmin's live-ack prompt** falls back to the cert name when the catalog description is empty.
+- **Mealie `foods_audit` reads every page** instead of stopping silently at 1,000 foods, and reports `total_available`, `pages_read` and `truncated`. Its advanced GET joins an endpoint's own query string with `&`.
+- **Twenty REST calls** strip a leading `/` or `/rest/` from the endpoint.
+- **Inspect reads `config_entry_id`** before the deprecated `config_entries` device field.
+- **Help matches the code.** SystemTools answers an unknown mode with a `guarded:` error pointing at `mode=help` and `zen_health_report`; Labels' `tag`/`untag` need no `confirm`; Postman's family-policy recipe no longer suggests seeding `{}`.
 - **Smaller fixes.** A re-fired alert's answer replaces the cached one. Provisioner's deprovision reports an error when the cabinet doesn't end up unmounted. `flip_schema_version` flips back. Stack and lens unregisters remove their entry. Grocy, Lights, Media Manager, Room Manager and cabinet inspect read drawer content from `value`.
 
 ## Removed
