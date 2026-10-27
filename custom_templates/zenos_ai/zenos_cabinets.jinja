@@ -1,4 +1,12 @@
-{#- zenos_cabinets.jinja — Version: 1.6.3 -#}
+{#- zenos_cabinets.jinja — Version: 1.7.0 -#}
+{#- 1.7.0: acl_enforce_mode, the FileCabinet ACL gate's switch (#10633): the
+    system cabinet's fc_acl_mode drawer, {mode: audit|enforce}; anything but
+    enforce reads as audit. A built-in lock keeps the drawer admin-door only,
+    so no FileCabinet caller can flip it. -#}
+{#- 1.6.4: the label index helpers (label_index, label_index_keys,
+    label_index_apply) and cabinet_resolved_view: a cabinet's tree with each
+    pointer into an expansion it hosts replaced by the drawer the expansion
+    holds, so search reads the real drawers. -#}
 {#- 1.6.3: fc_resolve is one chain through softlinks and expansions alike. At
     each cabinet a key it does not hold, under an expanded root it hosts, hops
     into that expansion, and a mount pointer there (a softlink) is chased on, so
@@ -828,6 +836,18 @@ has no ACL of its own: its cabinet record is its host's.
 {%- endmacro -%}
 
 {#-
+@macro: acl_enforce_mode
+@desc: Whether the FileCabinet ACL gate refuses (enforce) or only logs
+       (audit). Read from the system cabinet's fc_acl_mode drawer, which only
+       the admin door writes; a missing or unreadable drawer is audit.
+@returns: plain string, 'audit' or 'enforce'.
+-#}
+{%- macro acl_enforce_mode() -%}
+    {%- set _m = cabinet_drawer_value(states('sensor.zen_system_cabinet_resolved'), 'fc_acl_mode', {}) | from_json({}) -%}
+    {{- 'enforce' if (_m is mapping and (_m.get('mode') or '') | string | lower | trim == 'enforce') else 'audit' -}}
+{%- endmacro -%}
+
+{#-
 @macro: acl_builtin_ops
 @desc: Fixed rules for the drawers that hold credentials, approvals and the
        identity switch. They win over the drawer, cabinet and class rules
@@ -840,7 +860,7 @@ has no ACL of its own: its cabinet record is its host's.
     {%- set DOOR = {'cert': '', 'ack': false, 'who': []} -%}
     {%- if k in ['zen_ai_certs', 'integrations_config'] or k.startswith('alert_response_') -%}
         {{- {'w': TOOLS, 'd': TOOLS} | tojson -}}
-    {%- elif k == 'cert_admin_console_bypass' -%}
+    {%- elif k in ['cert_admin_console_bypass', 'fc_acl_mode'] -%}
         {{- {'w': DOOR, 'd': DOOR} | tojson -}}
     {%- else -%}
         {{- {} | tojson -}}
@@ -1124,6 +1144,86 @@ has no ACL of its own: its cabinet record is its host's.
         {%- endif -%}
     {%- endfor -%}
     {{- ns.d | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: cabinet_resolved_view
+@desc: cabinet_expanded_view with every pointer into an expansion this cabinet
+       hosts replaced by the drawer the expansion holds under the same key:
+       the tree as its owner sees it. Other mount pointers stay as they are.
+@returns: JSON {key: envelope}.
+-#}
+{%- macro cabinet_resolved_view(entity_id) -%}
+    {%- set _d = cabinet_expanded_view(entity_id) | from_json({}) -%}
+    {%- set ns = namespace(d=_d, hosted={}) -%}
+    {%- for k, e in _d.items() -%}
+        {%- set ev = e.get('value') if e is mapping else none -%}
+        {%- set ev = (ev | from_json(none)) if ev is string else ev -%}
+        {%- if ev is mapping and ev.get('mount_point', false) == true and ev.get('fc_args') is none -%}
+            {%- set tg = (ev.get('target_entity_id') or '') | string -%}
+            {%- set tvars = (state_attr(tg, 'variables') if tg else none) or {} -%}
+            {%- set te = tvars.get('AI_Cabinet_VolumeInfo') -%}
+            {%- set tvi = te.get('value') if te is mapping else none -%}
+            {%- set tvi = (tvi | from_json(none)) if tvi is string else tvi -%}
+            {%- if tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id and tvars.get(k) is mapping -%}
+                {%- set ns.d = dict(ns.d, **{k: tvars[k]}) -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{- ns.d | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: label_index
+@desc: A cabinet's _label_index as a mapping {label: [drawer keys]} ({} when
+       absent or unreadable). The index lives in the cabinet a caller
+       addresses, keyed by the drawer's own path: an expanded drawer's labels
+       stay in its host's index.
+@returns: JSON mapping.
+-#}
+{%- macro label_index(entity_id) -%}
+    {%- set e = ((state_attr(entity_id, 'variables') if entity_id else none) or {}).get('_label_index') -%}
+    {%- set v = e.get('value') if e is mapping else none -%}
+    {%- set v = (v | from_json(none)) if v is string and v | trim not in ['', '{}', 'null'] else v -%}
+    {{- (v if v is mapping else {}) | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: label_index_keys
+@desc: The labels each of keys carries in an index.
+@param: idx (mapping) - a label index, as label_index returns it.
+@param: keys (list) - drawer keys.
+@returns: JSON {key: [labels]}, keys without a label left out.
+-#}
+{%- macro label_index_keys(idx, keys) -%}
+    {%- set ns = namespace(m={}) -%}
+    {%- for lbl, ds in (idx if idx is mapping else {}).items() -%}
+        {%- set dl = ds if ds is iterable and ds is not string else [ds] -%}
+        {%- for k in keys if k in dl -%}
+            {%- set ns.m = dict(ns.m, **{k: (ns.m.get(k, []) + [lbl]) | unique | list}) -%}
+        {%- endfor -%}
+    {%- endfor -%}
+    {{- ns.m | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: label_index_apply
+@desc: An index with drop removed from every label and add {key: [labels]}
+       added; a label left with no drawer goes.
+@returns: JSON mapping.
+-#}
+{%- macro label_index_apply(idx, drop, add) -%}
+    {%- set ns = namespace(v={}) -%}
+    {%- for lbl, ds in (idx if idx is mapping else {}).items() -%}
+        {%- set dl = (ds if ds is iterable and ds is not string else ([ds] if ds not in [none, ''] else [])) | reject('in', drop) | list -%}
+        {%- if dl | count > 0 -%}{%- set ns.v = dict(ns.v, **{lbl: dl}) -%}{%- endif -%}
+    {%- endfor -%}
+    {%- for k, ls in (add if add is mapping else {}).items() -%}
+        {%- for lbl in ls -%}
+            {%- set ns.v = dict(ns.v, **{lbl: (ns.v.get(lbl, []) + [k]) | unique | list}) -%}
+        {%- endfor -%}
+    {%- endfor -%}
+    {{- ns.v | tojson -}}
 {%- endmacro -%}
 
 {#-

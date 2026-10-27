@@ -1,6 +1,6 @@
 # zenos_cabinets.jinja — Cabinet Macro Library
 
-**Version:** 1.6.3 (introduced in 2026.4.0 'Ectoplasm'; ACL macros, `fc_resolve` and the expansion macros in 2026.11.0 'This Is Spinal Tap')
+**Version:** 1.7.0 (introduced in 2026.4.0 'Ectoplasm'; ACL macros, `fc_resolve` and the expansion macros in 2026.11.0 'This Is Spinal Tap')
 **File:** `custom_templates/zenos_ai/zenos_cabinets.jinja`
 **Status:** Stable. Required by `zen_os_1.jinja`, `zenos_health.jinja`, `dojotools_filecabinet`, and any template that reads cabinet drawers.
 
@@ -141,6 +141,7 @@ The one ACL record Identity writes and FileCabinet enforces: VolumeInfo `acls` `
 | `acl_for(entity_id, drawer_key='')` | JSON object | `{class, self, owner, prime, partners, ops, source, inherited_from}`: effective ops for a drawer, each from builtin, else drawer, else cabinet, else the class default; `source` names where each op came from. `prime` falls back to the household's prime. A mount pointer answers with its cabinet's ACL, never a drawer `acl` |
 | `acl_op_class(action)` | String | `r`, `w`, `d` or `a` for a FileCabinet action (`expand_drawer`, `collapse_drawer` and unknown actions are `a`) |
 | `acl_check(acl, op, subject)` | JSON object | `{op, who_ok, via, cert, ack, source, reason}`. A caller matched by `@tool:<script>` passes on that tool's own gates (`via: tool`, no rule cert or ack). `subject` is `{guid, origin, tool}` or a bare GUID (an agent call) |
+| `acl_enforce_mode()` | String | `audit` or `enforce`: the FileCabinet gate's mode, from the system cabinet's `fc_acl_mode` drawer. Anything but `enforce`, or no drawer, is `audit` |
 | `acl_schema_check(entity_id)` | JSON object | `{ok, why}`. `why` can name: no VolumeInfo, no id, legacy guid field, no flags, acls not v2, stray VolumeInfo copies |
 
 `cabinet_acls` and `drawer_acl` are retired.
@@ -162,7 +163,7 @@ The one ACL record Identity writes and FileCabinet enforces: VolumeInfo `acls` `
 | scratchpad | `*` | `*` | `*` | `@prime` |
 | unclassified | `*` | `@prime`, `@internal` | `@prime` | door |
 
-**Built-in locks** (win over every other rule): `zen_ai_certs`, `integrations_config` and `alert_response_*` take `w` and `d` from `@internal` only; `cert_admin_console_bypass` is admin door only.
+**Built-in locks** (win over every other rule): `zen_ai_certs`, `integrations_config` and `alert_response_*` take `w` and `d` from `@internal` only; `cert_admin_console_bypass` and `fc_acl_mode` are admin door only.
 
 ---
 
@@ -174,6 +175,10 @@ The one ACL record Identity writes and FileCabinet enforces: VolumeInfo `acls` `
 | `expansion_root_of(entity_id, drawer_key)` | JSON object | `{root, target}`: the nearest ancestor of the key that is a pointer into an expansion this cabinet hosts, and that expansion. Empty strings when there is none. The key itself is not checked |
 | `expansion_plan(entity_id, drawer_key)` | JSON object | What a move, copy or delete of the key touches: `mode` is `self` (the key is an expanded root), `ancestor` (it sits under one), `contains` (its tree holds expanded roots) or `none`, with `roots: [{root, target, scope}]` |
 | `cabinet_hosts_expansion(entity_id)` | String | `true` when any expansion slot is stamped as hosted by this cabinet; a cheap check before building the view |
+| `cabinet_resolved_view(entity_id)` | JSON object | `cabinet_expanded_view` with each pointer into an expansion this cabinet hosts replaced by the drawer the expansion holds: the tree as its owner sees it. Other mount pointers stay. `search` reads it |
+| `label_index(entity_id)` | JSON object | The cabinet's `_label_index` as `{label: [drawer keys]}`, `{}` when absent or unreadable. Keyed by each drawer's own path, so an expanded drawer's labels stay in its host's index |
+| `label_index_keys(idx, keys)` | JSON object | `{key: [labels]}` for the given keys; keys without a label are left out |
+| `label_index_apply(idx, drop, add)` | JSON object | The index with the keys in `drop` removed from every label and `add` `{key: [labels]}` added; a label left with no drawer goes |
 | `cabinet_expanded_view(entity_id)` | JSON object | The cabinet's drawers as one tree: its own, plus each expansion's keys under the expanded root it doesn't hold itself (children added after the move). `get` (children) and `list` read it |
 | `cabinet_drawer_value_mounted(entity_id, drawer_key, fallback={})` | JSON object/any | Like `cabinet_drawer_value`, following one mount hop |
 | `drawer_normalize(env)` | JSON object | `{ok, changed, value, meta, repairs}`: a drawer envelope normalized to `{value, meta}` (nested envelopes unwrapped, expiry moved into `meta`). `ok: false` means do not write |

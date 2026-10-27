@@ -22,7 +22,7 @@ And a few things that are.
 
 Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets behind it. FileCabinet holds identity, configuration, certs and the material that becomes agent context, so permission to change a drawer is permission to change what the system believes. The drawer is the next boundary.
 
-**The locks are built, and running in audit mode.** Every FileCabinet call, and every agent or console write through the admin door, is decided by a real access gate that logs what it would refuse or ask a human about, then lets the call through. Nothing is refused yet; the logs show what enforcement will change before it changes anything.
+**The locks are built, and running in audit mode.** Every FileCabinet call, and every agent or console write through the admin door, is decided by a real access gate that logs what it would refuse or ask a human about, then lets the call through. Out of the box nothing is refused; the logs show what enforcement will change before it changes anything. FileCabinet's gate can be switched to enforce with one admin-door drawer (`fc_acl_mode`), and removing it switches back.
 
 **One ACL record.** Identity and FileCabinet share one record per cabinet: owner, prime agent, partners, and a rule for each of read, write, delete and admin, naming who may do it, the cert it needs, and whether a live human must say yes. One reading of the rules, not two.
 

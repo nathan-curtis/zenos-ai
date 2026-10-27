@@ -1,6 +1,13 @@
 ###############################################################################
 # ZenOS-AI DojoTools: AdminTools
-# Version: 5.4.20
+# Version: 5.4.21
+# v5.4.21: cabinetadmin's expand_drawer retired. It moved one
+#   leaf drawer without stamping the slot as an expansion, so the slot kept
+#   its own ACL, new children did not redirect and a slot could take a second
+#   drawer. Use zen_dojotools_filecabinet mode=expand_drawer (and
+#   collapse_drawer), the only way to make an expansion. source_cabinet,
+#   source_drawer and space_threshold left with it. A missing, unknown or
+#   retired mode now answers help.
 # v5.4.20: the factory stamps VolumeInfo class from the cabinet type (the
 #   default ops row, #10626); a type with no class row stays unclassified.
 # v5.4.19: cabinetadmin's result carries repair_results only for
@@ -803,7 +810,6 @@ script:
             - mount_status
             - repair_mount
             - repair_dismount
-            - expand_drawer
             - reset_all
             - flip_schema_version
             - repair_volumeinfo
@@ -869,31 +875,6 @@ script:
             min: 0
             max: 9
             mode: box
-      source_cabinet:
-        name: Source Cabinet (expand_drawer only)
-        description: Entity ID of the cabinet that currently holds the drawer to migrate.
-        required: false
-        default: ''
-        selector:
-          entity:
-            filter:
-            - domain: sensor
-      source_drawer:
-        name: Source Drawer Path (expand_drawer only)
-        description: Key path of the drawer to migrate. Must be a leaf key (no Cabception children).
-        required: false
-        default: ''
-        selector:
-          text:
-      space_threshold:
-        name: Space Threshold % (expand_drawer only)
-        description: Abort if source cabinet stays at or above this % after migration. Default 85.
-        required: false
-        selector:
-          number:
-            min: 50
-            max: 99
-            mode: box
       caller_token:
         name: Caller Token
         description: Opaque token passed through by the caller for correlation. Not interpreted by this script.
@@ -913,7 +894,7 @@ script:
                 tool='zen_admintools_cabinetadmin',
                 display_name='CabinetAdmin — Cabinet Lifecycle Manager',
                 tier='admintools',
-                version='4.6.0',
+                version='4.7.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['admintools'],
                 optional_labels=['cabinet'],
@@ -924,13 +905,13 @@ script:
                        'restore': 'restore', 'reset': 'reset', 'reset_all': 'reset_all',
                        'repair_volumeinfo': 'repair_volumeinfo', 'repair_mount': 'repair_mount',
                        'repair_dismount': 'repair_dismount', 'mount_status': 'mount_status',
-                       'flip_schema_version': 'flip_schema_version', 'expand_drawer': 'expand_drawer',
+                       'flip_schema_version': 'flip_schema_version',
                        'manifest': 'tool_manifest'},
                 icon='mdi:database-cog',
                 color='deep-orange',
                 caller_token=caller_token | default('')
               ) | from_json | combine({'certs_required': [
-                    {'cert': 'cabinet_lifecycle_control', 'level': 1, 'modes': ['restore', 'repair_volumeinfo', 'reset', 'hammer', 'init', 'repair_mount', 'repair_dismount', 'flip_schema_version', 'reset_all', 'expand_drawer']}
+                    {'cert': 'cabinet_lifecycle_control', 'level': 1, 'modes': ['restore', 'repair_volumeinfo', 'reset', 'hammer', 'init', 'repair_mount', 'repair_dismount', 'flip_schema_version', 'reset_all']}
               ]}) -}}
     # --------------------------------------------------------------
     # Always normalize User/AI inputs so we don't have to react JIT
@@ -956,7 +937,11 @@ script:
           - sensor.zenos_default_ai_user_cabinet
           - sensor.zenos_default_ai_user_history_cabinet
       - variables:
-          op: "{{- mode -}}"
+          # help == default: a missing, unknown or retired mode answers help.
+          op: >-
+            {%- set _known = ['help', 'inspect', 'init', 'hammer', 'restore', 'reset', 'mount_status', 'repair_mount',
+                              'repair_dismount', 'reset_all', 'flip_schema_version', 'repair_volumeinfo'] -%}
+            {{- mode if mode | default('') in _known else 'help' -}}
           use_universe: >
             {{- target_cabinet|default('') in ['', None] -}}
           effective_targets: >
@@ -1000,6 +985,11 @@ script:
                   reset_all wipes ALL ring-0 system cabinets and triggers Flynn
                   bootstrap. Only use after a bad deployment or schema migration.
                   confirm: true required. No undo. User cabinets are NOT touched.
+              retired:
+                expand_drawer: >-
+                  Retired in AdminTools 5.4.21. Use zen_dojotools_filecabinet
+                  mode=expand_drawer (and collapse_drawer): the only way to make
+                  an expansion.
               modes:
                 help: Return this help text. No target needed.
                 inspect: >-
@@ -1081,7 +1071,7 @@ script:
         # ── Cert-gate — cabinet_lifecycle_control. Covers every
         # moderate-to-nuclear write op
         # (restore, repair_volumeinfo, reset, hammer, init, repair_mount,
-        # repair_dismount, flip_schema_version, reset_all, expand_drawer).
+        # repair_dismount, flip_schema_version, reset_all).
         # inspect/mount_status/help stay ungated (read-only). A denial sets
         # result; the result-is-not-defined gate below keeps every op from
         # running. ──
@@ -1763,296 +1753,6 @@ script:
                         User cabinets were not touched.
                       wiped_count: "{{- canon_ring0_cabinets | length -}}"
                       caller_token: "{{- caller_token -}}"
-
-          # ── expand_drawer — atomic drawer migration to expansion cabinet ─────────
-          - if:
-            - condition: template
-              value_template: "{{- op == 'expand_drawer' -}}"
-            then:
-            # Step 0: Validate inputs
-            - variables:
-                _ed_src: "{{ source_cabinet | default('', true) | string | trim }}"
-                _ed_tgt: "{{ target_cabinet | default('', true) | string | trim }}"
-                _ed_key: "{{ source_drawer | default('', true) | string | trim }}"
-                _ed_thresh: "{{ space_threshold | default(85) | int(85) }}"
-                _ed_max: 131072
-            - choose:
-              - conditions:
-                - condition: template
-                  value_template: "{{ _ed_src == '' or _ed_tgt == '' or _ed_key == '' }}"
-                sequence:
-                - variables:
-                    result:
-                      status: error
-                      op: expand_drawer
-                      step_failed: validate
-                      reason: source_cabinet, target_cabinet, and source_drawer are all required
-                      caller_token: "{{ caller_token }}"
-            # Steps 1-6 + success all nested under one guard chain: once `result`
-            # is set by any earlier failure, no later step's variables/events run.
-            - if: "{{ result is not defined }}"
-              then:
-              # Step 1: Read source/target vars, validate drawer exists, no subtree
-              - variables:
-                  _ed_src_vars: "{{ state_attr(_ed_src, 'variables') or {} }}"
-                  _ed_tgt_vars: "{{ state_attr(_ed_tgt, 'variables') or {} }}"
-              - variables:
-                  _ed_subtree_keys: >-
-                    {%- set _prefix = _ed_key ~ '/' -%}
-                    {%- set ns = namespace(keys=[]) -%}
-                    {%- for k in (_ed_src_vars.keys() | list) -%}
-                      {%- if k == _ed_key or k.startswith(_prefix) -%}
-                        {%- set ns.keys = ns.keys + [k] -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                    {{ ns.keys }}
-              - choose:
-                - conditions:
-                  - condition: template
-                    value_template: "{{ _ed_key not in _ed_src_vars }}"
-                  sequence:
-                  - variables:
-                      result:
-                        status: error
-                        op: expand_drawer
-                        step_failed: validate
-                        reason: source_drawer key not found in source_cabinet
-                        source_cabinet: "{{ _ed_src }}"
-                        source_drawer: "{{ _ed_key }}"
-                        caller_token: "{{ caller_token }}"
-              - if: "{{ result is not defined }}"
-                then:
-                - choose:
-                  - conditions:
-                    - condition: template
-                      value_template: "{{ _ed_subtree_keys | length > 1 }}"
-                    sequence:
-                    - variables:
-                        result:
-                          status: error
-                          op: expand_drawer
-                          step_failed: validate
-                          reason: >-
-                            subtree_not_supported — drawer has Cabception children.
-                            expand_drawer requires a leaf key only.
-                          subtree_keys: "{{ _ed_subtree_keys }}"
-                          caller_token: "{{ caller_token }}"
-                - if: "{{ result is not defined }}"
-                  then:
-                  # Step 2: Space check
-                  - variables:
-                      _ed_drawer_size: >-
-                        {{ {_ed_key: _ed_src_vars.get(_ed_key, {})} | tojson | length }}
-                      _ed_src_size: "{{ _ed_src_vars | tojson | length }}"
-                      _ed_tgt_size: "{{ _ed_tgt_vars | tojson | length }}"
-                  - variables:
-                      _ed_tgt_post_size: "{{ _ed_tgt_size + _ed_drawer_size }}"
-                      _ed_src_post_pct: "{{ ((_ed_src_size - _ed_drawer_size + 100) * 100 / _ed_max) | round(1) }}"
-                      _ed_src_pre_pct: "{{ (_ed_src_size * 100 / _ed_max) | round(1) }}"
-                  - choose:
-                    - conditions:
-                      - condition: template
-                        value_template: "{{ _ed_tgt_post_size > _ed_max }}"
-                      sequence:
-                      - variables:
-                          result:
-                            status: abort
-                            op: expand_drawer
-                            step_failed: space_check
-                            reason: insufficient_target_space
-                            target_cabinet: "{{ _ed_tgt }}"
-                            target_current_size: "{{ _ed_tgt_size }}"
-                            drawer_size: "{{ _ed_drawer_size }}"
-                            target_max: "{{ _ed_max }}"
-                            caller_token: "{{ caller_token }}"
-                  - if: "{{ result is not defined }}"
-                    then:
-                    - choose:
-                      - conditions:
-                        - condition: template
-                          value_template: "{{ _ed_src_post_pct | float >= _ed_thresh }}"
-                        sequence:
-                        - variables:
-                            result:
-                              status: abort
-                              op: expand_drawer
-                              step_failed: space_check
-                              reason: source_will_remain_above_threshold
-                              source_cabinet: "{{ _ed_src }}"
-                              space_before_pct: "{{ _ed_src_pre_pct }}"
-                              space_after_pct: "{{ _ed_src_post_pct }}"
-                              threshold: "{{ _ed_thresh }}"
-                              caller_token: "{{ caller_token }}"
-                    - if: "{{ result is not defined }}"
-                      then:
-                      # Step 3: Copy drawer to target cabinet
-                      - variables:
-                          _ed_copy_value: "{{ _ed_src_vars.get(_ed_key, {}).get('value') }}"
-                      - action: script.zen_admintools_cabinet_writer
-                        data:
-                          mode: set
-                          volume_entity: "{{- _ed_tgt -}}"
-                          key: "{{- _ed_key -}}"
-                          value: "{{ _ed_copy_value }}"
-                          caller: zen_admintools_cabinetadmin
-                          reason: "cabinetadmin {{ op | default('', true) }}"
-                      - wait_template: >-
-                          {{ (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) is not none }}
-                        timeout: "00:00:15"
-                        continue_on_timeout: true
-                      - variables:
-                          _ed_copy_ok: "{{ wait.completed }}"
-                      - choose:
-                        - conditions:
-                          - condition: template
-                            value_template: "{{ not _ed_copy_ok }}"
-                          sequence:
-                          - variables:
-                              result:
-                                status: error
-                                op: expand_drawer
-                                step_failed: copy
-                                reason: copy_to_target_not_confirmed
-                                source_cabinet: "{{ _ed_src }}"
-                                target_cabinet: "{{ _ed_tgt }}"
-                                source_drawer: "{{ _ed_key }}"
-                                caller_token: "{{ caller_token }}"
-                      - if: "{{ result is not defined }}"
-                        then:
-                        # Step 4: Set mount pointer in source (overwrites original with pointer)
-                        - action: script.zen_admintools_cabinet_writer
-                          data:
-                            mode: set
-                            volume_entity: "{{- _ed_src -}}"
-                            key: "{{- _ed_key -}}"
-                            value: '{"mount_point": true, "target_entity_id": "{{ _ed_tgt }}"}'
-                            caller: zen_admintools_cabinetadmin
-                            reason: "cabinetadmin {{ op | default('', true) }}"
-                        - wait_template: >-
-                            {%- set _dr = (state_attr(_ed_src, 'variables') or {}).get(_ed_key) -%}
-                            {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                            {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
-                            {{ _dv is mapping and _dv.get('mount_point', false) == true }}
-                          timeout: "00:00:15"
-                          continue_on_timeout: true
-                        - variables:
-                            _ed_mount_set: "{{ wait.completed }}"
-                        - choose:
-                          - conditions:
-                            - condition: template
-                              value_template: "{{ not _ed_mount_set }}"
-                            sequence:
-                            # Undo: restore original data to source, delete target copy
-                            - action: script.zen_admintools_cabinet_writer
-                              data:
-                                mode: set
-                                volume_entity: "{{- _ed_src -}}"
-                                key: "{{- _ed_key -}}"
-                                value: "{{ _ed_copy_value }}"
-                                caller: zen_admintools_cabinetadmin
-                                reason: "cabinetadmin {{ op | default('', true) }}"
-                            - action: script.zen_admintools_cabinet_writer
-                              data:
-                                mode: remove
-                                volume_entity: "{{- _ed_tgt -}}"
-                                key: "{{- _ed_key -}}"
-                                caller: zen_admintools_cabinetadmin
-                                reason: "cabinetadmin {{ op | default('', true) }}"
-                            - variables:
-                                result:
-                                  status: error
-                                  op: expand_drawer
-                                  step_failed: mount_set
-                                  reason: mount_pointer_not_confirmed_in_source
-                                  source_cabinet: "{{ _ed_src }}"
-                                  source_drawer: "{{ _ed_key }}"
-                                  caller_token: "{{ caller_token }}"
-                        - if: "{{ result is not defined }}"
-                          then:
-                          # Step 5: Round trip — write sentinel through mount via FileCabinet (validates Sprint 1)
-                          - action: script.zen_sutra_filecabinet
-                            data:
-                              action_type: upsert
-                              mode: merge
-                              path: "{{ _ed_key }}"
-                              value: '{"_ed_rt": true}'
-                              volume_entity_id: "{{ _ed_src }}"
-                            response_variable: _ed_rt_result
-                          - variables:
-                              _ed_rt_fc_ok: >-
-                                {{ _ed_rt_result is mapping
-                                   and _ed_rt_result.get('status') == 'success'
-                                   and _ed_rt_result.get('write_verified') == true }}
-                          - variables:
-                              _ed_rt_target_ok: >-
-                                {%- set _dr = (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) -%}
-                                {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                                {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
-                                {{ _dv is mapping and _dv.get('_ed_rt') == true }}
-                          # Step 6: Restore original data to target (undo sentinel)
-                          - action: script.zen_admintools_cabinet_writer
-                            data:
-                              mode: set
-                              volume_entity: "{{- _ed_tgt -}}"
-                              key: "{{- _ed_key -}}"
-                              value: "{{ _ed_copy_value }}"
-                              caller: zen_admintools_cabinetadmin
-                              reason: "cabinetadmin {{ op | default('', true) }}"
-                          - wait_template: >-
-                              {%- set _dr = (state_attr(_ed_tgt, 'variables') or {}).get(_ed_key) -%}
-                              {%- set _dv_s = (_dr.get('value') or none) if _dr is mapping else none -%}
-                              {%- set _dv = _dv_s if _dv_s is mapping else (_dv_s | from_json(none) if _dv_s is string else none) -%}
-                              {{ not (_dv is mapping and _dv.get('_ed_rt') == true) }}
-                            timeout: "00:00:15"
-                            continue_on_timeout: true
-                          # Evaluate round trip result
-                          - choose:
-                            - conditions:
-                              - condition: template
-                                value_template: "{{ not _ed_rt_fc_ok or not _ed_rt_target_ok }}"
-                              sequence:
-                              # Undo: restore original to source, remove target copy
-                              - action: script.zen_admintools_cabinet_writer
-                                data:
-                                  mode: set
-                                  volume_entity: "{{- _ed_src -}}"
-                                  key: "{{- _ed_key -}}"
-                                  value: "{{ _ed_copy_value }}"
-                                  caller: zen_admintools_cabinetadmin
-                                  reason: "cabinetadmin {{ op | default('', true) }}"
-                              - action: script.zen_admintools_cabinet_writer
-                                data:
-                                  mode: remove
-                                  volume_entity: "{{- _ed_tgt -}}"
-                                  key: "{{- _ed_key -}}"
-                                  caller: zen_admintools_cabinetadmin
-                                  reason: "cabinetadmin {{ op | default('', true) }}"
-                              - variables:
-                                  result:
-                                    status: error
-                                    op: expand_drawer
-                                    step_failed: round_trip
-                                    reason: write_through_mount_not_verified
-                                    fc_ok: "{{ _ed_rt_fc_ok }}"
-                                    target_ok: "{{ _ed_rt_target_ok }}"
-                                    fc_result: "{{ _ed_rt_result }}"
-                                    caller_token: "{{ caller_token }}"
-                          - if: "{{ result is not defined }}"
-                            then:
-                            # SUCCESS
-                            - variables:
-                                result:
-                                  status: success
-                                  op: expand_drawer
-                                  source_cabinet: "{{ _ed_src }}"
-                                  source_drawer: "{{ _ed_key }}"
-                                  target_cabinet: "{{ _ed_tgt }}"
-                                  space_before_pct: "{{ _ed_src_pre_pct }}"
-                                  space_after_pct: "{{ _ed_src_post_pct }}"
-                                  drawer_size_bytes: "{{ _ed_drawer_size }}"
-                                  mount_installed: true
-                                  round_trip_verified: true
-                                  caller_token: "{{ caller_token }}"
 
           # Generic completion event for restore/repair_volumeinfo/reset
           # (legacy) — none of these fire one of their own, unlike

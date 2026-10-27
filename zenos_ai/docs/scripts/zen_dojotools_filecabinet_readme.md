@@ -1,4 +1,4 @@
-# Zen DojoTools FileCabinet — v6.31.0
+# Zen DojoTools FileCabinet — v6.33.0
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 **ZenOS Release:** 2026.11.0 'This Is Spinal Tap'
@@ -84,6 +84,8 @@ Labels are:
 Broken `_label_index` formats (legacy Python-literal strings) are repaired in flight.
 
 HA Labels **are** the tag system. There is no separate tags field in the storage envelope — labels live in the index drawer, not on the drawer itself.
+
+The index lives in the cabinet a caller addresses, keyed by the drawer's path, so an expanded drawer's labels stay in its host's index. `move`, `copy` and `delete` carry a tree's labels with it (`move` and `delete` take them off the source), and a cross-cabinet copy adds to the destination's index rather than replacing it. `relabel` and `create` answer only after their index write lands.
 
 ### Health-Aware Write Pipeline
 Before any write, FileCabinet checks:
@@ -398,10 +400,10 @@ Copies a drawer to `destination_path`. Cascades subtree. If no `tags` are suppli
 **Mounted drawer protection:** Same guard as `move`. Copying a mount without `force_action: true` is blocked to prevent silent mount config loss at the copy destination.
 
 ### `relabel`
-Updates the `_label_index` for an existing drawer without touching its value. Use this to fully replace a drawer's labels rather than adding to them.
+Updates the `_label_index` for an existing drawer without touching its value. Use this to fully replace a drawer's labels rather than adding to them. Takes a key an expansion holds.
 
 ### `search`
-Label match via `_label_index` (pass `anchor_ids`) plus full-text scan against key, title, content, and description (pass `query`). Both filters can be combined.
+Label match via `_label_index` (pass `anchor_ids`) plus full-text scan against key, title, content, and description (pass `query`). Both filters can be combined. Search reads the real drawers behind an expanded root, and a label match finds nested (`a/b`) drawers.
 
 ### `clone`
 Copies the full content of one cabinet into another. Health checks run on both source and destination before any write.
@@ -498,7 +500,7 @@ Fields present depends on the action. `value` is present on `get`. `write_verifi
 
 FileCabinet enforces the ACL record Identity writes: VolumeInfo `acls` `{v: 2, owner, prime, partners, ops}`, with cabinet GUIDs as principals, plus the cabinet's `class`. `ops` holds one rule per op class, `{cert, ack, who}`. `who` may list GUIDs, `*`, `@owner`, `@prime`, `@partner`, `@self`, `@internal` (any tool calling the engine) or `@tool:<script>`; an empty `who` means admin door only. A drawer's envelope `acl` may set `ops` only.
 
-Each op resolves on its own: a built-in lock, else the drawer's rule, else the cabinet's, else the default row for the cabinet's class. The class defaults and the built-in locks (`zen_ai_certs`, `integrations_config` and `alert_response_*` take writes only from tools; `cert_admin_console_bypass` only from the admin door) are tabled in [zenos_cabinets.jinja](../custom_templates/zenos_cabinets_jinja.md#acl-v2). A caller matched by `@tool:<script>` passes on that tool's own gates, with no rule cert or ack.
+Each op resolves on its own: a built-in lock, else the drawer's rule, else the cabinet's, else the default row for the cabinet's class. The class defaults and the built-in locks (`zen_ai_certs`, `integrations_config` and `alert_response_*` take writes only from tools; `cert_admin_console_bypass` and `fc_acl_mode` only from the admin door) are tabled in [zenos_cabinets.jinja](../custom_templates/zenos_cabinets_jinja.md#acl-v2). A caller matched by `@tool:<script>` passes on that tool's own gates, with no rule cert or ack.
 
 | Op | Actions |
 |---|---|
@@ -511,11 +513,18 @@ Each op resolves on its own: a built-in lock, else the drawer's rule, else the c
 
 **A pointer answers with its cabinet's ACL,** never a drawer `acl`. **An expansion answers with its host's ACL** (one hop; the answer names it in `inherited_from`). An expansion can't have an ACL of its own: Identity's `acl_set` and `take_ownership` refuse it and name the host. A drawer keeps its own `acl` wherever it lives, so a drawer-scope `acl_set` on an expanded key writes it on the copy in the expansion.
 
-**The gate is audit-only.** It refuses nothing. When it would deny or would ask for a live acknowledgement, it logs `fc_acl_audit` and the answer carries:
+**The gate ships in audit mode.** Its mode is the system cabinet's `fc_acl_mode` drawer, `{mode: audit|enforce}`. Only the admin door writes it, and a missing or unreadable drawer reads as audit, so an install stays in audit until an admin sets it.
+
+| Mode | A deny | A rule that asks for a live ack |
+|---|---|---|
+| `audit` (default) | Let through; logged | Let through; logged |
+| `enforce` | Refused: `status: error`, `guarded: the ACL denies ...` | Identity's `request_live_ack` asks the household admin every time (the console override stands in). Not granted: `status: denied` |
+
+Either way, when the gate would deny or would ask, it logs `fc_acl_audit` (with the mode) and the answer carries:
 
 ```json
 "acl_audit": {
-  "mode": "audit",
+  "mode": "audit|enforce",
   "action": "upsert",
   "origin": "agent|internal",
   "checks": [{"op": "w", "target": "...", "source": "builtin|drawer|cabinet|default", "via": "...", "why": "..."}],
@@ -524,6 +533,20 @@ Each op resolves on its own: a built-in lock, else the drawer's rule, else the c
   "would_ack": false
 }
 ```
+
+To turn enforcement on, set the drawer through the admin door:
+
+```yaml
+action: script.zen_admintools_cabinet_writer
+data:
+  mode: set
+  volume_entity: sensor.zenos_system_cabinet
+  key: fc_acl_mode
+  value: {mode: enforce}
+  caller: <your name for the audit log>
+```
+
+To roll back, remove the drawer (`mode: remove`) or set `{mode: audit}`. The admin door's own gate is separate and still audit only.
 
 Read the record only through the CABS macros (`acl_record`, `acl_for`, `acl_check`); see [zenos_cabinets.jinja](../custom_templates/zenos_cabinets_jinja.md). Identity's `acl_migrate`, `acl_set` and `take_ownership` write it; see [Identity](zen_dojotools_identity_readme.md).
 

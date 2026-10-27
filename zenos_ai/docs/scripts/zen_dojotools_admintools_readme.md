@@ -1,6 +1,6 @@
 # Zen DojoTools AdminTools
 
-**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.1 · `reset_labels` 1.0.0 · `cabinetadmin` 4.6.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 45 · `run_repair` 5.2.0.
+**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.1 · `reset_labels` 1.0.0 · `cabinetadmin` 4.7.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 45 · `run_repair` 5.2.0.
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -24,7 +24,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 |---|---|---|---|
 | `zen_admintools_reset_template` | 5.1.1 | **No** | Press zen_template and kfc_template into cabinets |
 | `zen_admintools_reset_labels` | 4.5.0 | No | Nuclear: delete all zen_ labels and assignments, trigger Flynn rebuild |
-| `zen_admintools_cabinetadmin` | 4.6.0 | No | Inspect, restore, reset, hammer, init, expand_drawer, repair_volumeinfo, or reset_all Ring-0 cabinets |
+| `zen_admintools_cabinetadmin` | 4.7.0 | No | Inspect, restore, reset, hammer, init, repair_volumeinfo, or reset_all Ring-0 cabinets |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
 | `zen_admintools_prompt_loader` | 45 | No | Load versioned Cortex, Directives, and Purpose (v45 = Open Door (default/latest), v44 = Open Door, v43 = Rule Zero). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`. |
@@ -109,9 +109,6 @@ Ring-2 cabinet maintenance tool. Provisions new expansion cabinets, inspects cab
 | `confirm_init` | boolean | `false` | `hammer` only — re-stamp fresh VolumeInfo immediately after wipe. Set `cab_type` accordingly |
 | `hammer_ok` | boolean | `false` | Required `true` for `hammer` mode |
 | `confirm` | boolean | `false` | Required `true` for `reset_all` |
-| `source_cabinet` | entity (sensor) | — | `expand_drawer` only — cabinet the drawer currently lives on (target_cabinet is the destination) |
-| `source_drawer` | text | — | `expand_drawer` only — leaf drawer key to migrate. Subtree/Cabception parent keys are rejected |
-| `space_threshold` | number | — | `expand_drawer` only — abort if either source or target cabinet would cross this capacity percentage |
 
 ### Modes
 
@@ -126,7 +123,6 @@ Ring-2 cabinet maintenance tool. Provisions new expansion cabinets, inspects cab
 | `mount_status` | No | Return mounted/unmounted state for all `zen_cabinet` entities. No target needed |
 | `repair_mount` | No | Force `meta.mounted: true` on a stuck cabinet. Does not touch drawer content |
 | `repair_dismount` | No | Force `meta.mounted: false` on a stuck cabinet. Mirror of `repair_mount` |
-| `expand_drawer` | **Yes** (has rollback) | Atomically migrate one leaf drawer from `target_cabinet` to an expansion cabinet: validates the key is a leaf (rejects subtrees/Cabception children), checks space threshold on both source and target, copies the value, replaces the source entry with a `mount_point` pointer, then round-trip verifies the mount resolves through `zen_dojotools_filecabinet` before declaring success. Any failure at any step rolls back (restores original value, deletes target copy). Requires `source_cabinet`, `source_drawer`, optional `space_threshold` |
 | `reset_all` | **NUCLEAR** | Wipe all Ring-0 cabinets + reseed schemas + trigger Flynn bootstrap. `confirm: true` and a live household-admin ack required. User and expansion cabinets untouched. The wipe also clears the console override and every cert, which live in those cabinets: throw the override from the console and re-request certs afterwards |
 | `flip_schema_version` | No | Toggle `cab_schema_version` in syscab (0=legacy, 1+=mount-aware). Controls Flynn operating mode |
 | `repair_volumeinfo` | No | Targeted repair for a cabinet whose `VolumeInfo` is a JSON string instead of a mapping — parses and rewrites as a proper dict. Also self-heals the missing-header case (cabinet in `init` state with no VolumeInfo at all): stamps a fresh header via `cabinetadmin_factory`, no `hammer`/rearm needed. Skips silently if VolumeInfo is already a valid mapping |
@@ -393,6 +389,7 @@ Run when a cabinet fails identity's ACL schema check (identity answers `acl_sche
 
 | Version | Change |
 |---------|--------|
+| v5.4.21 | cabinetadmin's `expand_drawer` is retired, with its `source_cabinet`, `source_drawer` and `space_threshold` fields. Use [FileCabinet's `expand_drawer` and `collapse_drawer`](zen_dojotools_filecabinet_readme.md#expansions--expand_drawer-and-collapse_drawer), the only way to make an expansion. A missing, unknown or retired mode answers help, and help names the replacement. |
 | v5.4.20 | cabinetadmin_factory stamps the cabinet `class` from `cabinet_type`. |
 | v5.4.19 | cabinetadmin's result carries `repair_results` only for `repair_volumeinfo`; `hammer_ok` defaults to `false` when absent. |
 | v5.4.18 | prompt_loader stamps an unset `sim_mode_allowed` from Flynn's `input_boolean.zenos_sim_mode_override`, so a load right after `reset_all` still resolves its caller. |

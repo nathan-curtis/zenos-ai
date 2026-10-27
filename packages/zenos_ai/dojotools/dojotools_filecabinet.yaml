@@ -1,7 +1,28 @@
 ###############################################################################
 # ZenOS-AI: FileCabinet DojoTool + FileCabinet Sutra
 # File: dojotools_filecabinet.yaml
-# Version: 6.31.0 -- softlinks from and to expanded drawers. set_mount and
+# Version: 6.33.0 -- the ACL gate can enforce (#10630 / #10633). Its mode
+#   is the system cabinet's fc_acl_mode drawer (CABS acl_enforce_mode 1.7.0),
+#   which only the admin door writes; missing means audit, the default, and
+#   nothing changes until it is set. In enforce, a would-deny is refused with
+#   guarded: (the checks ride on the answer as acl_audit), and an op whose rule
+#   asks for a live ack asks the household admin through identity
+#   request_live_ack (the console override stands in); not granted = denied.
+#   Every check is logged as before, now with the mode.
+# 6.32.0 -- labels follow drawers in expanded trees. The label index
+#   lives in the cabinet a caller addresses, keyed by the drawer's path, so an
+#   expanded drawer's labels stay in its host's index. move / copy / delete of
+#   an expanded tree carry its labels to the destination keys (move, delete
+#   take them off the source); relabel takes a key the expansion holds; search
+#   reads the real drawers behind an expanded root (CABS cabinet_resolved_view
+#   1.6.4), so a label or text match finds them; collapse_drawer folds any
+#   labels the expansion itself holds back into the host. Fixed: a copy to
+#   another cabinet built the destination's index from the source's index and
+#   replaced the destination's labels with it; delete left its children's
+#   labels in the index; relabel and create answered before their index write
+#   landed, so two label writes in a row lost the first; a label search
+#   missed every nested drawer (a/b) because it compared a slug.
+# 6.31.0 -- softlinks from and to expanded drawers. set_mount and
 #   remove_mount under an expanded root act in the expansion that holds the
 #   tree (the root's own pointer stays immutable); a softlink pointing at an
 #   expanded drawer, or one inside an expanded tree, resolves through every hop
@@ -907,7 +928,7 @@ script:
               {%- set ns.ack = ns.ack or _chk.ack -%}
               {%- set ns.out = ns.out + [{'op': c.op, 'target': c.vol ~ ('/' ~ c.key if c.key else ''), 'source': _chk.source, 'via': _chk.via, 'why': _why}] -%}
             {%- endfor -%}
-            {{- {'mode': 'audit', 'action': _action, 'origin': _origin, 'checks': ns.out, 'would_deny': ns.deny | count > 0, 'reasons': ns.deny, 'would_ack': ns.ack} -}}
+            {{- {'mode': CABS.acl_enforce_mode() | trim, 'action': _action, 'origin': _origin, 'checks': ns.out, 'would_deny': ns.deny | count > 0, 'reasons': ns.deny, 'would_ack': ns.ack} -}}
           {%- else -%}
             {{- none -}}
           {%- endif -%}
@@ -920,13 +941,53 @@ script:
               component: zen_sutra_filecabinet
               severity: warning
               kind: fc_acl_audit
-              summary: "{{ _action }} {{ _vol }}{{ ('/' ~ _key) if _key else '' }}: {{ 'would deny (' ~ (_g.reasons | join('; ')) ~ ')' if _g.would_deny else 'would ask for a live ack' }}"
+              summary: "{{ _action }} {{ _vol }}{{ ('/' ~ _key) if _key else '' }}: {{ (('denied (' if _g.mode == 'enforce' else 'would deny (') ~ (_g.reasons | join('; ')) ~ ')') if _g.would_deny else ('asks for a live ack' if _g.mode == 'enforce' else 'would ask for a live ack') }}"
               metadata: "{{ _g }}"
         - action: system_log.write
           data:
             level: warning
             logger: zen_sutra_filecabinet
-            message: "fc_acl_audit action={{ _action }} volume={{ _vol }} key={{ _key }} origin={{ _origin }} would_deny={{ _g.would_deny }} would_ack={{ _g.would_ack }} reasons={{ _g.reasons | join('; ') }}"
+            message: "fc_acl_audit mode={{ _g.mode }} action={{ _action }} volume={{ _vol }} key={{ _key }} origin={{ _origin }} would_deny={{ _g.would_deny }} would_ack={{ _g.would_ack }} reasons={{ _g.reasons | join('; ') }}"
+
+    # ── Enforcement (#10633). With fc_acl_mode enforce the gate refuses what
+    #    the ACL denies, and asks the household admin when the rule wants a
+    #    live ack (identity request_live_ack; the console override stands in).
+    #    In audit, the default, nothing below refuses.
+    - if: "{{ result is not defined and _g is mapping and _g.mode == 'enforce' and _g.would_deny }}"
+      then:
+        - variables:
+            result:
+              status: error
+              tool: zen_sutra_filecabinet
+              action: "{{ _action }}"
+              key: "{{ _key }}"
+              volume: "{{ _vol }}"
+              reason: "guarded: the ACL denies {{ _action }} on {{ _vol }}{{ ('/' ~ _key) if _key else '' }}: {{ _g.reasons | join('; ') }}"
+              trace:
+                caller_token: "{{ _caller_token }}"
+    - if: "{{ result is not defined and _g is mapping and _g.mode == 'enforce' and _g.would_ack }}"
+      then:
+        - action: script.zen_dojotools_identity
+          response_variable: _acl_ack_raw
+          continue_on_error: true
+          data:
+            mode: request_live_ack
+            ack_message: >-
+              Your agent is attempting to {{ _action }} {{ _vol }}{{ ('/' ~ _key) if _key else '' }}.
+              The ACL asks for your approval every time. Approve?
+            caller_token: "{{ _caller_token }}"
+        - if: "{{ not (_acl_ack_raw.get('approved', false) if _acl_ack_raw is mapping else false) }}"
+          then:
+            - variables:
+                result:
+                  status: denied
+                  tool: zen_sutra_filecabinet
+                  action: "{{ _action }}"
+                  key: "{{ _key }}"
+                  volume: "{{ _vol }}"
+                  reason: "guarded: the ACL asks for a live ack for {{ _action }} on {{ _vol }}{{ ('/' ~ _key) if _key else '' }}; not granted ({{ _acl_ack_raw.get('reason', 'dispatch_failed') if _acl_ack_raw is mapping else 'dispatch_failed' }})"
+                  trace:
+                    caller_token: "{{ _caller_token }}"
 
     # ── Gate (#10561 / #10637): the one place a call is refused before
     #    dispatch (aliases are resolved above, before the guards). A refusal sets result and every dispatch below is
@@ -1125,6 +1186,49 @@ script:
                       message: "Nothing changed: the destination write was not confirmed and what was written was taken back."
                       trace:
                         caller_token: "{{ _caller_token }}"
+        # Labels follow the drawers: the index of the cabinet addressed (and
+        # any the expansion holds itself) loses the tree's keys on move /
+        # delete, and the destination's index gains the new keys on move / copy.
+        - if: "{{ result is not defined }}"
+          then:
+            - variables:
+                _xo_lx: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set keys = _xo_tree['items'] | map(attribute='k') | list -%}
+                  {%- set vols = ([_vol, _xo.dv] + (_xo_tree['items'] | map(attribute='vol') | list)) | unique | list -%}
+                  {%- set ns = namespace(lab={}, cur={}, add={}, out=[]) -%}
+                  {%- for v in vols -%}
+                    {%- set idx = CABS.label_index(v) | from_json({}) -%}
+                    {%- set ns.cur = dict(ns.cur, **{v: idx}) -%}
+                    {%- for k, ls in (CABS.label_index_keys(idx, keys) | from_json({})).items() -%}
+                      {%- set ns.lab = dict(ns.lab, **{k: (ns.lab.get(k, []) + ls) | unique | list}) -%}
+                    {%- endfor -%}
+                  {%- endfor -%}
+                  {%- for w in _xo_writes if w.k in ns.lab -%}{%- set ns.add = dict(ns.add, **{w.d: ns.lab[w.k]}) -%}{%- endfor -%}
+                  {%- set drop = keys if _action in ['move', 'delete'] else [] -%}
+                  {%- for v, idx in ns.cur.items() -%}
+                    {%- set new = CABS.label_index_apply(idx, drop, ns.add if v == _xo.dv else {}) | from_json({}) -%}
+                    {%- if new != idx -%}{%- set ns.out = ns.out + [{'vol': v, 'idx': new}] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{- ns.out -}}
+            - repeat:
+                for_each: "{{ _xo_lx }}"
+                sequence:
+                  - event: set_variable_legacy
+                    event_data:
+                      key: _label_index
+                      value: "{{- repeat.item.idx | tojson -}}"
+                      volume_entity: "{{- repeat.item.vol -}}"
+                      set_timestamp: true
+            - if: "{{ _xo_lx | count > 0 }}"
+              then:
+                - wait_template: >-
+                    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                    {%- set ns = namespace(ok=true) -%}
+                    {%- for x in _xo_lx if (CABS.label_index(x.vol) | from_json({})) != x.idx -%}{%- set ns.ok = false -%}{%- endfor -%}
+                    {{ ns.ok }}
+                  timeout: "00:00:15"
+                  continue_on_timeout: true
         # move / delete: the real drawers leave where they live, and this
         # cabinet's pointers for them go.
         - if: "{{ result is not defined and _action in ['move', 'delete'] }}"
@@ -1211,6 +1315,7 @@ script:
                   written_to: "{{ _xo_writes | map(attribute='dvol') | unique | list }}"
                   pointers_removed: "{{ _xo_tree.ptrs if _action in ['move', 'delete'] else [] }}"
                   expansions_torn_down: "{{ _xo_empty if _action in ['move', 'delete'] else [] }}"
+                  label_index_updated: "{{ (_xo_lx | default([])) | map(attribute='vol') | list }}"
                   expanded_tree: true
                   message: >-
                     {{ '' if (_action == 'copy' or (_xo_removed and _xo_torn)) else 'Done, but the cabinets did not confirm every removal or teardown in time: check expansion_sitrep.' }}
@@ -1226,7 +1331,8 @@ script:
         - variables:
             _rl_exists: >-
               {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-              {{ CABS.cabinet_drawer_exists(_vol, _key) | from_json }}
+              {%- set _xt = (CABS.expansion_root_of(_vol, _key) | from_json({})).get('target', '') -%}
+              {{ CABS.cabinet_drawer_exists(_vol, _key) | from_json or (_xt != '' and _key in (state_attr(_xt, 'variables') or {})) }}
         - choose:
           - conditions:
             - condition: template
@@ -1289,6 +1395,13 @@ script:
               value: "{{- _relabel_idx | tojson -}}"
               set_timestamp: true
               volume_entity: "{{- _vol -}}"
+          # The index is read-modify-write: answer once it has landed, so the
+          # next label write builds on this one instead of an older index.
+          - wait_template: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ (CABS.label_index(_vol) | from_json({})) == _relabel_idx }}
+            timeout: "00:00:15"
+            continue_on_timeout: true
           - variables:
               _tags_dropped: >-
                 {%- set _all = labels() -%}
@@ -1322,9 +1435,11 @@ script:
           value_template: "{{ result is not defined and _action == 'search' }}"
         sequence:
         - variables:
+            # An expanded tree is searched where its drawers really live.
             _vars: >-
               {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-              {%- set _r = (state_attr(_vol, 'variables') if state_attr(_vol, 'variables') is mapping else {}) -%}
+              {%- set _r = (CABS.cabinet_resolved_view(_vol) | from_json({})) if CABS.cabinet_hosts_expansion(_vol) | trim == 'true'
+                           else (state_attr(_vol, 'variables') if state_attr(_vol, 'variables') is mapping else {}) -%}
               {%- if _r is mapping -%}{{ _r }}
               {%- elif _r is string and _r | trim not in ['', '{}'] -%}{{ _r | from_json | default({}) }}
               {%- else -%}{{ {} }}{%- endif -%}
@@ -1360,7 +1475,9 @@ script:
                     {%- set _sr_ca = '' -%}
                     {%- set _sr_ua = (drawer.get('timestamp', '') if drawer is mapping else '') -%}
                   {%- endif -%}
-                  {%- set _label_match = _use_labels and ((k | lower | slugify) in _lm.keys) -%}
+                  {#- The index holds drawer keys as written (a/b): match those, and
+                      the slug form older index entries used. -#}
+                  {%- set _label_match = _use_labels and (k in _lm.keys or (k | lower | slugify) in _lm.keys) -%}
                   {%- set _k_lc = k | lower -%}
                   {%- set _t_lc = _sr_title | string | lower -%}
                   {%- set _c_lc = _sr_content | string | lower -%}
@@ -1976,6 +2093,11 @@ script:
                       value: "{{- _updated_label_index | tojson -}}"
                       set_timestamp: true
                       volume_entity: "{{- _vol -}}"
+                  - wait_template: >-
+                      {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                      {{ (CABS.label_index(_vol) | from_json({})) == _updated_label_index }}
+                    timeout: "00:00:15"
+                    continue_on_timeout: true
               - variables:
                   _tags_dropped: >-
                     {%- set _all = labels() -%}
@@ -2418,9 +2540,13 @@ script:
               _pruned_index: >-
                 {%- if _raw_index_del is mapping -%}
                   {%- set _ns = namespace(val = {}) -%}
+                  {%- set _kp = _key_slug ~ '/' -%}
                   {%- for label, drawers in _raw_index_del.items() -%}
                     {%- if drawers is iterable and not drawers is string -%}
-                      {%- set cleaned_list = drawers | reject('equalto', _key_slug) | list -%}
+                      {#- The drawer and its children (delete cascades) leave the index. -#}
+                      {%- set _cl = namespace(l=[]) -%}
+                      {%- for d in drawers if d != _key_slug and not (d | string).startswith(_kp) -%}{%- set _cl.l = _cl.l + [d] -%}{%- endfor -%}
+                      {%- set cleaned_list = _cl.l -%}
                       {%- if cleaned_list | length > 0 -%}
                         {%- set _ns.val = _ns.val | combine({label: cleaned_list}) -%}
                       {%- endif -%}
@@ -2921,7 +3047,7 @@ script:
               - variables:
                   _updated_label_index: >-
                     {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                    {%- set _v_s = (state_attr(_vol, 'variables') if state_attr(_vol, 'variables') is mapping else {}) -%}
+                    {%- set _v_s = (state_attr(_cpy_dest_vol, 'variables') if state_attr(_cpy_dest_vol, 'variables') is mapping else {}) -%}
                     {%- set _v = _v_s if _v_s is mapping else (_v_s | from_json(none) if _v_s is string else none) -%}
                     {%- set _ci = ((_v if _v is mapping else {}).get('_label_index', {}).get('value', {})) -%}
                     {%- set _ci = _ci if _ci is mapping else (_ci | from_json(none) if _ci is string and _ci | trim not in ['', '{}', 'null'] else {}) -%}
@@ -4753,8 +4879,36 @@ script:
               caller_token: "{{ _caller_token }}"
       # Step 3: teardown. The source holds the tree now; the slot goes back to
       # free: copies removed, expansion stamp off VolumeInfo, dismounted.
+      # Labels the expansion holds itself for the tree fold into the source's
+      # index first.
       - if: "{{ result is not defined }}"
         then:
+        - variables:
+            _cd_lx: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {%- set ti = CABS.label_index(_cd_tgt) | from_json({}) -%}
+              {%- set tl = CABS.label_index_keys(ti, _cd_keys) | from_json({}) -%}
+              {%- set si = CABS.label_index(_cd_src) | from_json({}) -%}
+              {{- {'n': tl | count, 'src': CABS.label_index_apply(si, [], tl) | from_json({}), 'tgt': CABS.label_index_apply(ti, _cd_keys, {}) | from_json({})} -}}
+        - if: "{{ _cd_lx.n > 0 }}"
+          then:
+          - event: set_variable_legacy
+            event_data:
+              key: _label_index
+              value: "{{- _cd_lx.src | tojson -}}"
+              volume_entity: "{{- _cd_src -}}"
+              set_timestamp: true
+          - event: set_variable_legacy
+            event_data:
+              key: _label_index
+              value: "{{- _cd_lx.tgt | tojson -}}"
+              volume_entity: "{{- _cd_tgt -}}"
+              set_timestamp: true
+          - wait_template: >-
+              {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+              {{ (CABS.label_index(_cd_src) | from_json({})) == _cd_lx.src and (CABS.label_index(_cd_tgt) | from_json({})) == _cd_lx.tgt }}
+            timeout: "00:00:15"
+            continue_on_timeout: true
         - repeat:
             for_each: "{{ _cd_keys }}"
             sequence:
@@ -4819,6 +4973,7 @@ script:
               bytes_back: "{{ _cd_back_bytes }}"
               verified: true
               slot_torn_down: "{{ _cd_torn }}"
+              labels_folded_back: "{{ _cd_lx.n }}"
               message: >-
                 {{ 'The drawer and its tree live in ' ~ _cd_src ~ ' again; ' ~ _cd_tgt ~ ' is a free slot.'
                    if _cd_torn else
@@ -5292,7 +5447,7 @@ script:
               {{-
                 {
                   "tool": "zen_dojotools_filecabinet",
-                  "version": "6.31.0",
+                  "version": "6.33.0",
                   "intent": "Stack-agnostic knowledge surface. stack=cabinet is always available (built-in FileCabinet key-value store). stack=wiki is optional — requires zen_sutra_wikijs installed and registered; returns stack_not_available if missing. HA Labels are the shared tag/anchor system across both stacks.",
                   "you_should_use_this_tool_when": [
                     "You need to read, write, or manage key-value knowledge drawers in a FileCabinet volume (stack=cabinet — always available).",
@@ -5431,7 +5586,8 @@ script:
                     "traversal": {
                       "trigger": "Automatic on read (get/list) when drawer value has mount_point=true.",
                       "one_chain": "Softlinks and expansions are one chain: at any cabinet on the way, a key under an expanded root hops into that expansion, and a softlink there is followed on. Softlinks from or to an expanded drawer are normal.",
-                      "acl_every_hop": "Every hop is checked, none skipped: each pointer the chain passes needs r (a pointer answers with its cabinet's ACL), and the drawer the chain ends on needs the action's op. A caller that cannot read a pointer does not get past it. Audit only for now: a would-deny rides on the answer as acl_audit.",
+                      "acl_every_hop": "Every hop is checked, none skipped: each pointer the chain passes needs r (a pointer answers with its cabinet's ACL), and the drawer the chain ends on needs the action's op. A caller that cannot read a pointer does not get past it.",
+                      "enforcement": "The gate's mode is the system cabinet's fc_acl_mode drawer ({mode: audit|enforce}), written only by the admin door; missing = audit. audit: nothing is refused, a would-deny or would-ack rides on the answer as acl_audit. enforce: a deny is refused (status error, guarded:), and a rule that asks for a live ack asks the household admin each time (not granted = status denied). acl_audit.mode says which applied.",
                       "max_depth": 8,
                       "loop_detection": "Tracks visited entity_id/key pairs. Returns loop_detected if the chain revisits any location.",
                       "same_key_policy": "The SAME key name is followed at each hop. If drawer 'config' is a mount, FC looks for 'config' in the target cabinet too. The key does not change across hops.",
@@ -5478,6 +5634,7 @@ script:
                     "pointers_immutable": "expand_drawer creates the pointers; only move, delete or collapse_drawer remove them. They are never copied, moved or rewritten.",
                     "acl": "An expansion answers with its host cabinet's ACL (it cannot get its own: identity acl_set refuses it). A drawer's own ACL travels with it.",
                     "softlinks": "Allowed from and to expanded drawers (see mount_system.in_expanded_trees). expand and collapse carry them unchanged.",
+                    "labels": "An expanded drawer's labels stay in its host cabinet's index. move, copy and delete carry them with the tree; relabel and search work on the host as for any drawer.",
                     "sitrep": "expansion_sitrep lists the slots, what each holds, and how full."
                   },
                   "tapestry_system": {
