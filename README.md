@@ -10,7 +10,7 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Public Beta: 2026.11.0 'This Is Spinal Tap'** (`feat/2026.11.0`, ETA Saturday, November 14, 2026) | Current Stable: 2026.10.1 'Tron' (patch on 2026.10.0) | Legacy line: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) and 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/spinal_tap.md).
+**Public Beta 2: 2026.11.0 'This Is Spinal Tap'** (`feat/2026.11.0`, ETA Saturday, November 14, 2026) | Current Stable: 2026.10.1 'Tron' (patch on 2026.10.0) | Legacy line: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) and 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/spinal_tap.md).
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
@@ -34,7 +34,7 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 
 **Upgrading?** The ACL migration is mandatory. Flynn runs it on its own; you can dry-run it first with `zen_dojotools_identity mode=acl_migrate` and review the plan. Expect audit lines in the log; they're the preview of enforcement, not errors. See [Read this before upgrading](zenos_ai/docs/releases/spinal_tap.md#read-this-before-upgrading).
 
-**Also in this beta:** semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, and Cortex 45.
+**Also in the beta:** semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, and Cortex 45.
 
 **Still to come this cycle:** enforcement, admission enforcement for `zenos.agent.basic`, hiding unreadable drawers from listings, the operator permission report, and the Display dashboard.
 
