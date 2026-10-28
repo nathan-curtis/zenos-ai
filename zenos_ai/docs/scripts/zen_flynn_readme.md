@@ -1,4 +1,4 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.1.10
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.1.11
 
 *ZenOS-AI's boot guard, initializer, and onboarding driver*
 
@@ -421,7 +421,7 @@ All four Flynn persistent notification messages are written in Flynn's voice and
 | Event | When | Payload |
 |---|---|---|
 | `flynn_stepgate_event` | After each gate action | `gate`, `action`, `timestamp` + gate-specific fields |
-| `flynn_onboarding_updated` | Unified engine state changes | `type`, `drawer`, `key`, `timestamp` |
+| `flynn_onboarding_updated` | Unified engine state changes (onboarding state is written through the FileCabinet engine as `flynn_unified_engine`, so it lands even when the agent can't write the default user cabinet; `answer_clear` empties the drawer) | `type`, `drawer`, `key`, `timestamp` |
 
 ---
 

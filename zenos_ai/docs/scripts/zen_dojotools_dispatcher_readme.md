@@ -1,6 +1,6 @@
-# Zen DojoTool Dispatcher — v5.4.5
+# Zen DojoTool Dispatcher — v5.4.7
 
-*Automation — no `tool_manifest`, so the file header version is canonical. `zen_dojotools_lens_dispatch` (same file): v1.1.1.*
+*Automation — no `tool_manifest`, so the file header version is canonical. `zen_dojotools_lens_dispatch` (same file): v1.1.2. An item a provider returns through two anchors is one entry carrying both anchor contexts.*
 
 **File:** `packages/zenos_ai/dojotools/dojotools_dispatcher.yaml`
 **Automations:** `zen_dojotool_dispatcher` and supporting routers (single dispatch automation as of v5.2.0 — see below)
@@ -58,7 +58,7 @@ Listens for `zen_event(kind: dojotool_call)`. The registry is a single `choose` 
       version: "1"           # optional, defaults to "1"
       correlation_id: "{{ _guid_result.result }}"
       payload:
-        action_type: get
+        mode: get
         volume_entity_id: "{{ my_cabinet }}"
         key: my_drawer
         caller_token: "{{ caller_token }}"

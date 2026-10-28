@@ -59,7 +59,7 @@ Read this diagram left to right by zone: authoring fills Dojo, triggers start wo
 
 ---
 
-## 0. Zen DojoTools Scribe — v5.2.0
+## 0. Zen DojoTools Scribe — v5.4.0
 **File:** [`zen_dojotools_scribe_readme.md`](zen_dojotools_scribe_readme.md)
 
 Guided authoring and lifecycle management for KF4 artifacts. Full lifecycle: `new_thought` → `patch` → `formalize_scroll` → `publish_kfc`. MCP-exposed — Friday can run the full authoring loop without operator intervention. `zen_dojotools_kungfu_writer` is retired; Scribe is the replacement.
@@ -178,7 +178,7 @@ Universal, contract-safe telemetry tool for emitting structured ZenOS-AI events 
 
 ---
 
-## 16. Zen DojoTools FileCabinet — v6.33.0
+## 16. Zen DojoTools FileCabinet — v6.35.0
 **File:** [`zen_dojotools_filecabinet_readme.md`](zen_dojotools_filecabinet_readme.md)
 
 Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. CabCeption nested drawer trees via `/` path separator. VirtualDrawer (cross-cabinet redirect) and LiveDrawer (tool-call-on-read with warm/cold cache). **Tapestry** (`weave`/`weave_preview`/`weave_save`) — multi-cabinet drawer composer; definitions stored as labeled drawers; cycle detection; depth 3 unrolled. `move`/`copy` blocked on mounted drawers by default (`force_action=true` required to transfer mount config intact). `fleet` + `expansion_sitrep` modes. Mode-scoped `tool:mode` callout whitelist entries (KF5 self-registration support) alongside legacy plain/`tool:*` forms. Single exit per action, honest `write_unverified` answers, every write a stated merge or replace, an ACL gate that checks every hop of a mount chain (audit by default, enforce on the `fc_acl_mode` switch), and expansions (`expand_drawer` / `collapse_drawer`) that move a root drawer and its tree to an expansion slot as a permanent redirect. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet or the admin door.
@@ -192,14 +192,14 @@ System manifest broker. Entity namespace scanning (`zen_dojotools_*`, `zen_stack
 
 ---
 
-## 18. Zen DojoTools Index — v5.1.0
+## 18. Zen DojoTools Index — v5.2.0
 **File:** [`zen_dojotools_index_readme.md`](zen_dojotools_index_readme.md)
 
 Entity-and-label correlation engine. Full topology seed chain per operand (`entities > label > device > integration > area > floor`), four set operators, ZQ-1 post-filter, pagination, and Inspect expansion. Index Command now accepts compound/recursive dict DSL (`{operator, index_1, index_2}`) with automatic timeout scaling for nested round-trips. Camera entities return `{analysis, cached_at, cache_age_minutes, snapshot_path, found}` inline and in `domain_context.camera`. Friday's graph engine.
 
 ---
 
-## 19. Zen DojoTools Inspect — v5.1.0
+## 19. Zen DojoTools Inspect — v5.2.0
 **File:** [`zen_dojotools_inspect_readme.md`](zen_dojotools_inspect_readme.md)
 
 Deep-inspection tool for entities. Labels as `{slug: description}` dict, sanitized attributes, statistics eligibility, optional device forensics, and HA registry modes (`area_info`, `floor_info`, `device_info`, `area/floor/label/zone/person/device_list`, `integration_entities`).
@@ -234,14 +234,14 @@ Event-driven inter-tool communication layer — fires `zen_event(kind: dojotool_
 
 ---
 
-## 23. Zen DojoTools Locks — v1.6.1
+## 23. Zen DojoTools Locks — v1.6.4
 **File:** [`zen_dojotools_locks_readme.md`](zen_dojotools_locks_readme.md)
 
 Room-targetable lock/unlock control for the `lock.*` domain — the gap `zen_dojotools_covers` already closed for `cover.*` had no lock equivalent. Reference implementation for `zen_target_resolve.jinja` (the first shared targeting core, #10308) and for the identity-gate pattern on actuation (stolen from the Portainer container-control codex). `mode=set` is fail-closed on the `lock_control` cert until granted; exterior unlock additionally requires a fresh live household-admin ack every call (per-target `cert_scope` override available). Audit-trail emission on real actuations. `mode=inspect` gives real Keymaster code-slot detail with PINs never surfaced. `mode=escalation_request`/`escalation_status` for time-boxed grants via the shared `request_live_ack` chokepoint. Lens Bus provider (`stacks_by_anchor`, `register`/`unregister`).
 
 ---
 
-## 24. Zen DojoTools Display — v0.5.3 (2026.10.0 "Tron", beta; finishes in 2026.11.0)
+## 24. Zen DojoTools Display — v0.5.5 (2026.10.0 "Tron", beta; finishes in 2026.11.0)
 **File:** [`zen_dojotools_display_readme.md`](zen_dojotools_display_readme.md)
 
 Agent-composable casting of a Lovelace dashboard/view to any display in the house — Cast (`cast.show_lovelace_view`), Fire TV/Android TV (wake + ADB VIEW intent into Silk, `com.amazon.cloud9`), and LG webOS (wake + `webostv.command system.launcher/open`), auto-routed per target from `mode=discover`. Devices already running HA Companion route through `zen_dojotools_postman`'s `dashboard_path_override` instead — this tool exists for TVs/displays that can't run Companion at all. A brand-new tool this cycle; these three channels are what's supported for now, and we'd like to hear from anyone who wants another cast surface added. A YAML-mode dashboard for the shared display view is coming soon. DojoTools cadillac shape throughout: single entry/exit, `zen_target_resolve.jinja` resolver, `zen_os_1.jinja` envelope, a `display_control` cert gating `show`/`update`/`dismiss` (read modes stay open), Lens Bus registration (`register`/`unregister`/`stacks_by_anchor`). `show`/`update` carry content fields (`title`, `body_markdown`, `image_entity`, `alert_severity`/`alert_text`, `progress`, `view_type`) written to a per-entity household-cabinet session drawer plus one fixed `display_session_current` key — v1 deliberately assumes a single active display at a time (no concurrency handling), so ONE shared template sensor (`sensor.zen_display_surface_state`) and ONE shared Lovelace view (`room-state/display`) project that fixed key, rather than one sensor/view per display. `with_audio=true` delegates to `zen_dojotools_media_manager mode=prefs_apply` for the resolved room — never guesses a source, fails soft (`no_pref`/`no_room`) without blocking the cast. Image pipeline correlates `zen_dojotools_generate_image`'s `image_generated` event against the session's own `session_id` (via a `correlation_id` field on that tool) so a late/stale event for a superseded session is silently dropped. `zen_display_target` label designates which technically-capable entities the household actually offers as displays. An active-use guard on `mode=show` checks the target's live foreground app/source before dispatching, blocking a cast that would interrupt real in-progress media unless `override_active_use=true` is passed. `mode=expire_sessions` clears any idle session drawer, consolidated into `zen_dojotools_scheduler`'s existing `quarter_hour` trigger.

@@ -1,4 +1,4 @@
-# Zen DojoTools FileCabinet — v6.33.0
+# Zen DojoTools FileCabinet — v6.35.0
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 **ZenOS Release:** 2026.11.0 'This Is Spinal Tap'
@@ -51,14 +51,14 @@ Scripts write through FileCabinet (or the admin door, for structural keys). Temp
 Implements the full CRUD+M model:
 
 - `create` — create a new drawer; errors if key exists (`force_action` overwrites the whole drawer)
-- `update` — overwrite an existing drawer (default mode: replace); `not_found` if the key is missing (`force_action` creates it)
-- `upsert` — create if absent, update if present (default mode: merge)
+- `update` — overwrite an existing drawer (default `write_mode`: replace); `not_found` if the key is missing (`force_action` creates it)
+- `upsert` — create if absent, update if present (default `write_mode`: merge)
 - `delete` — remove a drawer and cascade to all children
 - `move` — transfer a drawer to another key or cabinet; cascade + index migration; refuses a destination that resolves to the source key
 - `copy` — copy a drawer; cascade; inherits source labels if no tags supplied
 - `relabel` — update the `_label_index` for a drawer without touching its value
 
-Every write states merge or replace: pass `mode: merge` or `mode: replace` (or `merge: true`). A read-modify-write caller passes `mode: replace`; under a merge, a key the caller removed comes back.
+Every write states merge or replace: pass `write_mode: merge` or `write_mode: replace`. A read-modify-write caller passes `write_mode: replace`; under a merge, a key the caller removed comes back. `write_mode` wins over the older `merge: true|false` and the legacy `mode: merge|replace`, which still work.
 
 All writes are re-read and verified via `wait_template`. A write the cabinet never confirmed answers `status: error`, `code: write_unverified`, `write_verified: false`, and logs a system_log warning (logger `zen_sutra_filecabinet`), so a caller that never reads the answer still leaves a trace.
 
@@ -260,7 +260,7 @@ Auto-expiry is managed by FC. The caller does not manage staleness.
 LiveDrawers are set via `set_mount` with `fc_args` instead of `target_guid`:
 
 ```yaml
-action_type: set_mount
+mode: set_mount
 volume_entity_id: sensor.my_cabinet
 key: live_inventory
 fc_args: >
@@ -306,7 +306,7 @@ An expansion gives a cabinet more room. `expand_drawer` moves a root drawer and 
 - **Pointers are immutable.** `expand_drawer` creates them. Only `move`, `delete` and `collapse_drawer` remove them. `set_mount` and `remove_mount` refuse them, and they are never copied, moved or rewritten.
 - **An expansion is its host's.** It answers with the host cabinet's ACL, and a drawer's own `acl` travels with it (see [Access Control](#access-control-acl-v2)).
 
-System, credential and approval drawers do not move. One call moves at most 30 keys.
+Any root drawer that isn't a system drawer can be expanded; credential and approval drawers do not move. `lens_registry`, one of the household cabinet's biggest drawers, is a good candidate: lens register and unregister write through the central lens writer and read through the pointer, so the registry stays whole. One call moves at most 30 keys.
 
 ### `expand_drawer`
 
@@ -358,6 +358,8 @@ Cross-stack copy and move are supported via `destination_stack`.
 
 ## Action Model
 
+`mode` names the action on both the agent-facing tool and the engine (`mode: get`, like every other tool). `action_type` is a legacy alias and still works, so existing callers are unchanged; new code uses `mode`, and `write_mode` for merge or replace.
+
 ### Action Aliases
 
 | Alias | Resolves to |
@@ -381,10 +383,10 @@ List all non-system drawers in a volume. Supports `path_prefix` to filter by key
 Requires `path` and `value` (or `title`/`description`). Errors if the key already exists — use `upsert`, or `force_action: true` to overwrite the whole drawer.
 
 ### `update`
-Full overwrite of an existing drawer. Default mode is `replace`. Pass `mode: merge` or `merge: true` to deep-merge instead. Answers `not_found` and logs a warning if the key does not exist — use `upsert`, or `force_action: true` to create it.
+Full overwrite of an existing drawer. Default `write_mode` is `replace`. Pass `write_mode: merge` to deep-merge instead. Answers `not_found` and logs a warning if the key does not exist — use `upsert`, or `force_action: true` to create it.
 
 ### `upsert`
-Creates if absent, updates if present (alias `write`). Default mode is `merge` (deep-merge into existing value). Pass `mode: replace` to replace. Atomic — no separate existence check needed from the caller.
+Creates if absent, updates if present (alias `write`). Default `write_mode` is `merge` (deep-merge into existing value). Pass `write_mode: replace` to replace. Atomic — no separate existence check needed from the caller.
 
 ### `delete`
 Removes the drawer, prunes `_label_index`, verifies deletion, then cascades to all children via prefix scan. The answer counts the children removed in `children_deleted`.
@@ -686,14 +688,14 @@ Malformed JSON always returns a structured error — never a partial write.
 
 ### List drawers in a volume
 ```yaml
-action_type: list
+mode: list
 volume_entity_id: sensor.household_cabinet
 stack: cabinet
 ```
 
 ### Read a drawer
 ```yaml
-action_type: get
+mode: get
 volume_entity_id: sensor.household_cabinet
 path: favorite_color
 stack: cabinet
@@ -701,7 +703,7 @@ stack: cabinet
 
 ### Read a CabCeption nested drawer
 ```yaml
-action_type: get
+mode: get
 volume_entity_id: sensor.my_cabinet
 path: character_sheet/inventory
 stack: cabinet
@@ -709,7 +711,7 @@ stack: cabinet
 
 ### Read drawers by label
 ```yaml
-action_type: search
+mode: search
 volume_entity_id: sensor.household_cabinet
 anchor_ids: "profile, preferences"
 stack: cabinet
@@ -717,7 +719,7 @@ stack: cabinet
 
 ### Create a drawer
 ```yaml
-action_type: create
+mode: create
 volume_entity_id: sensor.household_cabinet
 path: favorite_color
 value: "blue"
@@ -727,7 +729,7 @@ stack: cabinet
 
 ### Upsert a drawer (atomic create or update)
 ```yaml
-action_type: upsert
+mode: upsert
 volume_entity_id: sensor.household_cabinet
 path: settings
 value:
@@ -739,18 +741,18 @@ stack: cabinet
 
 ### Update with explicit replace mode
 ```yaml
-action_type: update
+mode: update
 volume_entity_id: sensor.household_cabinet
 path: settings
 value:
   theme: light
-merge: false
+write_mode: replace
 stack: cabinet
 ```
 
 ### Delete a drawer (cascades to children)
 ```yaml
-action_type: delete
+mode: delete
 volume_entity_id: sensor.my_cabinet
 path: character_sheet
 force_action: true
@@ -759,7 +761,7 @@ stack: cabinet
 
 ### Move a drawer (same cabinet)
 ```yaml
-action_type: move
+mode: move
 volume_entity_id: sensor.source_cabinet
 path: settings
 destination_path: settings_archive
@@ -768,7 +770,7 @@ stack: cabinet
 
 ### Move cross-cabinet
 ```yaml
-action_type: move
+mode: move
 volume_entity_id: sensor.source_cabinet
 path: settings
 destination_path: settings
@@ -778,7 +780,7 @@ stack: cabinet
 
 ### Copy a drawer
 ```yaml
-action_type: copy
+mode: copy
 volume_entity_id: sensor.household_cabinet
 path: template_profile
 destination_path: user_profile_copy
@@ -787,7 +789,7 @@ stack: cabinet
 
 ### Relabel a drawer
 ```yaml
-action_type: relabel
+mode: relabel
 volume_entity_id: sensor.household_cabinet
 path: my_drawer
 tags: "profile, active"
@@ -796,7 +798,7 @@ stack: cabinet
 
 ### Set a VirtualDrawer (cross-cabinet mount)
 ```yaml
-action_type: set_mount
+mode: set_mount
 volume_entity_id: sensor.my_cabinet
 path: shared_config
 target_guid: "abc-123-def-456"
@@ -805,7 +807,7 @@ stack: cabinet
 
 ### Set a LiveDrawer (tool-call mount)
 ```yaml
-action_type: set_mount
+mode: set_mount
 volume_entity_id: sensor.my_cabinet
 path: live_inventory
 fc_args: >
@@ -819,7 +821,7 @@ stack: cabinet
 
 ### Remove a mount point
 ```yaml
-action_type: remove_mount
+mode: remove_mount
 volume_entity_id: sensor.my_cabinet
 path: shared_config
 stack: cabinet
@@ -827,7 +829,7 @@ stack: cabinet
 
 ### Clone a cabinet (content copy)
 ```yaml
-action_type: clone
+mode: clone
 volume_entity_id: sensor.source_cabinet
 destination_cabinet: sensor.dest_cabinet
 stack: cabinet
@@ -836,7 +838,7 @@ stack: cabinet
 ### Clone with GUID transfer (Highlander mode)
 Moves identity ownership. Source is cleared and marked for restamping.
 ```yaml
-action_type: clone
+mode: clone
 volume_entity_id: sensor.source_cabinet
 destination_cabinet: sensor.dest_cabinet
 transfer_guid: true
@@ -846,40 +848,40 @@ stack: cabinet
 
 ### Mount a cabinet
 ```yaml
-action_type: mount_cabinet
+mode: mount_cabinet
 volume_entity_id: sensor.expansion_cabinet_1
 stack: cabinet
 ```
 
 ### Dismount a cabinet
 ```yaml
-action_type: dismount_cabinet
+mode: dismount_cabinet
 volume_entity_id: sensor.expansion_cabinet_1
 stack: cabinet
 ```
 
 ### System-wide health check
 ```yaml
-action_type: health
+mode: health
 stack: cabinet
 ```
 
 ### Single-volume health check
 ```yaml
-action_type: health
+mode: health
 volume_entity_id: sensor.household_cabinet
 stack: cabinet
 ```
 
 ### Full cabinet manifest
 ```yaml
-action_type: manifest
+mode: manifest
 stack: cabinet
 ```
 
 ### Wiki read (stack=wiki)
 ```yaml
-action_type: get
+mode: get
 path: /projects/my-page
 stack: wiki
 ```
@@ -890,14 +892,15 @@ stack: wiki
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `action_type` | yes | Action to perform. Aliases: `read`=`get`, `write`=`upsert`, `scan`=`list` |
+| `mode` | yes | Action to perform. Aliases: `read`=`get`, `write`=`upsert`, `scan`=`list`. `action_type` is the legacy name and still works |
+| `write_mode` | no | `merge` (deep-merge into the existing value) or `replace`. Omit for the action's default: `update` replaces, the rest merge |
 | `stack` | no | `cabinet` (default) \| `wiki` \| `all` |
 | `volume_entity_id` | for cabinet | Real cabinet sensor entity_id (e.g. `sensor.zenos_expansion_cabinet_1`). Do not pass resolver sensors. |
 | `path` | varies | Drawer key (cabinet) or page path (wiki). Segments slugified individually; `/` preserved as CabCeption separator |
 | `value` | for writes | Drawer content. Native dict/list/string/number — do NOT `\| tojson` before passing |
 | `title` | for create/upsert | Document or drawer title |
 | `description` | no | Short description |
-| `merge` | no | `true` = force deep-merge; `false` = force replace; omit = action default |
+| `merge` | no | Legacy: `true` = deep-merge, `false` = replace. Use `write_mode` |
 | `tags` | no | HA label names. Comma-separated string or list. Additive on write; use `relabel` to fully replace |
 | `create_label` | no | `true` = auto-create HA labels not yet in registry |
 | `destination_path` | for move/copy | Target key (same-stack) |

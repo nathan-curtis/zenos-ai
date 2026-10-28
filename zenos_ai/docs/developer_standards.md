@@ -79,7 +79,7 @@ Taskmaster demonstrates the intended shape. It exposes task-oriented modes, choo
 #### DojoTool best practices
 
 1. Design modes around user or system intent, not HTTP verbs or implementation details.
-2. Use `mode` as the canonical selector. Retain `action_type` only where compatibility requires it.
+2. Use `mode` as the canonical selector. Retain `action_type` only where compatibility requires it. Call FileCabinet the same way: `mode` for the action and `write_mode` (`merge` or `replace`) for how a write lands. When you touch a file, convert its FileCabinet calls.
 3. Provide `tool_manifest`; provide `kfc_manifest` when the tool owns KFC definitions.
 4. Return structured responses with stable `status`, `mode`, result/evidence, warnings, and trace information where appropriate.
 5. Fail soft on optional integrations. Report unavailable enhancements without breaking the baseline capability.

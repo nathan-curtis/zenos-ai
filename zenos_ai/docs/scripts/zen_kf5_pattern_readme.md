@@ -20,7 +20,7 @@ The Dojo cabinet (`sensor.zenos_dojo_cabinet`) has exactly three consumers, each
 
 | Reader | Access path | Fields it needs |
 |---|---|---|
-| **Ninja Summarizer** (`zen_dojotools_ninja_summarizer`) | `zen_dojotools_filecabinet action_type=get` — resolves the live mount by calling the tool script fresh | Everything, but fetched live from the tool's own `kfc_manifest` response — never from the stored drawer copy |
+| **Ninja Summarizer** (`zen_dojotools_ninja_summarizer`) | `zen_dojotools_filecabinet mode=get` — resolves the live mount by calling the tool script fresh | Everything, but fetched live from the tool's own `kfc_manifest` response — never from the stored drawer copy |
 | **Prompt loader** (`dojo_loader()` macro, `zen_os_1.jinja`) | Raw `state_attr(dojo_cab, 'variables')` — a Jinja macro rendered into the live conversation prompt; cannot make service calls, so it can never resolve a mount | `friendly_name`, `label`, `meta.enabled`, `component_summary` (as a description fallback) |
 | **Scheduler dispatcher** (`zen_dojotools_scheduler`) | Raw `state_attr(dojo_cab, 'variables')` — a hot dispatch loop, same constraint as the prompt loader | `trigger_subscriptions`, `delay_seconds`, `pipeline_tier`, `schedules` |
 
@@ -140,10 +140,10 @@ Discovery for bootstrap is driven entirely by the HA label `zen_kfc_provider` on
 
 ## Write semantics caveat
 
-`zen_dojotools_filecabinet action_type=upsert` (and `create`) default to **deep-merge** with the existing stored value — dropping a key from a write payload does not remove it from storage, the old value persists underneath. Only `action_type=update` defaults to replace, and it requires the key to already exist unless `force_action=true` is also passed. `bootstrap_kfc`'s live-mount write therefore uses:
+`zen_dojotools_filecabinet mode=upsert` (and `create`) default to **deep-merge** with the existing stored value — dropping a key from a write payload does not remove it from storage, the old value persists underneath. Only `mode=update` defaults to replace, and it requires the key to already exist unless `force_action=true` is also passed. `bootstrap_kfc`'s live-mount write therefore uses:
 
 ```yaml
-action_type: update
+mode: update
 force_action: true
 ```
 

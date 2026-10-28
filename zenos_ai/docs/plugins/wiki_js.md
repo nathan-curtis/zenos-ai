@@ -42,7 +42,7 @@ All wiki operations go through `zen_dojotools_filecabinet` with `stack: wiki`. P
 ```yaml
 zen_dojotools_filecabinet:
   stack: wiki
-  action_type: get
+  mode: get
   page_id: 42
 ```
 
@@ -96,14 +96,14 @@ Tag a room page and publish it:
 # Tag the page with the area slug
 zen_dojotools_filecabinet:
   stack: wiki
-  action_type: relabel
+  mode: relabel
   path: zenai/rooms/kitchen
   tags_json: '["kitchen"]'
 
 # Publish the page
 zen_dojotools_filecabinet:
   stack: wiki
-  action_type: set_published
+  mode: set_published
   path: zenai/rooms/kitchen
   is_published: "true"
 ```
@@ -168,7 +168,7 @@ This writes the URL to `integrations_config.wikijs.url` in the household cabinet
 ```yaml
 zen_dojotools_filecabinet:
   stack: wiki
-  action_type: register
+  mode: register
 ```
 
 4. Expose `zen_dojotools_filecabinet` to the conversation agent (MCP). Do not expose `zen_sutra_wikijs` or `zen_root_wikijs`.

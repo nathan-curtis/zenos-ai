@@ -179,7 +179,7 @@ When consent is absent the field returns `"consent_required"` — never `null`, 
 
 **Tracking consent setup:**
 
-Write to `_user_profile` in the user's cabinet via FileCabinet `action_type: update`:
+Write to `_user_profile` in the user's cabinet via FileCabinet `mode: update`:
 
 ```json
 "tracking": {

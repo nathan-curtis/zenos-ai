@@ -1,4 +1,4 @@
-# Zen DojoTools Locks — v1.6.1
+# Zen DojoTools Locks — v1.6.4
 
 *Room-targetable lock/unlock control for the `lock.*` domain, with a full Keymaster-aware inspect surface*
 

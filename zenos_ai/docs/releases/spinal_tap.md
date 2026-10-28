@@ -33,7 +33,7 @@ The rule is the one the guitar's owner laid down: don't touch it, don't look at 
 6. **Audit-only rollout.** Enforcement ships first as would-deny logging, with a rollback, then turns on.
 7. **Operator permission report.** Shows the resolved identity, granted capabilities, effective cabinet access and the reason an operation was denied. Secrets are excluded.
 
-**FileCabinet interface cleanup.** The `action_type` field moves to `mode=` (with merge and replace behavior moving to `merge:`), and a compatibility shim carries existing callers. It follows the audit, because the audit maps the same callers.
+**FileCabinet interface cleanup.** The `action_type` field moves to `mode=`, with merge and replace behavior in `write_mode=`, and a compatibility shim carries existing callers. It follows the audit, because the audit maps the same callers.
 
 **Also planned**
 - Every tool guards its inputs (the contract sweep begun in 2026.10.1).
@@ -50,6 +50,8 @@ Order of work: audit, designs, audit-only mode, enforcement.
 ## Scope of the Claim
 
 FileCabinet enforcement protects the ZenOS access boundary. Home Assistant administrators, and any path with direct access to the underlying state, remain part of the trusted platform.
+
+Identity in this release tells Flynn, the agent and the user apart. Telling one agent or one session from another is a later phase.
 
 ---
 
@@ -97,7 +99,7 @@ FileCabinet's gate now has the knob to eleven: one admin-door drawer, `fc_acl_mo
 
 A gate is only as good as the engine behind it, so FileCabinet was rebuilt first.
 
-- **One exit per action.** Get, create, update, upsert, delete and list each set a result and fall through to the engine's single exit, so the gate sits in one place.
+- **One exit per action.** Get, create, update, upsert, delete and list each set a result and fall through to the engine's single exit, so the gate sits in one place. The agent-facing tool has one exit too, where it had 22: each step runs only while no earlier one has answered, so a cross-stack move never deletes its source after a failed write, and a failed engine call answers with an error naming the stack instead of nothing.
 - **Honest writes.** A write the cabinet never confirmed answers `write_unverified` and logs a warning, instead of success. `update` on a missing key answers `not_found`. Delete reports `children_deleted`.
 - **Every write is a stated merge or replace.**
 - **One read taxonomy.** Content is in `value`; `read` is `get`.
@@ -134,6 +136,9 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **Who knows where a member belongs.** `identity resolve` returns `name`, `person_entity`, `member_type` and `memberships`, and finds a person anywhere in the household tree, not only among the household's own users.
 - **The ACL record, cabinet classes, built-in locks, caller origin, both audit gates, and Identity's `acl_migrate`, `acl_set` and `take_ownership`.** See [The Locks, in Audit Mode](#the-locks-in-audit-mode).
 - **FileCabinet GC `repair` mode.** Normalizes one drawer to the `{value, meta}` envelope, with `dry_run`.
+- **Inspect lists the lenses that apply.** Every inspection carries `domain_context.lens_options`: each lens provider that matches one of its anchors, what it returns and whether it is available, built from the registry with no provider calls. `+lenses` fetches all of them; `lenses=<provider,...>` fetches the ones you name.
+- **Scribe asks instead of refusing.** A live KFC write by a caller without `scribe_kfc_publish` asks the household admin to approve that one write; declined or timed out, it is refused as before.
+- **The lens registry can be expanded.** Lens register and unregister go through the central lens writer and read through the pointer, so `lens_registry`, one of the household cabinet's biggest drawers, can move to an expansion without being wiped.
 - **FileCabinet `collapse_drawer`.** Undoes an expansion: the tree comes back to its cabinet, verified, and the slot is freed.
 - **Cabinet capacity.** `sensor.zen_cabinet_health` gains a `cabinet_capacity` attribute: each cabinet's size as a percentage of the 128 KB cap, the fullest cabinet, and a warning list at 90% and over. The sensor's state is unchanged.
 
@@ -146,6 +151,8 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **FileCabinet internals.** See [FileCabinet, Rebuilt to Be Lockable](#filecabinet-rebuilt-to-be-lockable). In-repo callers call `zen_sutra_filecabinet` directly, one script run instead of two; the wrapper still works. Expiry still stored inside an older value counts, and GC normalizes every drawer it moves. Writes through a mount chain land on the real target, where they used to stop at the first hop.
 - **`prompt_loader` runs queued,** up to 25 at once, so a burst of registry calls waits its turn instead of being dropped. When `sim_mode_allowed` is unset, it stamps it from Flynn's `input_boolean.zenos_sim_mode_override` (on by default) instead of `false`, so a load right after `reset_all` still resolves its caller.
 - **Identity `area_labels` holds only real HA areas,** so data-routing labels no longer show up in a "who" answer.
+- **FileCabinet takes `mode` for the action,** like every other tool, and `write_mode` (`merge` or `replace`) for how a write lands. `action_type`, `merge` and the old `mode: merge|replace` still work, so existing callers are unchanged.
+- **Inspect fetches lens evidence only on request.** A drawer peek no longer calls lens providers on its own. Pass `+lenses` or `lenses=` to get evidence. Fetched evidence is merged by item across anchors and providers, and `providers` carries status and counts, not a second copy of the documents.
 
 ## Fixed
 
@@ -168,6 +175,10 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **Identity VolumeInfo writes touch only the changed keys,** so an empty read can no longer replace the whole drawer.
 - **Flynn's history mount** reads the mount pointer from the drawer's value and stops re-sending `set_mount` on every bootstrap; a failed mount logs a warning. Flynn's primary-user picker now hides the head of household.
 - **Labels follow drawers.** The label index stays in the cabinet you address, so an expanded drawer keeps its labels, and move, copy and delete carry a tree's labels with it. A cross-cabinet copy no longer replaces the destination's whole label index; delete no longer leaves its children's labels behind; relabel and create answer only after the index write lands, so two label writes in a row both stick; and a label search finds nested (`a/b`) drawers.
+- **Index paging covers an explicit `limit`.** `truncated` and `next_offset` report what is left past the page whatever cut it, and the last page of a big set is no longer flagged as capped with a `next_offset` past the end.
+- **Lens dispatch keeps both anchors** when a provider returns one item through two of them, instead of dropping the second.
+- **Flynn's onboarding lands on a fresh install.** Onboarding state is written as Flynn, not through the agent's tool, and `answer_clear` empties the answers instead of keeping them.
+- **The FileCabinet gate names the cabinet** on `expand_drawer` and `collapse_drawer` refusals, live-ack prompts and audit lines; it printed an empty volume. The tool manifest reports FileCabinet's real version.
 - **`expand_drawer` keeps everything it moves.** It used to overwrite the slot's VolumeInfo (losing its id, ACLs and flags), copy only a drawer's value (dropping its title, labels, meta and ACL), and leave the moved drawer under the slot's default rules. Now the slot's VolumeInfo is merged, the whole drawer moves, and the expansion answers with the host's ACL.
 - **Scribe writes only its own artifacts,** and Inspect never dumps a whole cabinet; its drawer peek follows FileCabinet's read rule.
 - **`query` without `filter_json` no longer crashes,** including calls that pass `domain`, `label` or `areas` at the top level.

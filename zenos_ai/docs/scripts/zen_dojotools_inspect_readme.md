@@ -1,4 +1,4 @@
-# Zen DojoTools Inspect — v5.1.0
+# Zen DojoTools Inspect — v5.2.0
 **File:** `zen_dojotools_inspect_readme.md`  
 **Type:** Technical Documentation  
 
@@ -207,9 +207,19 @@ Opt-in (add with `+`):
 |---|---|
 | `+attributes` | Include sanitized `attributes` dict |
 | `+statistics` | Include `statistics` eligibility block |
+| `+lenses` | Fetch evidence from every lens listed in `domain_context.lens_options` |
 
 `output_fields` may be passed as a list or comma-separated string.
 Parsed once at init — zero overhead per entity.
+
+### 🔭 Lenses: Listed by Default, Fetched on Request
+
+Every inspection lists the lenses that apply in `domain_context.lens_options`, built from the lens registry alone, with no provider calls:
+
+- `providers`: one entry per registered, enabled provider that consumes one of the inspection's anchors (labels, people, areas, zones; a drawer peek adds the drawer's labels), with `provider`, `returns`, `via` (up to three matching anchors), `matches` and `available`.
+- `fetched`: whether evidence was fetched on this call.
+
+Evidence is fetched only on request: `output_fields=+lenses` fetches every listed lens, and `lenses=<provider,...>` fetches the ones you name. A drawer peek no longer fetches lenses on its own. Fetched evidence lands in `domain_context.lenses`: `evidence` is merged by `evidence_id` across anchors and providers with every anchor context kept, `providers` carries each provider's status and count only, and `unavailable` names the providers that did not answer.
 
 ### 🏷 Label-Targeted Drawer Blurbs
 When `label_targets` is provided, Inspect calls FileCabinet after the entity loop

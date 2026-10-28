@@ -90,7 +90,7 @@ Once the wait completes, read the kata drawer via FileCabinet and branch on the 
 ```yaml
     - action: script.zen_sutra_filecabinet
       data:
-        action_type: get
+        mode: get
         volume_entity_id:
           - "{{ states('sensor.zen_kata_cabinet_resolved') }}"
         key: water_manager
@@ -143,7 +143,7 @@ automation:
     # 3. Read kata result
     - action: script.zen_sutra_filecabinet
       data:
-        action_type: get
+        mode: get
         volume_entity_id:
           - "{{ states('sensor.zen_kata_cabinet_resolved') }}"
         key: water_manager

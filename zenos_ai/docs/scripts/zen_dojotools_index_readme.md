@@ -1,4 +1,4 @@
-# Zen DojoTools Index — 5.1.0
+# Zen DojoTools Index — 5.2.0
 **File:** `zen_dojotools_zen_index_readme.md`  
 **Type:** Technical Documentation  
 
@@ -131,8 +131,9 @@ For full drawer content, use FileCabinet directly.
 `limit` and `offset` enable paged retrieval over large result sets.
 
 - `limit: 0` = no limit (default)
+- **Every page says what is left.** `truncated` is `true` and `next_offset` names the next page whenever results remain past this one, whether `limit=` or the auto-cap cut it. Pass `next_offset` as `offset` (same `limit`) until `truncated` is `false`; `next_offset` is `null` on the last page.
 - `dry_run: true` returns `total_count` so you can plan a paging loop before executing
-- **Auto-cap:** any call with no explicit `limit` that resolves to more than **50 entities** is capped at 50 and told to page — regardless of `expand_entities` or seed type, since the plain index/hypergraph response builds a full entity→labels map over the whole resolved set and can blow the context budget on its own. Set `limit` explicitly to override; use `dry_run` first to see `total_count`.
+- **Auto-cap:** any call with no explicit `limit` that has more than **50 entities** left after `offset` is capped at 50 and told to page — regardless of `expand_entities` or seed type, since the plain index/hypergraph response builds a full entity→labels map over the whole resolved set and can blow the context budget on its own. Set `limit` explicitly to override; use `dry_run` first to see `total_count`.
 - **`+history` requires `limit`:** requesting recorder statistics without a limit on a topology/wildcard seed is a hard error. Always set an explicit limit when using `+history`.
 - **`+history` bucket fields are state-class-dependent:** `measurement` sensors (instantaneous readings, e.g. W power) get `mean`/`min`/`max` per hour. `total`/`total_increasing` sensors (accumulating counters, e.g. Wh energy) get `sum`/`state` per hour instead — HA's recorder has no mean/min/max concept for an accumulating counter. Requesting the wrong bucket type used to silently return empty buckets.
 - **`period_total_24h`** (total/total_increasing sensors only, `null` for measurement): precomputed "usage over the last 24h," derived from the `state` series (`last.state - first.state`), not recorder's `sum` statistic. Also returns `period_total_24h_sum_series` as a cross-check and sets `anomaly_diverged: true` if the two disagree by more than 2x — treat both numbers as suspect when that flag is set rather than trusting either. Divergence is commonly caused by a recorder `statistic_id` re-registration (entity relabel/reload), not a real usage spike.

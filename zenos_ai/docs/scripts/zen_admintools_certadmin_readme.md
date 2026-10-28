@@ -86,7 +86,7 @@ This is not a full admin-role check — HA has no built-in `is_admin()` template
 - **Live-ack is unconditional** for both `cert_req_grant` and `cert_req_revoke` — requesting `waives_live_ack` does not skip it; it's layer 1 of the 3 required for the waiver itself.
 - **Scope merge, not replace**: `cert_req_grant` merges `cert_scope` entries into any existing scope for that component (ported verbatim from persona_editor). When `waives_live_ack` is actually granted, `waives_live_ack: true` is stamped only onto the merged scope entries that were part of *this* request — existing entries from prior grants keep whatever waiver state they already had unless re-listed in the current call.
 - **Target resolution**: refuses if an explicit `target` doesn't resolve to a real entity, or if no default AI user cabinet resolves and none was given — never silently writes to a nonexistent cabinet.
-- Certification and revocation both write through `script.zen_dojotools_filecabinet` (`action_type: create`, `force_action: true`) to the `zen_ai_certs` drawer.
+- Certification and revocation both write through `script.zen_dojotools_filecabinet` (`mode: create`, `force_action: true`) to the `zen_ai_certs` drawer.
 
 ---
 

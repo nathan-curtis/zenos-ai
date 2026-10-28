@@ -1,6 +1,20 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Index Cluster
-# Version: 5.1.7
+# Version: 5.2.0
+# v5.2.0: Inspect lens discovery (#10646). Lens evidence is fetched only on
+#   request: +lenses (every applicable lens) or the new lenses=<provider,...>.
+#   A drawer peek no longer dispatches lenses on its own. Every inspection
+#   lists the lenses that apply in domain_context.lens_options (provider,
+#   returns, the anchors it would match), from the registry alone. Fetched
+#   evidence is merged by evidence_id across anchors and providers with every
+#   anchor_context kept; providers carries status and count only (the
+#   documents were sent twice), and unavailable names providers that did not
+#   answer. The drawer peek reads its labels through CABS label_index.
+# v5.1.8: zen_dojotools_index paging metadata covers an explicit limit too
+#   (#10645): truncated is true and next_offset is the next page whenever
+#   results remain past this page, whatever cut it (limit= or the auto-cap).
+#   The auto-cap counts what is left after offset, so the last page of a big
+#   set is no longer flagged as capped with a next_offset past the end.
 # v5.1.7: inspect device reads use config_entry_id (config_entries is
 #   deprecated, removed in HA 2027.10) and fall back only where it is absent.
 #   zen_dojotools_query with no filter_json (or a domain/label/areas
@@ -461,7 +475,7 @@ script:
                 tool='zen_dojotools_inspect',
                 display_name='Inspect — Deep Entity Inspector',
                 tier='dojotools',
-                version='5.1.0',
+                version='5.2.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=[],
@@ -492,7 +506,7 @@ script:
                   "status": "help",
                   "message": "mode=inspect entity_id=X [output_fields=+attributes,+statistics,+history,+rm,+chores,+tasks,+inventory,+lenses] [extended=true] -- deep entity inspection (state, labels, device metadata, cabinet volume info, optional recorder statistics). mode=area_info target_area_id=X / mode=floor_info target_floor_id=X / mode=device_info target_device_id=X -- single-target drill-down. mode=area_list/floor_list/label_list/zone_list/person_list/device_list -- house-wide enumeration, no input required. mode=integration_entities integration=X -- entities by integration. mode=help -- this reference.",
                   "tool": "Zen DojoTools Inspect",
-                  "version": "5.1.0",
+                  "version": "5.2.0",
                   "intent": "Deep entity inspection + area/floor/device read modes. Returns state, labels, device metadata (incl. floor_id, device_labels, area_labels), cabinet volume info, and optional recorder statistics. Called directly or via Index when expand_entities=true. Camera entities: camera_cache merged inline into each result entry — {analysis, cached_at, cache_age_minutes, snapshot_path, found}.",
                   "inputs": {
                     "entity_id": "Required for mode=inspect. Single entity_id or list. Not required for help/area_info/floor_info/device_info.",
@@ -500,6 +514,7 @@ script:
                     "extended": "Boolean (default false). Adds device_tree: via_device_id, parent_name, siblings, config_entries.",
                     "label_targets": "Label names — resolves drawer blurbs from Dojo cabinet. Injected by Index; usable in direct calls.",
                     "drawer_key": "Cabinet sensors only. Inspects a specific drawer key — value truncated to 64 chars.",
+                    "lenses": "Optional. Lens providers to fetch evidence from, comma-separated registry keys (see domain_context.lens_options). Same effect as +lenses limited to those providers.",
                     "target_area_id": "Required for mode=area_info.",
                     "target_floor_id": "Required for mode=floor_info.",
                     "target_device_id": "Required for mode=device_info.",
@@ -522,7 +537,7 @@ script:
                       "+chores": "Grocy chores for each entity's HA area. Calls chores_by_area per unique area_id. Injected via room_context + domain_context.room_manager[area_id].chores.",
                       "+tasks": "Area-scoped HA todo tasks per entity's HA area. Calls RM +tasks slice per unique area_id. Injected via room_context + domain_context.room_manager[area_id].tasks.",
                       "+inventory": "Grocy object_lens place lens per entity's HA area — tagged products, chores, expanded operational objects. Calls RM +inventory slice per unique area_id. Data in domain_context.room_manager[area_id].context.inventory only. Per-entity room_context.context=null — look up by room_area_id.",
-                      "+lenses": "Optional registry-backed lens enrichment. Builds typed anchors (label, person, area_id, zone), calls generic lens dispatch, and injects redacted evidence in domain_context.lenses plus per-entity lens_context. If providers are unavailable, Inspect still succeeds. Active providers: paperless (article_evidence), radar (ticket_evidence), wiki (article_evidence), media (track_evidence, album_evidence, playlist_evidence, artist_evidence), library_catalog (item_evidence — books, games, media, art shelved at matched area/label). Media evidence carries playback_hint on each item — {tool, mode, uri, source, media_type, suggested_room, suggested_volume}. Media prefs (boost_artists, preferred_sources, default_volume) applied automatically from the active user profile."
+                      "+lenses": "Optional registry-backed lens enrichment. Builds typed anchors (label, person, area_id, zone; a drawer peek adds the drawer's labels), calls generic lens dispatch, and injects redacted evidence in domain_context.lenses plus per-entity lens_context. Without +lenses (or lenses=) evidence is never fetched: domain_context.lens_options lists the lenses that apply (provider, returns, via anchors) from the registry alone. Evidence reached through two anchors is merged into one item with both anchor_contexts; domain_context.lenses.unavailable names providers that did not answer. If providers are unavailable, Inspect still succeeds. Active providers: paperless (article_evidence), radar (ticket_evidence), wiki (article_evidence), media (track_evidence, album_evidence, playlist_evidence, artist_evidence), library_catalog (item_evidence — books, games, media, art shelved at matched area/label). Media evidence carries playback_hint on each item — {tool, mode, uri, source, media_type, suggested_room, suggested_volume}. Media prefs (boost_artists, preferred_sources, default_volume) applied automatically from the active user profile."
                     },
                     "example": "+history,-device,-volume,-timestamps"
                   },
@@ -1057,6 +1072,7 @@ script:
           _show_tasks:     "{{- '+tasks'     in output_fields_input -}}"
           _show_inventory: "{{- '+inventory' in output_fields_input -}}"
           _show_lenses:    "{{- '+lenses'    in output_fields_input -}}"
+          _want_lenses:    "{{- (lenses | default('', true) | string | lower) | regex_findall('[a-z0-9_]+') | unique | list -}}"
       - repeat:
           for_each: "{{- entity_list -}}"
           sequence:
@@ -1950,9 +1966,12 @@ script:
 
       # Domain context supplement - generic lens evidence anchors.
       # Optional only: Inspect must still succeed if lens providers are absent.
+      # Anchors are always built: domain_context.lens_options lists the lenses
+      # that apply (registry only, no provider call). Evidence is fetched only
+      # on request: +lenses (every applicable lens) or lenses=<provider,...>.
       - variables:
           _lens_anchors: >-
-            {%- if _show_lenses | bool or drawer_key_input | length > 0 -%}
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
               {%- set ns = namespace(anchors=[], keys=[]) -%}
               {%- for item in results if item is mapping -%}
                 {%- set eid = item.get('entity_id', '') | string | trim | lower -%}
@@ -1992,9 +2011,7 @@ script:
                 {%- endif -%}
                 {%- set _vol = item.get('volume', {}) -%}
                 {%- if _vol is mapping and _vol.get('is_cabinet') and drawer_key_input | length > 0 -%}
-                  {%- set _cab_vars = state_attr(eid, 'variables') | default({}, true) -%}
-                  {%- set _li_raw = (_cab_vars.get('_label_index', {}).get('value', {})) if _cab_vars is mapping else {} -%}
-                  {%- set _li = _li_raw if _li_raw is mapping else (_li_raw | from_json(none) if _li_raw is string and _li_raw | trim not in ['', '{}', 'null'] else {}) -%}
+                  {%- set _li = CABS.label_index(eid) | from_json({}) -%}
                   {%- for dk in drawer_key_input -%}
                     {%- for lbl, keys in (_li if _li is mapping else {}).items() -%}
                       {%- if dk in (keys if keys is sequence else []) -%}
@@ -2009,11 +2026,41 @@ script:
                 {%- endif -%}
               {%- endfor -%}
               {{ ns.anchors }}
-            {%- else -%}{{ [] }}{%- endif -%}
+
+      # lens_options: the registered, enabled providers that consume one of
+      # these anchor types, with the anchors they would match (3 shown).
+      - variables:
+          _lens_options: >-
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set reg = CABS.cabinet_drawer_value_mounted(states('sensor.zen_default_household_cabinet_resolved'), 'lens_registry', {}) | from_json({}) -%}
+            {%- set reg = (reg | from_json({})) if reg is string else reg -%}
+            {%- set ns = namespace(o=[]) -%}
+            {%- for k, d in (reg if reg is mapping else {}).items() | sort if d is mapping and d.get('enabled', true) and _lens_anchors | count > 0 -%}
+              {%- set cons = d.get('consumes', []) if d.get('consumes', []) is sequence and d.get('consumes', []) is not string else [] -%}
+              {%- set vns = namespace(v=[]) -%}
+              {%- for a in _lens_anchors if a is mapping and a.get('type') in cons -%}
+                {%- set vns.v = vns.v + [a.get('type') ~ ':' ~ a.get('id')] -%}
+              {%- endfor -%}
+              {%- set via = vns.v -%}
+              {%- if via | count > 0 -%}
+                {%- set ns.o = ns.o + [{'provider': k, 'returns': d.get('returns', []), 'via': via[:3], 'matches': via | count,
+                                        'available': (d.get('status', 'available') | string | lower) == 'available'}] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.o }}
+          _lens_dispatch: "{{ (_show_lenses | bool or _want_lenses | count > 0) and _lens_anchors | count > 0 }}"
+      - if: "{{ _lens_options | count > 0 }}"
+        then:
+        - variables:
+            _domain_context: >-
+              {{ _domain_context | combine({'lens_options': {
+                   'providers': _lens_options,
+                   'fetched': _lens_dispatch,
+                   'how': 'Evidence is not fetched by default. Pass output_fields=+lenses for every listed lens, or lenses=<provider,...> for chosen ones.'}}) }}
 
       - if:
         - condition: template
-          value_template: "{{ _lens_anchors | length > 0 }}"
+          value_template: "{{ _lens_dispatch }}"
         then:
         - action: script.zen_dojotools_lens_dispatch
           continue_on_error: true
@@ -2022,6 +2069,7 @@ script:
             mode: dispatch
             anchors_json: "{{ _lens_anchors | tojson }}"
             consumer: inspect
+            provider: "{{ _want_lenses | join(',') }}"
             timeout_ms: 1200
             caller_token: "{{ caller_token }}"
         - variables:
@@ -2032,24 +2080,47 @@ script:
 
       - if:
         - condition: template
-          value_template: "{{ _show_lenses | bool or (drawer_key_input | length > 0 and _lens_anchors | length > 0) }}"
+          value_template: "{{ _lens_dispatch }}"
         then:
         - variables:
+            # One entry per evidence_id: the same item reached through two
+            # anchors (or two providers) is merged, its anchor_contexts kept
+            # from both. providers carries status and count only (the
+            # documents are in evidence); unavailable names the providers
+            # that did not answer.
             _lenses_context: >-
               {%- set raw = _lenses_raw if _lenses_raw is defined and _lenses_raw is mapping else {} -%}
               {%- set providers = raw.get('providers', {}) if raw is mapping and raw.get('providers', {}) is mapping else {} -%}
-              {%- set doc_ns = namespace(docs=[]) -%}
+              {%- set doc_ns = namespace(ids=[], docs=[], summ={}, down=[]) -%}
               {%- for _pname, _provider in providers.items() if providers is mapping and _provider is mapping -%}
                 {%- set _pdocs = _provider.get('documents', []) if _provider.get('documents', []) is sequence and _provider.get('documents', []) is not string else [] -%}
-                {%- set doc_ns.docs = doc_ns.docs + _pdocs -%}
+                {%- set doc_ns.summ = dict(doc_ns.summ, **{_pname: {'status': _provider.get('status', 'unknown'), 'count': _pdocs | count}
+                                                        | combine({'miss_reason': _provider.miss_reason} if _provider.get('miss_reason') else {})}) -%}
+                {%- if _provider.get('status') in ['unavailable', 'disabled', 'error'] -%}{%- set doc_ns.down = doc_ns.down + [_pname] -%}{%- endif -%}
+                {%- for d in _pdocs if d is mapping -%}
+                  {%- set eid = d.get('evidence_id') or (_pname ~ ':' ~ loop.index) -%}
+                  {%- set ctx = d.get('anchor_contexts', []) if d.get('anchor_contexts', []) is sequence and d.get('anchor_contexts', []) is not string else [] -%}
+                  {%- if eid in doc_ns.ids -%}
+                    {%- set i = doc_ns.ids.index(eid) -%}
+                    {%- set old = doc_ns.docs[i] -%}
+                    {%- set cns = namespace(c=(old.get('anchor_contexts', []) or [])) -%}
+                    {%- for c in ctx if c not in cns.c -%}{%- set cns.c = cns.c + [c] -%}{%- endfor -%}
+                    {%- set doc_ns.docs = doc_ns.docs[:i] + [dict(old, anchor_contexts=cns.c)] + doc_ns.docs[i + 1:] -%}
+                  {%- else -%}
+                    {%- set doc_ns.ids = doc_ns.ids + [eid] -%}
+                    {%- set doc_ns.docs = doc_ns.docs + [dict(d, provider=d.get('provider') or _pname)] -%}
+                  {%- endif -%}
+                {%- endfor -%}
               {%- endfor -%}
               {%- set docs = doc_ns.docs -%}
               {{ {
                 'status': raw.get('status', 'unavailable') if raw else 'unavailable',
                 'reason': none if raw else 'Lens dispatch unavailable or no typed anchors.',
+                'requested': _want_lenses if _want_lenses | count > 0 else 'all',
                 'anchors': _lens_anchors,
                 'provider_count': providers | length,
-                'providers': providers,
+                'providers': doc_ns.summ,
+                'unavailable': doc_ns.down,
                 'evidence_count': docs | length,
                 'evidence': docs,
                 'consumer': raw.get('consumer', 'inspect'),
@@ -2110,9 +2181,9 @@ script:
                     {%- for anchor in doc_ns.anchors -%}
                       {%- if anchor not in match_ns.anchors -%}{%- set match_ns.anchors = match_ns.anchors + [anchor] -%}{%- endif -%}
                     {%- endfor -%}
-                    {%- set _eid = doc.get('stack', {}).get('evidence_id', 'paperless_ngx:document:' ~ (doc.get('id', '') | string)) -%}
+                    {%- set _eid = doc.get('evidence_id') or doc.get('stack', {}).get('evidence_id', 'paperless_ngx:document:' ~ (doc.get('id', '') | string)) -%}
                     {%- set match_ns.evidence_ids = match_ns.evidence_ids + [_eid] -%}
-                    {%- set _provider_name = doc.get('stack', {}).get('provider', '') | string | trim -%}
+                    {%- set _provider_name = (doc.get('provider') or doc.get('stack', {}).get('provider', '')) | string | trim -%}
                     {%- if _provider_name != '' and _provider_name not in match_ns.providers -%}{%- set match_ns.providers = match_ns.providers + [_provider_name] -%}{%- endif -%}
                   {%- endif -%}
                 {%- endfor -%}
@@ -2149,7 +2220,7 @@ script:
     alias: Zen DojoTOOLS Inspect
     mode: parallel
     description: >-
-      Inspect (5.1.0). Entity deep-dive + area/floor/device read modes.
+      Inspect (5.2.0). Entity deep-dive + area/floor/device read modes.
       inspect (default) — entity deep-dive. area_info/floor_info/device_info —
       single-object drill-down (id required). area_list/floor_list/label_list/
       zone_list/person_list — full registry enum (no input). device_list —
@@ -2161,10 +2232,11 @@ script:
       +chores: Grocy chores per area via chores_by_area. +tasks: area-scoped
       HA todo tasks via RM +tasks slice. +inventory: Grocy object_lens place
       lens per area — tagged products, chores, expanded operational objects.
-      +lenses: optional registry-backed evidence enrichment by typed anchors;
-      injects redacted evidence into domain_context.lenses and per-entity lens_context.
+      Lenses: domain_context.lens_options always lists the lenses that apply
+      (no evidence fetched); +lenses fetches all of them, lenses=<provider,...>
+      only those, into domain_context.lenses and per-entity lens_context.
       +chores/+tasks/+inventory trigger same area seed as +rm — combinable
-      freely. help — schema. (v5.1.0)
+      freely. help — schema. (v5.2.0)
     fields:
       entity_id:
         required: true
@@ -2214,6 +2286,14 @@ script:
           text:
         description: 'Optional. When the entity is a cabinet sensor, inspect this specific
           drawer — shows description as hint if set, or truncates value to 64 chars.'
+      lenses:
+        required: false
+        default: ''
+        selector:
+          text:
+        description: 'Optional. Lens providers to fetch evidence from, comma-separated
+          (registry keys from domain_context.lens_options, e.g. taskmaster,radar).
+          Without it (and without +lenses) Inspect only lists the lenses that apply.'
       timeout:
         selector:
           number:
@@ -2416,11 +2496,11 @@ script:
               & reasoning.\",\n      \"operator\": \"Operator used.\",\n      \"error\":
               \"Timeout or other error info.\",\n      \"total_count\": \"Resolved set
               size BEFORE pagination/capping -- compare against result.simple|length to
-              tell if you're seeing everything.\",\n      \"truncated\": \"true if the
-              response was auto-capped at 50 (no limit= set on a >50-entity result),
-              regardless of expand_entities.\",\n      \"next_offset\": \"When
-              truncated, pass this as offset= to fetch the next page (repeat,
-              incrementing, until returned count < 50). null when not truncated.\"\n    },\n    \"usage_examples\": {\n
+              tell if you're seeing everything.\",\n      \"truncated\": \"true when
+              results remain past this page: cut by your limit=, or auto-capped at 50
+              (no limit= set and more than 50 left after offset).\",\n      \"next_offset\": \"When
+              truncated, pass this as offset= (same limit) to fetch the next page;
+              repeat until truncated is false. null when not truncated.\"\n    },\n    \"usage_examples\": {\n
               \     \"Example 1 — All lights in the office\": {\n        \"label_1\":
               \"office\",\n        \"filter_json\": {\"domain\": \"light\"}\n      },\n
               \     \"Example 2 — HVAC related sensors, hypergraph mode\": {\n        \"label_1\":
@@ -2786,7 +2866,7 @@ script:
             # page, matching this file's own dry_run-first guidance instead of
             # silently truncating.
             _needs_cap: >-
-              {{ _limit == 0 and _total_before_page > 50 }}
+              {{ _limit == 0 and (_total_before_page - _offset) > 50 }}
         - if:
           - condition: template
             # AREA-ONLY LABEL MISMATCH: label_1/label_2 resolve via
@@ -2838,8 +2918,6 @@ script:
           then:
           - variables:
               entities_base: '{{ entities_base[:50] }}'
-              _truncated: true
-              _next_offset: "{{ _offset + 50 }}"
               _cap_warning: >-
                 Auto-capped at 50 of {{ _total_before_page }} total — no limit= set on a
                 result this large. Page through the rest with offset={{ _offset + 50 }}
@@ -2973,8 +3051,8 @@ script:
                     "error": timeout_error_msg | default(None),
                     "warning": _cap_warning | default(None),
                     "total_count": _total_before_page | default(entities_base | default([]) | count),
-                    "truncated": _truncated | default(false),
-                    "next_offset": _next_offset | default(None)
+                    "truncated": (_offset | int) + (entities_base | count) < (_total_before_page | int),
+                    "next_offset": ((_offset | int) + (entities_base | count)) if (_offset | int) + (entities_base | count) < (_total_before_page | int) else None
                   }
                 -}}
           - variables:

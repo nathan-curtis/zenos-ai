@@ -140,7 +140,7 @@ The run governor prevents duplicate runs within a configurable burnout window. I
 ```yaml
 action: script.zen_dojotools_filecabinet
 data:
-  action_type: update
+  mode: update
   volume_entity_id: sensor.<household_cabinet>
   key: zen_ninja_config
   value:

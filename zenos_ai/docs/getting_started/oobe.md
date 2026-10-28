@@ -228,7 +228,7 @@ The protocol enforces these constraints on the AI's behavior:
 
 To re-run OOBE on an existing install:
 
-1. Delete the `_oobe_complete` drawer from the AI user cabinet via `zen_dojotools_filecabinet` (`action_type: delete`, `key: _oobe_complete`)
+1. Delete the `_oobe_complete` drawer from the AI user cabinet via `zen_dojotools_filecabinet` (`mode: delete`, `key: _oobe_complete`)
 2. Restart HA — Flynn Gate 3.5 will detect the missing flag and re-enter the OOBE flow
 
 Or call `zen_flynn_oobe` with `mode: complete` to re-stamp the flag after manual edits without re-running the full protocol.
