@@ -16,7 +16,7 @@ And a few things that are.
 
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
 
-> **Upgrading from an earlier release?** Confirm your Home Assistant Companion App can receive a push notification *before* you restart into 2026.9.0 or later. Every certification grant (locks, alarm, covers, infra, room overrides) now requires a real push to a real device, every time, no fallback — and an in-place upgrade won't prompt you the way a fresh install does. See [Install Step 3.5](zenos_ai/docs/getting_started/install.md#step-35--set-up-your-mobile-notification-path) if you're not already set up, or [First Alert Step 7](zenos_ai/docs/getting_started/first_alert.md#step-7--connect-a-real-device-required-before-certifications-work) to confirm you are (safe to re-run either way).
+> **Upgrading from an earlier release?** Confirm your Home Assistant Companion App can receive a push notification *before* you restart into 2026.9.0 or later. Every certification grant (locks, alarm, covers, infra, room overrides) now requires a real push to a real device, every time, no fallback — and an in-place upgrade won't prompt you the way a fresh install does. See [Install Step 3.5](zenos_ai/docs/getting_started/install.md#step-35--set-up-your-mobile-notification-path) if you're not already set up, or [First Alert Step 7](zenos_ai/docs/getting_started/first_alert.md#step-7--connect-a-real-device-required-before-certifications-work) to confirm you are (safe to re-run either way). In 2026.11.0, that push is also how you approve your agent: until you do, it gets help and onboarding only.
 
 **What's in 2026.11.0 'This Is Spinal Tap':** *Security goes to eleven.*
 
@@ -28,7 +28,7 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 
 **One ACL record.** Identity and FileCabinet share one record per cabinet: owner, prime agent, partners, and a rule for each of read, write, delete and admin, naming who may do it, the cert it needs, and whether a live human must say yes. One reading of the rules, not two.
 
-**Every cabinet has a class, and every class has defaults.** System, vault, dojo, kata, history, household, family, user, AI user, scratchpad: each gets its own default rules. The system cabinet takes writes only from the admin door, the vault answers only to Identity, a person's cabinet to that person, their partners and the prime agent. Certs, integration settings and live-ack answers carry built-in locks no owner can loosen.
+**Every cabinet has a class, and every class has defaults.** System, vault, dojo, kata, history, household, family, user, AI user, scratchpad: each gets its own default rules. The system cabinet takes writes only from the admin door, the vault takes writes only from Identity and is read only through the admin door, a person's cabinet to that person, their partners and the prime agent. Certs, integration settings and live-ack answers carry built-in locks no owner can loosen.
 
 **The gate knows who's asking.** The agent-facing FileCabinet tool marks its calls as agent calls, and tools can name themselves, so the gate tells an agent from a tool. Mounts confer no authority: the gate checks the real target behind a mount chain.
 
@@ -36,7 +36,7 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 
 **Upgrading?** Approve your agent if it never got its pass: run `zen_flynn_oobe mode=run` and say yes to the push. Certs are renamed under `zenos.*`; old grants keep working until 2026.12. The ACL migration is mandatory. Flynn runs it on its own; you can dry-run it first with `zen_dojotools_identity mode=acl_migrate` and review the plan. Expect audit lines in the log; they're the preview of enforcement, not errors. See [Read this before upgrading](zenos_ai/docs/releases/spinal_tap.md#read-this-before-upgrading).
 
-**Also in the beta:** semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, Cortex 45, and every cert under `zenos.*` with a plain-words approval prompt.
+**Also in the beta:** semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, Cortex 45, every cert under `zenos.*` with a plain-words approval prompt, and the vault as a required cabinet that holds the cert catalog.
 
 **Still to come this cycle:** enforcement, hiding unreadable drawers from listings, the operator permission report, and the Display dashboard.
 
