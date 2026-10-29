@@ -1,6 +1,6 @@
 # ZenOS-AI Rolodex (Twenty CRM) Plugin
 
-**Version:** 1.14.2  
+**Version:** 1.15.1  
 **Package:** `packages/zenos_ai/plugins/twenty/twenty.yaml`  
 **Primary script:** `zen_dojotools_rolodex`  
 **Internal REST broker:** `zen_sutra_twenty`  

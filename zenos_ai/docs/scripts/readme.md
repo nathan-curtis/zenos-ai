@@ -59,7 +59,7 @@ Read this diagram left to right by zone: authoring fills Dojo, triggers start wo
 
 ---
 
-## 0. Zen DojoTools Scribe — v5.6.2
+## 0. Zen DojoTools Scribe — v5.6.3
 **File:** [`zen_dojotools_scribe_readme.md`](zen_dojotools_scribe_readme.md)
 
 Guided authoring and lifecycle management for KF4 artifacts. Full lifecycle: `new_thought` → `patch` → `formalize_scroll` → `publish_kfc`. MCP-exposed — Friday can run the full authoring loop without operator intervention. `zen_dojotools_kungfu_writer` is retired; Scribe is the replacement.
@@ -282,7 +282,7 @@ MCP-exposed household-member/AI-identity provisioning — activates/releases a c
 
 ---
 
-## 30. Zen DojoTools Query (ZQ-1) — v5.1.1
+## 30. Zen DojoTools Query (ZQ-1) — v5.1.2
 **File:** [`zen_dojotools_query_readme.md`](zen_dojotools_query_readme.md)
 
 Deterministic entity selector for Home Assistant — the compiled-filter query engine underneath Index/Inspect's targeting.

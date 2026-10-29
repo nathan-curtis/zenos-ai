@@ -269,7 +269,8 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **Grocy reads the area you pass.** `area_id_norm` read Home Assistant's `area_id()` function when no area was passed, so every area mode called without one used it as the area. `chores_by_area` and `room_brief` read the area like every other area mode.
 - **Help's tool directory lists every tool.** It read each manifest without unwrapping its envelope, and found 9 tools of 66. Entries now carry `tier` and `returns`.
 - **Security Manager's envelope names the mode** for an `action=` call answered before dispatch; it reported `mode: ""`.
-- **Versions agree.** Header and manifest disagreed on Locks, Infra, Taskmaster, Kitchen, Service Desk and Finance; Camera's help named an old version.
+- **Versions agree.** Header and manifest disagreed on Locks, Infra, Taskmaster, Kitchen, Service Desk, Finance, Postman, AlertManager, Media Manager, Rolodex, Query and Help; Camera's help named an old version.
+- **Scribe's live ack names its cert in plain words,** like every other approval; it named the old flat cert.
 - **Smaller fixes.** A re-fired alert's answer replaces the cached one. Provisioner's deprovision reports an error when the cabinet doesn't end up unmounted. `flip_schema_version` flips back. Stack and lens unregisters remove their entry. Grocy, Lights, Media Manager, Room Manager and cabinet inspect read drawer content from `value`.
 
 ## Removed

@@ -2,7 +2,7 @@
 
 ### **Deterministic Entity Selector for Home Assistant**
 
-**Version:** 5.1.0
+**Version:** 5.1.2
 **Namespace:** `script.zen_dojotools_query`
 **Icon:** `mdi:filter-cog`
 

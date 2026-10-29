@@ -1,4 +1,4 @@
-# Zen DojoTools Scribe — v5.6.2
+# Zen DojoTools Scribe — v5.6.3
 
 *Guided authoring and lifecycle management for KF4 artifacts — MCP-exposed*
 
