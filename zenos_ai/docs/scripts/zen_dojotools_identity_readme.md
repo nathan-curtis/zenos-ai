@@ -1,4 +1,4 @@
-# Zen DojoTools Identity — v5.14.0
+# Zen DojoTools Identity — v5.14.1
 
 *Identity resolution, presence, and household/family group management for ZenOS-AI*
 
@@ -647,6 +647,7 @@ Answer fields: `status`, `target`, `old_acl`, `new_acl`, `approver` (`live_ack`,
 - **The catalog is cached in the vault.** When exactly one cabinet carries `zen_vault_cabinet` and it is online, the catalog comes from `zen_cert_catalog` there, read through the admin door. Otherwise it is built live and nothing is cached. `catalog_source` says which (`cache` or `live`); `force_refresh: true` builds it live and refreshes the cache. Grants are always read live.
 - **Dates.** A grant made in 2026.11.0 or later shows `not_before` and `not_after` (one year), in UTC. Nothing enforces expiry yet.
 - **Renamed certs.** A grant held under a cert's pre-2026.11.0 flat name shows as held, with `reissue_pending`, until 2026.12. The alias map is `cert_aliases()` in `zen_identity.jinja`.
+- **Notes.** When one applies, `cert_list` answers with a plain `notes` list: how many grants are still under an old name (they work for now; asking for the new name at the same level reissues them), and any grant held above its cert's `max_level`. The agent's prompt carries nothing about certs, so this is where it learns its grant state.
 
 Gated on `resolve_caller_identity` returning `policy_status: allowed` — no specific cert required, no live ack. Reading your own current permission state isn't dangerous the way granting/revoking is (that's why `cert_grant`/`cert_revoke` get the full catalog-plus-live-ack treatment and this doesn't), but it isn't wide open to a caller whose identity resolution is itself blocked either.
 

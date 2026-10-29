@@ -1,4 +1,4 @@
-# Zen DojoTools FileCabinet — v6.36.1
+# Zen DojoTools FileCabinet — v6.36.2
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 **ZenOS Release:** 2026.11.0 'This Is Spinal Tap'
@@ -907,7 +907,7 @@ stack: wiki
 | `create_label` | no | `true` = auto-create HA labels not yet in registry |
 | `destination_path` | for move/copy | Target key (same-stack) |
 | `destination_stack` | no | `wiki` or `cabinet` for cross-stack copy/move |
-| `destination_volume_entity_id` | for cross-cab | Target cabinet entity for cross-cabinet move/copy |
+| `destination_volume_entity_id` | for cross-cab | Target cabinet entity for cross-cabinet move/copy. A list or JSON list string is read as its first entry, as for `volume_entity_id` |
 | `destination_cabinet` | for clone | Target cabinet entity for clone |
 | `path_prefix` | no | Filter `list` results to keys starting with prefix |
 | `query` | for search | Text to match against key, title, content, description |

@@ -94,7 +94,7 @@ Core primitive for label CRUD and entity tagging. Backbone of the label index th
 
 ---
 
-## 5. Zen DojoTools Identity — v5.14.0
+## 5. Zen DojoTools Identity — v5.14.1
 **File:** [`zen_dojotools_identity_readme.md`](zen_dojotools_identity_readme.md)
 
 Identity resolver for household members and AI constructs. MCP-exposed. Resolves by label, person entity, cabinet entity, or GUID. Delegates to the same path the prompt uses. Writes the ACL v2 record FileCabinet enforces (`acl_migrate`, `acl_set`, `take_ownership`) and owns the live-ack chokepoint.
@@ -178,7 +178,7 @@ Universal, contract-safe telemetry tool for emitting structured ZenOS-AI events 
 
 ---
 
-## 16. Zen DojoTools FileCabinet — v6.36.1
+## 16. Zen DojoTools FileCabinet — v6.36.2
 **File:** [`zen_dojotools_filecabinet_readme.md`](zen_dojotools_filecabinet_readme.md)
 
 Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. CabCeption nested drawer trees via `/` path separator. VirtualDrawer (cross-cabinet redirect) and LiveDrawer (tool-call-on-read with warm/cold cache). **Tapestry** (`weave`/`weave_preview`/`weave_save`) — multi-cabinet drawer composer; definitions stored as labeled drawers; cycle detection; depth 3 unrolled. `move`/`copy` blocked on mounted drawers by default (`force_action=true` required to transfer mount config intact). `fleet` + `expansion_sitrep` modes. Mode-scoped `tool:mode` callout whitelist entries (KF5 self-registration support) alongside legacy plain/`tool:*` forms. Single exit per action, honest `write_unverified` answers, every write a stated merge or replace, an ACL gate that checks every hop of a mount chain (audit by default, enforce on the `fc_acl_mode` switch), and expansions (`expand_drawer` / `collapse_drawer`) that move a root drawer and its tree to an expansion slot as a permanent redirect. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet or the admin door.
