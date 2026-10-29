@@ -141,6 +141,78 @@
 {%- endmacro -%}
 
 {#-
+@macro: cert_aliases
+@desc:  The flat cert names renamed into the zenos.* OID namespace in 2026.11,
+        new dotted name -> old flat name. For one release a grant under either
+        name satisfies a check against the other, and the match reports
+        reissue_pending so the grant can be reissued under its new name.
+        Remove in 2026.12.
+@returns JSON {dotted_name: flat_name}.
+-#}
+{%- macro cert_aliases() -%}
+  {{- {
+    'zenos.actuation.cover_control': 'cover_control',
+    'zenos.actuation.lock_control': 'lock_control',
+    'zenos.actuation.security_control': 'security_control',
+    'zenos.actuation.climate_control': 'climate_control',
+    'zenos.actuation.spa_control': 'spa_control',
+    'zenos.actuation.lighting_control': 'lighting_control',
+    'zenos.actuation.display_control': 'display_control',
+    'zenos.actuation.water_heater_control': 'water_heater_control',
+    'zenos.actuation.scene_handling': 'scene_handling',
+    'zenos.helper.boolean_edit': 'helper_boolean_edit',
+    'zenos.helper.datetime_edit': 'helper_datetime_edit',
+    'zenos.helper.number_edit': 'helper_number_edit',
+    'zenos.helper.select_edit': 'helper_select_edit',
+    'zenos.helper.text_edit': 'helper_text_edit',
+    'zenos.helper.timer_control': 'helper_timer_control',
+    'zenos.helper.zones_edit': 'helper_zones_edit',
+    'zenos.spatial.room_topology_edit': 'room_topology_edit',
+    'zenos.spatial.household_config_edit': 'household_spatial_config_edit',
+    'zenos.room.behavior_control': 'room_behavior_control',
+    'zenos.room.control_override': 'room_control_override',
+    'zenos.registry.lifecycle_control': 'registry_lifecycle_control',
+    'zenos.registry.purge': 'registry_purge',
+    'zenos.registry.label_lifecycle_control': 'label_lifecycle_control',
+    'zenos.knowledge.kfc_publish': 'scribe_kfc_publish',
+    'zenos.knowledge.stacks_edit': 'library_stacks_edit',
+    'zenos.knowledge.catalog_edit': 'library_catalog_edit',
+    'zenos.knowledge.inventory_schema_edit': 'inventory_schema_edit',
+    'zenos.media.playback_control': 'media_playback_control',
+    'zenos.media.prefs_edit': 'media_prefs_edit',
+    'zenos.infra.container_control': 'infra_container_control',
+    'zenos.infra.zwave_control': 'infra_zwave_control',
+    'zenos.autovac.setup': 'autovac_setup',
+    'zenos.autovac.operate': 'autovac_operate',
+    'zenos.comms.pii_disclosure': 'pii_disclosure_control',
+    'zenos.comms.teams_control': 'teams_control',
+    'zenos.comms.calendar_control': 'calendar_control',
+    'zenos.comms.todo_control': 'todo_control',
+    'zenos.alerts.policy_edit': 'alert_policy_edit',
+    'zenos.alerts.camera_policy_edit': 'camera_alert_policy_edit',
+    'zenos.plant.auto_shutoff_config_edit': 'plant_auto_shutoff_config_edit',
+    'zenos.finance.account_control': 'finance_account_control',
+    'zenos.system.cabinet_lifecycle_control': 'cabinet_lifecycle_control'
+  } | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: cert_alias_of
+@desc:  The other name of a renamed cert (dotted -> flat, or flat -> dotted);
+        '' when the name was not renamed.
+@returns the alias name or ''.
+-#}
+{%- macro cert_alias_of(name) -%}
+  {%- set _n = name | default('', true) | string | trim -%}
+  {%- set _m = cert_aliases() | from_json({}) -%}
+  {%- set ns = namespace(out=_m.get(_n, '')) -%}
+  {%- if ns.out == '' -%}
+    {%- for _d, _f in _m.items() if _f == _n -%}{%- set ns.out = _d -%}{%- endfor -%}
+  {%- endif -%}
+  {{- ns.out -}}
+{%- endmacro -%}
+
+{#-
 @macro: caller
 @desc:  Who is calling, and whether they hold a cert, for template-side gates
         (the FileCabinet ACL gate, #10626). Same answer as identity
@@ -154,7 +226,9 @@
         resolve_caller_identity).
 @param  required_cert   cert name ('' = no cert check)
 @param  required_level  minimum level (default 1)
-@returns JSON {entity_id, guid, policy_status, cert_checked, cert_ok, cert_level, cert_satisfied_by}.
+@returns JSON {entity_id, guid, policy_status, cert_checked, cert_ok, cert_level, cert_satisfied_by,
+         cert_reissue_pending}. A grant under the cert's other name (cert_aliases)
+         also satisfies it, ranked below an exact grant; cert_reissue_pending says so.
 -#}
 {%- macro caller(required_cert='', required_level=1) -%}
   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -167,22 +241,27 @@
   {%- set _guid = (CABS.acl_guid_of(_eid) | trim) if _eid else '' -%}
   {%- set ns = namespace(key='', len=-1, level=0) -%}
   {%- set _rc = required_cert | default('', true) | string | trim -%}
+  {%- set _alias = (cert_alias_of(_rc) | trim) if _rc != '' else '' -%}
   {%- if _rc != '' and _eid != '' -%}
     {%- set _craw = (state_attr(_eid, 'variables') or {}).get('zen_ai_certs', {}) -%}
     {%- set _cev = _craw.get('value', _craw) if _craw is mapping else {} -%}
     {%- set _cev = (_cev | from_json({})) if _cev is string else _cev -%}
     {%- set _certs = (_cev.get('kfc_certifications', {}) if _cev is mapping else {}) or {} -%}
-    {%- for _hk, _he in _certs.items() if _hk == _rc or _rc.startswith(_hk ~ '.') -%}
-      {%- if (_hk | length) > ns.len -%}
+    {#- A grant under the cert's other name (2026.11 rename alias) ranks just
+        below an exact grant and above any parent. -#}
+    {%- for _hk, _he in _certs.items() if _hk == _rc or _rc.startswith(_hk ~ '.') or (_alias != '' and _hk == _alias) -%}
+      {%- set _rank = (_rc | length) if _hk == _rc else (((_rc | length) - 1) if _hk == _alias else (_hk | length)) -%}
+      {%- if _rank > ns.len -%}
         {%- set ns.key = _hk -%}
-        {%- set ns.len = _hk | length -%}
+        {%- set ns.len = _rank -%}
         {%- set ns.level = (_he.get('level', 0) | int(0)) if _he is mapping else 0 -%}
       {%- endif -%}
     {%- endfor -%}
   {%- endif -%}
   {{- {'entity_id': _eid, 'guid': _guid, 'policy_status': 'blocked' if _blocked else 'allowed',
        'cert_checked': _rc != '', 'cert_ok': _rc == '' or (_eid != '' and ns.key != '' and ns.level >= (required_level | int(1))),
-       'cert_level': ns.level, 'cert_satisfied_by': ns.key} | tojson -}}
+       'cert_level': ns.level, 'cert_satisfied_by': ns.key,
+       'cert_reissue_pending': _alias != '' and ns.key == _alias and not (ns.key | string).startswith('zenos.')} | tojson -}}
 {%- endmacro -%}
 
 {#-

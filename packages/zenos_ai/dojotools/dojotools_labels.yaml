@@ -1,6 +1,21 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Labels
-# Version: 5.7.1
+# Version: 5.10.0
+# v5.10.0: cabinet labels need zenos.system.cabinet_admin level 2 (one above
+#   the admin door). Tag or untag on a cabinet entity, any tag/untag/create/
+#   update/delete naming a cabinet label (zen_cabinet, zen_*_cabinet), from a
+#   user session. A cabinet's labels decide its slot, its ACL class, and which
+#   one the vault resolver finds; there can be only one vault.
+# v5.9.1: each cert this tool declares gets a short plain description for
+#   the approval prompt (the old text moves to detail) and its real max_level.
+# v5.9.0: cert names moved to the zenos.* namespace (2026.11). An old flat
+#   grant still satisfies the new name for one release (reissue pending).
+# v5.8.0: onboarding gate (zen_os_1 entry_gate): an agent without
+#   zenos.agent.basic gets help and tool_manifest only; anything else answers
+#   onboarding_required and writes one zen_entry_gate warning. Flynn and
+#   automations (no user) pass. Every top-level step now waits on response
+#   (read, tag, untag, install, help, tool_manifest and the cert check did not,
+#   so a set response could be overwritten).
 # v5.7.1: help no longer says tag/untag require confirm=true; they are
 #   ungated by design (every tool's setup flow tags), and the code never
 #   checked it.
@@ -71,6 +86,27 @@ script:
         results_list: []
         failures_list: []
 
+    # ── Onboarding gate (zen_os_1 entry_gate): an agent without
+    # zenos.agent.basic gets help and tool_manifest only. Flynn's boot-time
+    # label writes carry no user and pass.
+    - variables:
+        _lbl_gate: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{ OS.entry_gate((context.user_id if context is defined else '') or '', 'zen_dojotools_labels', action) | from_json({'pass': false, 'reason': 'guarded: the onboarding gate could not be read'}) }}
+    - if: "{{ not _lbl_gate.get('pass', false) }}"
+      then:
+      - variables:
+          response:
+            status: error
+            action: "{{ action }}"
+            reason: "{{ _lbl_gate.reason }}"
+            next_step: "{{ _lbl_gate.next_step }}"
+      - action: system_log.write
+        data:
+          level: warning
+          logger: zen_entry_gate
+          message: "{{ _lbl_gate.get('log') or 'onboarding gate refused a call (gate result unreadable)' }}"
+
     # ── Cert-gate. Label create/delete/update/reset: label_lifecycle_control
     # (label-only, so it can be granted without entity/device/integration
     # powers). area_assign/area_remove: registry_lifecycle_control.
@@ -92,14 +128,14 @@ script:
     # the real action logic on every authorized call). tag/untag/read/
     # install/tool_manifest stay ungated -- routine, load-bearing,
     # constantly used internally by every other tool's setup flow. ──
-    - if: "{{ action in ['create', 'delete', 'update', 'area_assign', 'area_remove', 'reset'] }}"
+    - if: "{{ response is not defined and action in ['create', 'delete', 'update', 'area_assign', 'area_remove', 'reset'] }}"
       then:
       - action: script.zen_dojotools_identity
         response_variable: _lbl_id_raw
         continue_on_error: true
         data:
           mode: resolve_caller_identity
-          required_cert: "{{ 'registry_lifecycle_control' if action in ['area_assign', 'area_remove'] else 'label_lifecycle_control' }}"
+          required_cert: "{{ 'zenos.registry.lifecycle_control' if action in ['area_assign', 'area_remove'] else 'zenos.registry.label_lifecycle_control' }}"
           # create/update are level 1; delete and reset are level 2, so a
           # level-1 grant cannot remove labels or clear assignments.
           required_cert_level: "{{ (2 if action in ['delete', 'reset'] else 1) }}"
@@ -118,7 +154,7 @@ script:
           - variables:
               _lbl_cd_raw: >-
                 {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
-                {{ OS.cert_denial(_lbl_cert_policy, _lbl_cert_authorized, _lbl_cert_level, ('registry_lifecycle_control' if action in ['area_assign', 'area_remove'] else 'label_lifecycle_control'), (2 if action in ['delete', 'reset'] else 1), action, _lbl_cert_block_reason) -}}
+                {{ OS.cert_denial(_lbl_cert_policy, _lbl_cert_authorized, _lbl_cert_level, ('zenos.registry.lifecycle_control' if action in ['area_assign', 'area_remove'] else 'zenos.registry.label_lifecycle_control'), (2 if action in ['delete', 'reset'] else 1), action, _lbl_cert_block_reason) -}}
           - variables:
               response: >-
                 {{ ((_lbl_cd_raw | from_json) if _lbl_cd_raw is string else _lbl_cd_raw) | combine({'tool': 'zen_dojotools_labels', 'caller_token': caller_token}) }}
@@ -150,11 +186,64 @@ script:
                 message: "reset requires a fresh live household-admin ack every time -- not granted."
                 caller_token: "{{ caller_token }}"
 
+    # ── Cabinet labels — zenos.system.cabinet_admin level 2 (one above the
+    # admin door). A cabinet's labels decide what it is: its slot, its ACL
+    # class, and which one the vault resolver finds (there can be only one).
+    # Tagging or untagging a cabinet entity, putting a cabinet label
+    # (zen_cabinet, zen_*_cabinet) on anything, or creating, renaming or
+    # deleting one needs it. Calls no user started (Flynn's boot labeling,
+    # the provisioner) do not come through here. ──
+    - variables:
+        _lbl_caller_uid: "{{ ((context.user_id if context is defined else '') or '') | trim }}"
+        _lbl_cab_labels: >-
+          {%- set _ll = label_list | default([], true) -%}
+          {%- set _ll = (_ll | from_json([]) if (_ll is string and (_ll | trim)[:1] == '[') else ([_ll] if _ll is string else _ll)) -%}
+          {{ (_ll if _ll is sequence and _ll is not string else []) | map('string') | map('slugify')
+             | select('match', '^zen_(.+_)?cabinet$') | list }}
+        _lbl_cab_targets: >-
+          {%- set _te = target_entities | default([], true) -%}
+          {%- set _te = (_te | from_json([]) if (_te is string and (_te | trim)[:1] == '[') else ([_te] if _te is string else _te)) -%}
+          {%- set ns = namespace(out=[]) -%}
+          {%- for e in (_te if _te is sequence and _te is not string else []) -%}
+            {%- if (e | string) is match('^sensor\.zenos_.*_cabinet$') or 'zen_cabinet' in labels(e | string) -%}
+              {%- set ns.out = ns.out + [e | string] -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ns.out }}
+    - if: >-
+        {{ response is not defined and _lbl_caller_uid != ''
+           and ((action in ['tag', 'untag'] and (_lbl_cab_targets | count > 0 or _lbl_cab_labels | count > 0))
+                or (action in ['create', 'update', 'delete'] and _lbl_cab_labels | count > 0)) }}
+      then:
+      - action: script.zen_dojotools_identity
+        response_variable: _lbl_cab_id_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          required_cert: zenos.system.cabinet_admin
+          required_cert_level: 2
+          caller_token: "{{ caller_token }}"
+      - variables:
+          _lbl_cab_fields: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {%- set _raw = OS.resolve_identity_fields(_lbl_cab_id_raw) -%}
+            {{- (_raw | from_json) if _raw is string else _raw -}}
+      - if: "{{ _lbl_cab_fields.policy_status != 'allowed' or not _lbl_cab_fields.authorized }}"
+        then:
+          - variables:
+              _lbl_cab_cd_raw: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {{ OS.cert_denial(_lbl_cab_fields.policy_status, _lbl_cab_fields.authorized, _lbl_cab_fields.cert_level, 'zenos.system.cabinet_admin', 2, action ~ ' (cabinet labels)', _lbl_cab_fields.block_reason) -}}
+          - variables:
+              response: >-
+                {{ ((_lbl_cab_cd_raw | from_json) if _lbl_cab_cd_raw is string else _lbl_cab_cd_raw)
+                   | combine({'tool': 'zen_dojotools_labels', 'cabinet_targets': _lbl_cab_targets, 'cabinet_labels': _lbl_cab_labels, 'caller_token': caller_token}) }}
+
     # --- tool_manifest ---
     - choose:
       - conditions:
         - condition: template
-          value_template: "{{- action == 'tool_manifest' -}}"
+          value_template: "{{- response is not defined and action == 'tool_manifest' -}}"
         sequence:
         - variables:
             response: >-
@@ -163,7 +252,7 @@ script:
                 tool='zen_dojotools_labels',
                 display_name='Labels — HA Label CRUD',
                 tier='dojotools',
-                version='5.7.0',
+                version='5.10.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['labels'],
@@ -179,16 +268,17 @@ script:
 
                 caller_token=caller_token | default('')
               ) | from_json | combine({'certs_required': [
-                {'cert': 'label_lifecycle_control', 'level': 1, 'modes': ['create', 'update'], 'bundle': ['zenos_agent_steward']},
-                {'cert': 'label_lifecycle_control', 'level': 2, 'modes': ['delete', 'reset']},
-                {'cert': 'registry_lifecycle_control', 'level': 1, 'modes': ['area_assign', 'area_remove']}
+                {'cert': 'zenos.registry.label_lifecycle_control', 'max_level': 2, 'description': "Create and edit labels; level 2 also deletes", 'level': 1, 'modes': ['create', 'update'], 'bundle': ['zenos_agent_steward']},
+                {'cert': 'zenos.registry.label_lifecycle_control', 'max_level': 2, 'description': "Create and edit labels; level 2 also deletes", 'level': 2, 'modes': ['delete', 'reset']},
+                {'cert': 'zenos.registry.lifecycle_control', 'max_level': 2, 'description': "Hide, rename and organize devices; level 2 also disables or removes", 'level': 1, 'modes': ['area_assign', 'area_remove']},
+                {'cert': 'zenos.system.cabinet_admin', 'max_level': 2, 'description': "Make protected system changes (asks you each time); level 2 also changes cabinet labels", 'level': 2, 'modes': ['tag', 'untag', 'create', 'update', 'delete'], 'scope': 'cabinet entities and cabinet labels (zen_cabinet, zen_*_cabinet)'}
               ]}) -}}
 
     # --- help ---
     - choose:
       - conditions:
         - condition: template
-          value_template: "{{- action == 'help' -}}"
+          value_template: "{{- response is not defined and action == 'help' -}}"
         sequence:
         - variables:
             response:
@@ -206,8 +296,8 @@ script:
                   read: "No args = full label index. + target_entities = labels on those entities."
                   create: "Register a new label. Requires label_list (one entry), confirm=true. Optional new_description/new_icon/new_color."
                   delete: "Drops ALL associations for the label(s) instantly, permanent. Requires label_list, confirm=true."
-                  tag: "Apply label_list to target_entities and/or target_areas. No confirm needed; the result reads the assignment back."
-                  untag: "Remove label_list from target_entities and/or target_areas. No confirm needed; the result reads the removal back."
+                  tag: "Apply label_list to target_entities and/or target_areas. No confirm needed; the result reads the assignment back. On a cabinet entity, or with a cabinet label (zen_cabinet, zen_*_cabinet), needs zenos.system.cabinet_admin level 2."
+                  untag: "Remove label_list from target_entities and/or target_areas. No confirm needed; the result reads the removal back. Cabinets and cabinet labels need zenos.system.cabinet_admin level 2."
                   update: "Patch description/icon/color for exactly one label in label_list. force_rewrite=true overwrites unprovided fields to HA defaults (default: patch-only). Requires confirm=true."
                   reset: "Reset all zen_ labels to canonical defs — clobbers zen_ customizations. Requires a fresh live household-admin ack every call (no persisted grant) plus confirm=true."
                   install: "Same as reset — install canonical zen_ label defs. Requires confirm=true."
@@ -220,8 +310,8 @@ script:
                   asking. confirm=true is required for every write/destructive
                   action — a real safety gate, not a formality.
                 certs:
-                  label_lifecycle_control: "level 1 for create/update; level 2 for delete/reset. Label-only cert."
-                  registry_lifecycle_control: "level 1, required for area_assign/area_remove (same gate as ectoplasm)."
+                  zenos.registry.label_lifecycle_control: "level 1 for create/update; level 2 for delete/reset. Label-only cert."
+                  zenos.registry.lifecycle_control: "level 1, required for area_assign/area_remove (same gate as ectoplasm)."
                 examples:
                   - "mode=untag label_list=[old] target_entities=[entity.id]"
                   - "mode=tag label_list=[zen_kfc_provider] target_entities=[script.foo]"
@@ -368,7 +458,7 @@ script:
       - conditions:
         - alias: READ
           condition: template
-          value_template: '{{ ( action == ''read'' ) or ( not action ) }}'
+          value_template: '{{ response is not defined and (( action == ''read'' ) or ( not action )) }}'
         sequence:
         - choose:
           - conditions:
@@ -456,7 +546,7 @@ script:
         alias: DELETE
       - conditions:
         - condition: template
-          value_template: '{{ action == ''tag'' }}'
+          value_template: '{{ response is not defined and action == ''tag'' }}'
           alias: TAG
         sequence:
         - choose:
@@ -542,7 +632,7 @@ script:
       - conditions:
         - alias: UNTAG
           condition: template
-          value_template: '{{ action == ''untag'' }}'
+          value_template: '{{ response is not defined and action == ''untag'' }}'
         sequence:
         - choose:
           - conditions:
@@ -678,7 +768,7 @@ script:
       - conditions:
         - alias: INSTALL
           condition: template
-          value_template: '{{ action == ''install'' }}'
+          value_template: '{{ response is not defined and action == ''install'' }}'
         sequence:
         - if:
           - condition: template

@@ -1,9 +1,11 @@
-# Zen DojoTools FileCabinet — v6.35.0
+# Zen DojoTools FileCabinet — v6.36.1
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 **ZenOS Release:** 2026.11.0 'This Is Spinal Tap'
 
 ---
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -306,7 +308,7 @@ An expansion gives a cabinet more room. `expand_drawer` moves a root drawer and 
 - **Pointers are immutable.** `expand_drawer` creates them. Only `move`, `delete` and `collapse_drawer` remove them. `set_mount` and `remove_mount` refuse them, and they are never copied, moved or rewritten.
 - **An expansion is its host's.** It answers with the host cabinet's ACL, and a drawer's own `acl` travels with it (see [Access Control](#access-control-acl-v2)).
 
-Any root drawer that isn't a system drawer can be expanded; credential and approval drawers do not move. `lens_registry`, one of the household cabinet's biggest drawers, is a good candidate: lens register and unregister write through the central lens writer and read through the pointer, so the registry stays whole. One call moves at most 30 keys.
+Any root drawer that isn't a system drawer can be expanded; credential and approval drawers do not move. `lens_registry`, one of the household cabinet's biggest drawers, is a good candidate: lens register and unregister write through the central lens writer and read through the pointer, so the registry stays whole. One call moves at most 200 keys per root drawer. A bigger tree is refused with the fix: move some children under a new root drawer (`mode=move`), then expand each root.
 
 ### `expand_drawer`
 
@@ -895,7 +897,7 @@ stack: wiki
 | `mode` | yes | Action to perform. Aliases: `read`=`get`, `write`=`upsert`, `scan`=`list`. `action_type` is the legacy name and still works |
 | `write_mode` | no | `merge` (deep-merge into the existing value) or `replace`. Omit for the action's default: `update` replaces, the rest merge |
 | `stack` | no | `cabinet` (default) \| `wiki` \| `all` |
-| `volume_entity_id` | for cabinet | Real cabinet sensor entity_id (e.g. `sensor.zenos_expansion_cabinet_1`). Do not pass resolver sensors. |
+| `volume_entity_id` | for cabinet | Real cabinet sensor entity_id (e.g. `sensor.zenos_expansion_cabinet_1`). Do not pass resolver sensors. A one-item list, or a JSON list string (how an MCP client sends an array), is read as its first entry. |
 | `path` | varies | Drawer key (cabinet) or page path (wiki). Segments slugified individually; `/` preserved as CabCeption separator |
 | `value` | for writes | Drawer content. Native dict/list/string/number — do NOT `\| tojson` before passing |
 | `title` | for create/upsert | Document or drawer title |

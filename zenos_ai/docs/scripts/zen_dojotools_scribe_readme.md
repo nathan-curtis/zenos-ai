@@ -1,4 +1,4 @@
-# Zen DojoTools Scribe — v5.4.0
+# Zen DojoTools Scribe — v5.6.2
 
 *Guided authoring and lifecycle management for KF4 artifacts — MCP-exposed*
 
@@ -6,6 +6,8 @@
 
 ---
 
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 ## What Scribe Does
 
 Scribe is the authoring tool for the KF4 ecosystem. It manages the full lifecycle of
@@ -288,7 +290,7 @@ Scribe is non-destructive by default:
 - **`replace`** requires `replace_confirm: true`
 - **`delete`** requires `delete_confirm: true`
 - **`publish_kfc`** requires `artifact_state == formal` and `publish_confirm: true` — cannot publish a draft
-- **Live KFC writes are human-gated.** Publishing, republishing, or a patch, replace, clear_field or delete on a KFC needs `scribe_kfc_publish`, or the household admin's approval of that one write through Identity's `request_live_ack` (the console override stands in). Declined or timed out, the write is refused and the refusal carries `live_ack`. A blocked identity, a call the target guard refuses, a publish without `publish_confirm` and a `publish_dry_run` are refused without asking. Each ask is logged as `scribe_live_ack`.
+- **Live KFC writes are human-gated.** Publishing, republishing, or a patch, replace, clear_field or delete on a KFC needs `zenos.knowledge.kfc_publish`, or the household admin's approval of that one write through Identity's `request_live_ack` (the console override stands in). Declined or timed out, the write is refused and the refusal carries `live_ack`. A blocked identity, a call the target guard refuses, a publish without `publish_confirm` and a `publish_dry_run` are refused without asking. Each ask is logged as `scribe_live_ack`.
 - **Self-indexing guard** — prevents a component from including its own drawer in scope discovery
 - **Drawer feedback loop guard** — drawer blurbs are advisory; they don't re-enter authoring context
 

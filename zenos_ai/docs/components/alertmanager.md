@@ -324,7 +324,7 @@ Agent-accessible CRUD interface for AlertManager. Friday can query active alerts
 | `clear_all` | Clear all active alerts. Returns count of keys cleared. |
 | `get_response` | Read the cached ack for a fired alert. Returns `{status: pending}` if the response hasn't arrived yet, or `{status: captured, ack_action, ack_timed_out, ack_device_id}` once captured. |
 | `get_policy` | Read the current notify policy from the household cabinet. |
-| `set_policy` | Write a new notify policy entry to the household cabinet. Requires the `alert_policy_edit` certification (level 1) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
+| `set_policy` | Write a new notify policy entry to the household cabinet. Requires the `zenos.alerts.policy_edit` certification (level 1) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
 | `ack` | Acknowledge a known, non-critical condition so a domain caller can suppress repeat escalation for it. Stores an entry in `_zen_alert_acks` keyed by `condition_key`, expiring after `ttl_days` (default 7). No cert gate — same rationale as `fire`/`clear`. |
 | `check_ack` | Read-only: is `condition_key` currently acknowledged? Returns `suppressed: true` plus the stored `baseline`/`change_check`/`note`/`acked_at`, or `suppressed: false` with `reason: no_ack` / `expired`. |
 | `revoke_ack` | Delete the ack for `condition_key` early. Returns `existed`. |

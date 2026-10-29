@@ -1,10 +1,12 @@
-# Zen DojoTools Office — Teams v1.1.0 · Mail v5.1.1
+# Zen DojoTools Office — Teams v1.3.1 · Mail v5.3.1
 
 *M365 Teams and Mail tools for Home Assistant*
 
 ---
 
 > **Response envelope (2026.10.0):** `zen_dojotools_teams` and `zen_dojotools_mail` return the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -23,8 +25,8 @@ M365 Teams CRUD via the MS365 integration. Supports reading the latest incoming 
 | `action_type` | Description |
 |---|---|
 | `read` | Returns latest chat message, your current Teams status, and the partner's chat ID |
-| `send` | Sends a text message to an existing chat thread. Requires `chat_id` and `message`. Requires the `pii_disclosure_control` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
-| `set` | Updates your Teams presence (availability + activity + expiration). Requires `availability`. Requires the `teams_control` certification (level 1) — presence is how the user is represented to their whole org, a risk distinct from `send`'s PII-disclosure axis. |
+| `send` | Sends a text message to an existing chat thread. Requires `chat_id` and `message`. Requires the `zenos.comms.pii_disclosure` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
+| `set` | Updates your Teams presence (availability + activity + expiration). Requires `availability`. Requires the `zenos.comms.teams_control` certification (level 1) — presence is how the user is represented to their whole org, a risk distinct from `send`'s PII-disclosure axis. |
 | `help` | Returns capability summary, field reference, and setup notes |
 
 Update and delete are not supported by the MS365 Teams integration.
@@ -73,7 +75,7 @@ M365 Mail via the MS365 integration. Supports listing inbox messages, reading a 
 |---|---|
 | `list` | Lists messages from a folder (default: Inbox). Supports `from_filter` and `query` filters. Returns `uid` in each header row. |
 | `read` | Finds a message by `uid` OR `subject` substring (first match wins). Resolves via sensor attribute scan — `uid` is always empty string from the MS365 sensor, so **subject match is the practical path**. Returns full body. |
-| `create` | Sends a new email. Requires `to`, `subject`, `body`. Requires the `pii_disclosure_control` certification (level 1) as of 2026-09-10 (#10390). |
+| `create` | Sends a new email. Requires `to`, `subject`, `body`. Requires the `zenos.comms.pii_disclosure` certification (level 1) as of 2026-09-10 (#10390). |
 | `delete` | Not implemented — `ms365_mail` service does not exist. Returns `not_implemented`. |
 | `move` | Not implemented — `ms365_mail` service does not exist. Returns `not_implemented`. |
 | `help` | Returns capability summary, field reference, examples, and setup notes. |
@@ -109,7 +111,7 @@ Editing the whitelist is now its own gated mode:
 
 | `action_type` | Description |
 |---|---|
-| `whitelist_set` | Writes the `mail_whitelist_config` drawer. Requires the `pii_disclosure_control` certification at **level 2** (higher than the level-1 requirement on `create`/Teams `send` — changing the disclosure policy itself is a bigger blast radius than one disclosure). |
+| `whitelist_set` | Writes the `mail_whitelist_config` drawer. Requires the `zenos.comms.pii_disclosure` certification at **level 2** (higher than the level-1 requirement on `create`/Teams `send` — changing the disclosure policy itself is a bigger blast radius than one disclosure). |
 
 ### Setup Helpers
 

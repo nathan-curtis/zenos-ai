@@ -1,4 +1,4 @@
-# Zen DojoTools Provisioner — v1.1.0
+# Zen DojoTools Provisioner — v1.3.2
 
 **File:** `packages/zenos_ai/dojotools/dojotools_provisioner.yaml`
 **Script:** `zen_dojotools_provisioner`
@@ -6,10 +6,12 @@
 
 Provisions, deprovisions, or replaces a cabinet-backed identity (`ai_user` / `user` / `family` / `household`) — pulling a stacks cabinet into service or returning one to the stacks pool. This is the write-path counterpart to the stacks model: cabinets live as `online_unmounted` spares until provisioned into a typed, labeled, `online_mounted` identity.
 
-All three modes (`provision`, `deprovision`, `replace`) require the `cabinet_lifecycle_control` certification (level 1) as of 2026-09-10 (#10390) — the same certification `zen_admintools_cabinetadmin` gates its own moderate-to-nuclear ops under. See the [Security Certification Manual](../getting_started/security_certification_manual.md).
+All three modes (`provision`, `deprovision`, `replace`) require the `zenos.system.cabinet_lifecycle_control` certification (level 1) as of 2026-09-10 (#10390) — the same certification `zen_admintools_cabinetadmin` gates its own moderate-to-nuclear ops under. See the [Security Certification Manual](../getting_started/security_certification_manual.md).
 
 ---
 
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 > **Response envelope (2026.10.0):** `zen_dojotools_provisioner` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Modes
@@ -56,7 +58,7 @@ All three modes (`provision`, `deprovision`, `replace`) require the `cabinet_lif
 
 1. **Mounted gate** — `target_cabinet` (or `replace_cabinet`, in `replace` mode) must be `online_mounted`.
 2. **Default-label gate** — blocked if the cabinet holds any `zen_default_household_cabinet`/`zen_default_family_cabinet`/`zen_default_user_cabinet`/`zen_default_ai_user_cabinet` label. Transfer the default to another cabinet first — this script won't silently orphan a default.
-3. Strips the type label and the `zen_cabinet` parent label, dismounts (`meta.mounted: false`), waits up to 10s to confirm `online_unmounted`.
+3. Removes every type label the cabinet carries (as a list) and keeps the `zen_cabinet` parent label, so the freed cabinet stays a slot. Dismounts (`meta.mounted: false`), waits up to 10s to confirm `online_unmounted`, and answers an error if it doesn't get there.
 4. Fires `zen_event` (`kind: cabinet_deprovisioned`) and `identity_manifest_rebuild`.
 
 ## Replace Flow

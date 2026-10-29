@@ -1,10 +1,14 @@
-# Zen DojoTools SystemTools — v5.2.8
+# Zen DojoTools SystemTools — v5.3.1
 
 *`zen_dojotools_ha_log_viewer` v1.1.0 · `zen_dojotools_event_emitter` v1.0.0 (same file).*
 
 *HA lifecycle management, log reading, event emission, and home mode — MCP-exposed*
 
 ---
+
+> **Before approval, `zen_health_report` covers only the approval path:** cabinets, Flynn readiness, the internal API, and known issues on Postman, AlertManager, Display and Identity. The full report names the house's areas and devices, so it waits for the pass. **Cabinets near full:** the report adds `warn: cabinet near full` for each cabinet at or past 90% of the 128 KB cap, from `zen_cabinet_health`'s `cabinet_capacity`, naming `expand_drawer` and `expansion_sitrep`. The sensor's own state doesn't change.
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only; `zen_health_report` stays open, trimmed to the approval path until the agent is approved. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 

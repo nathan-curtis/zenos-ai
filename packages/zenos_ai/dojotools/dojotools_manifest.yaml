@@ -1,6 +1,22 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Manifest
-# Version: 6.4.18
+# Version: 6.6.1
+# v6.6.1: cert_audit takes exclude= (added to its own scan exclude) and skips
+#   its my_certs call when zen_admintools_certadmin is excluded: certadmin
+#   reads this catalog mid-grant, and calling back into it was a refused
+#   recursion.
+# v6.6.0: cert_audit carries each cert's detail (the long description) next
+#   to its short approval-prompt description.
+# v6.5.0: onboarding gate (zen_os_1 entry_gate). An agent without
+#   zenos.agent.basic gets help, tool_manifest and cert_audit; anything else
+#   answers onboarding_required with next_step zen_flynn_oobe. Both dispatch
+#   chooses keep a set result as their first branch.
+# v6.4.19: cert_audit reads short-form cert entries ({cert, level, modes}):
+#   each gives a gate line (tool: modes (level N)) and its level counts toward
+#   max_level (it defaulted to 4). A cert with no description reads as its
+#   gates and a missing display_name is the id made readable, so the
+#   cert_req_grant approval names what it allows instead of "no description
+#   on file". The FileCabinet calls use mode and write_mode.
 # v6.4.18: acls_by_category reads the shared ACL record (CABS.acl_record, #10626):
 #   owner / prime / partners as GUIDs.
 # v6.4.17: retired system_tools_stamp_default_family_cabinet (no callers; it fired
@@ -321,7 +337,7 @@ script:
                 tool='zen_dojotools_manifest',
                 display_name='System Manifest Broker',
                 tier='dojotools',
-                version='6.4.18',
+                version='6.6.1',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['manifest', 'audit'],
@@ -398,8 +414,35 @@ script:
     - variables:
         mode_norm: "{{ mode | default('cabinets') | lower | trim }}"
         _hh_cab: "{{- states('sensor.zen_default_household_cabinet_resolved') -}}"
+    # Onboarding gate (zen_os_1 entry_gate): an agent without
+    # zenos.agent.basic gets help, tool_manifest and cert_audit (the approval
+    # prompt reads it); anything else answers onboarding_required. Calls no
+    # user started pass.
+    - variables:
+        _mf_gate: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{ OS.entry_gate((context.user_id if context is defined else '') or '', 'zen_dojotools_manifest', mode_norm) | from_json({'pass': false, 'reason': 'guarded: the onboarding gate could not be read'}) }}
+    - if: "{{ result is not defined and not _mf_gate.get('pass', false) }}"
+      then:
+        - variables:
+            result:
+              status: error
+              mode: "{{ mode_norm }}"
+              reason: "{{ _mf_gate.reason }}"
+              next_step: "{{ _mf_gate.next_step }}"
+              caller_token: "{{ caller_token }}"
+        - action: system_log.write
+          data:
+            level: warning
+            logger: zen_entry_gate
+            message: "{{ _mf_gate.get('log') or 'onboarding gate refused a call (gate result unreadable)' }}"
     # ── Route to broker case ─────────────────────────────────────────────────
     - choose:
+      - conditions: "{{ result is defined }}"
+        alias: Already answered (onboarding gate)
+        sequence:
+        - variables:
+            _mf_answered: true
       # ── mode: cabinets (existing cabinet scanner, lifted verbatim) ──────────
       - conditions: "{{ mode_norm == 'cabinets' }}"
         sequence:
@@ -602,12 +645,12 @@ script:
               {{- result.data -}}
         - action: script.zen_sutra_filecabinet
           data:
-            action_type: upsert
+            mode: upsert
             stack: cabinet
             volume_entity_id: "{{- _hh_cab -}}"
             path: "{{- manifest_key -}}"
             value: "{{- manifest | tojson -}}"
-            mode: replace
+            write_mode: replace
             caller_token: "{{- caller_token | default('') -}}"
           response_variable: _manifest_write
         - variables:
@@ -728,7 +771,7 @@ script:
           continue_on_error: true
           response_variable: _bs_reg_raw
           data:
-            action_type: get
+            mode: get
             volume_entity_id:
               - "{{ _hh_cab }}"
             key: lens_registry
@@ -736,7 +779,7 @@ script:
           continue_on_error: true
           response_variable: _bs_skip_raw
           data:
-            action_type: get
+            mode: get
             volume_entity_id:
               - "{{ _hh_cab }}"
             key: lens_bootstrap_skip
@@ -904,7 +947,7 @@ script:
           continue_on_error: true
           response_variable: _bkfc_dojo_read
           data:
-            action_type: get
+            mode: get
             volume_entity_id:
               - "{{ _dojo_cab }}"
             key: '*'
@@ -1005,8 +1048,8 @@ script:
                       continue_on_error: true
                       response_variable: _bkfc_write_raw
                       data:
-                        action_type: update
-                        mode: replace
+                        mode: update
+                        write_mode: replace
                         force_action: true
                         volume_entity_id:
                           - "{{ _dojo_cab }}"
@@ -1114,7 +1157,7 @@ script:
         - action: script.zen_sutra_filecabinet
           response_variable: _lr_raw
           data:
-            action_type: get
+            mode: get
             show_hidden_volumes: false
             volume_entity_id:
               - "{{ _hh_cab }}"
@@ -1152,7 +1195,7 @@ script:
           continue_on_error: true
           response_variable: _a_lr_raw
           data:
-            action_type: get
+            mode: get
             volume_entity_id:
               - "{{ _hh_cab }}"
             key: lens_registry
@@ -1420,7 +1463,9 @@ script:
           data:
             mode: scan
             full: true
-            exclude: "{{ this.entity_id | replace('script.', '') }}"
+            exclude: >-
+              {{ ([this.entity_id | replace('script.', '')] + ((exclude | default('', true) | string | trim | regex_findall('[^,]+') | map('trim') | list)
+                  if (exclude | default('', true) | string | trim) != '' else [])) | join(',') }}
         - variables:
             _ca_all_results: "{{ (_ca_collect_raw.get('results', []) if _ca_collect_raw is mapping else []) }}"
             _ca_scan_targets: >-
@@ -1468,12 +1513,24 @@ script:
                   {%- set _cn = c.get('cert', '') -%}
                   {%- if _cn != '' -%}
                     {%- set _existing = ns.map.get(_cn, {'declared_by': [], 'gates': []}) -%}
+                    {#- A short-form entry ({cert, level, modes}) names its gates by
+                        level instead of describing them: its gate line is built
+                        from the tool and modes, and its level counts toward
+                        max_level (the 4 default was wrong for every one). -#}
+                    {%- set _lvl = c.get('level') | int(0) if c.get('level') is not none else none -%}
+                    {%- set _modes = c.get('modes') if c.get('modes') is sequence and c.get('modes') is not string else [] -%}
+                    {%- set _short = entry.get('tool', '') | regex_replace('^zen_(dojotools|admintools|sutra|stack|codex)_', '') -%}
+                    {%- set _gates = c.get('gates') if c.get('gates') is sequence and c.get('gates') is not string
+                                     else ([_short ~ ': ' ~ (_modes | join(', ')) ~ ' (level ' ~ _lvl ~ ')'] if _modes | count > 0 and _lvl is not none else []) -%}
+                    {%- set _max = c.get('max_level') if c.get('max_level') is not none
+                                   else (([_existing.get('max_level', 0) | int(0), _lvl] | max) if _lvl is not none else _existing.get('max_level', 4)) -%}
                     {%- set _merged = {
                       'cert': _cn,
-                      'display_name': c.get('display_name', _existing.get('display_name', _cn)),
-                      'description': c.get('description', _existing.get('description', '')),
-                      'max_level': c.get('max_level', _existing.get('max_level', 4)),
-                      'gates': (_existing.get('gates', []) + c.get('gates', [])) | unique | list,
+                      'display_name': c.get('display_name') or _existing.get('display_name') or (_cn | replace('zenos.', '') | replace('.', ' ') | replace('_', ' ') | title),
+                      'description': c.get('description') or _existing.get('description', ''),
+                      'detail': c.get('detail') or _existing.get('detail', ''),
+                      'max_level': _max,
+                      'gates': (_existing.get('gates', []) + _gates) | unique | list,
                       'live_ack_required_for': (_existing.get('live_ack_required_for', []) + c.get('live_ack_required_for', [])) | unique | list,
                       'grant_via': c.get('grant_via', _existing.get('grant_via', '')),
                       'declared_by': (_existing.get('declared_by', []) + [entry.get('tool', '')]) | unique | list,
@@ -1483,7 +1540,14 @@ script:
                   {%- endif -%}
                 {%- endfor -%}
               {%- endfor -%}
-              {{ ns.map }}
+              {#- A cert with no description reads as its gates, so the approval
+                  prompt names what it allows instead of "no description on file". -#}
+              {%- set out = namespace(map={}) -%}
+              {%- for _cn, _e in ns.map.items() -%}
+                {%- set out.map = out.map | combine({_cn: (_e if (_e.description | default('') | trim) != '' or _e.gates | count == 0
+                                                     else dict(_e, description='Allows ' ~ (_e.gates | join('; ')) ~ '.'))}) -%}
+              {%- endfor -%}
+              {{ out.map }}
         # ── Bundles view -- two sources merged. (1) Code-tagged: each
         # cert's own 'bundle' tag, declared alongside the cert itself, no
         # separate registry to keep in sync -- opt-in, not automatic.
@@ -1537,13 +1601,20 @@ script:
         # target= (optional) inspects a different ai_user cabinet; omitted
         # defaults to the default AI user, same convention as certadmin/
         # persona_editor. ──
-        - action: script.zen_admintools_certadmin
-          response_variable: _ca_my_certs_raw
-          continue_on_error: true
-          data:
-            mode: cert_list
-            target: "{{ target | default('') }}"
-            caller_token: "{{ caller_token }}"
+        # certadmin asks for this catalog mid-grant and passes itself in
+        # exclude; calling it back here is a refused recursion, so skip.
+        - variables:
+            _ca_exclude_extra: "{{ exclude | default('', true) | string | trim }}"
+            _ca_my_certs_raw: {}
+        - if: "{{ 'zen_admintools_certadmin' not in (_ca_exclude_extra | regex_findall('[^,]+') | map('trim') | list) }}"
+          then:
+            - action: script.zen_admintools_certadmin
+              response_variable: _ca_my_certs_raw
+              continue_on_error: true
+              data:
+                mode: cert_list
+                target: "{{ target | default('') }}"
+                caller_token: "{{ caller_token }}"
         - variables:
             _ca_my_certs_raw: "{{ _ca_my_certs_raw.get('result', _ca_my_certs_raw) if _ca_my_certs_raw is mapping else _ca_my_certs_raw }}"
         - variables:
@@ -1987,7 +2058,7 @@ script:
           continue_on_error: true
           response_variable: _h_cache_raw
           data:
-            action_type: get
+            mode: get
             volume_entity_id:
               - "{{ _hh_cab }}"
             key: _health_report
@@ -2089,7 +2160,7 @@ script:
           continue_on_error: true
           response_variable: _hr_lr_raw
           data:
-            action_type: get
+            mode: get
             volume_entity_id:
               - "{{ _hh_cab }}"
             key: lens_registry
@@ -2097,7 +2168,7 @@ script:
           continue_on_error: true
           response_variable: _hr_cr_raw
           data:
-            action_type: get
+            mode: get
             volume_entity_id:
               - "{{ _hh_cab }}"
             key: codex_registry
@@ -2294,8 +2365,8 @@ script:
         - action: script.zen_sutra_filecabinet
           continue_on_error: true
           data:
-            action_type: upsert
-            mode: replace
+            mode: upsert
+            write_mode: replace
             force_action: true
             volume_entity_id:
               - "{{ _hh_cab }}"
@@ -2407,8 +2478,8 @@ script:
         - action: script.zen_sutra_filecabinet
           continue_on_error: true
           data:
-            action_type: upsert
-            mode: replace
+            mode: upsert
+            write_mode: replace
             force_action: true
             volume_entity_id:
               - "{{ _hh_cab }}"
@@ -2520,8 +2591,8 @@ script:
         - action: script.zen_sutra_filecabinet
           continue_on_error: true
           data:
-            action_type: upsert
-            mode: replace
+            mode: upsert
+            write_mode: replace
             force_action: true
             volume_entity_id:
               - "{{ _hh_cab }}"
@@ -2677,8 +2748,8 @@ script:
           continue_on_error: true
           response_variable: _hr_write_raw
           data:
-            action_type: upsert
-            mode: replace
+            mode: upsert
+            write_mode: replace
             force_action: true
             volume_entity_id:
               - "{{ _hh_cab }}"
@@ -2797,7 +2868,7 @@ script:
               {%- endfor -%}
               {{ ns.out | list }}
         # ── label-driven domain routing map — GO HERE FIRST ──
-        # What the MCP manifest can't tell Friday: which tool owns which domain.
+        # What the MCP manifest can't tell the agent: which tool owns which domain.
         # Assign label zen_domain_<name> to a script to register it for that domain.
         # Room-oriented: prefer room_manager over raw entity state queries.
         - variables:
@@ -2932,13 +3003,13 @@ script:
             sequence:
               - action: script.zen_sutra_filecabinet
                 data:
-                  action_type: upsert
+                  mode: upsert
                   stack: cabinet
                   volume_entity_id: "{{ _hh_cab }}"
                   path: "{{ repeat.item }}"
                   title: "{{ repeat.item }}"
                   value: "{{ _pub_values[repeat.item] | tojson }}"
-                  mode: replace
+                  write_mode: replace
                   caller_token: "{{ caller_token }}"
         - variables:
             result:
@@ -2991,7 +3062,7 @@ script:
           response_variable: _all_cabs_raw
           continue_on_error: true
           data:
-            action_type: get
+            mode: get
             stack: cabinet
             volume_entity_id: "{{ _hh_cab }}"
             path: zen_library_manifest
@@ -3000,7 +3071,7 @@ script:
           response_variable: _all_struct_raw
           continue_on_error: true
           data:
-            action_type: get
+            mode: get
             stack: cabinet
             volume_entity_id: "{{ _hh_cab }}"
             path: lens_registry
@@ -3104,6 +3175,11 @@ script:
     # Returns live graph — zero storage, zero hardcoding.
     # Filters: name=<domain> (single cluster), tool=<script> (all clusters for a tool).
     - choose:
+      - conditions: "{{ result is defined }}"
+        alias: Already answered (onboarding gate)
+        sequence:
+        - variables:
+            _mf_answered: true
       - conditions: "{{ mode_norm == 'domains' }}"
         sequence:
         # Phase 2 of fan-out consolidation: retrofitted onto

@@ -1,6 +1,6 @@
 # Zen DojoTools AdminTools
 
-**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.1 · `reset_labels` 1.0.0 · `cabinetadmin` 4.7.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 45 · `run_repair` 5.2.0.
+**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.1 · `reset_labels` 1.0.0 · `cabinetadmin` 4.8.1 · `cabinetadmin_factory` 1.1.0 · `prompt_loader` 45.1 · `run_repair` 5.2.0.
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -27,7 +27,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 | `zen_admintools_cabinetadmin` | 4.7.0 | No | Inspect, restore, reset, hammer, init, repair_volumeinfo, or reset_all Ring-0 cabinets |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
-| `zen_admintools_prompt_loader` | 45 | No | Load versioned Cortex, Directives, and Purpose (v45 = Open Door (default/latest), v44 = Open Door, v43 = Rule Zero). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`. |
+| `zen_admintools_prompt_loader` | 45.1 | No | Load versioned Cortex, Directives, and Purpose (v45 = Open Door (default/latest), v44 = Open Door, v43 = Rule Zero). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`. |
 | `zen_admintools_run_repair` | 5.2.0 | **No** | Human-confirmed passthrough to identity `acl_migrate` (the one repair action) |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
@@ -389,6 +389,10 @@ Run when a cabinet fails identity's ACL schema check (identity answers `acl_sche
 
 | Version | Change |
 |---------|--------|
+| v5.6.0 | cabinetadmin `init` knows the Vault Cabinet type (class `vault`), so Flynn provisions the required vault on boot. cabinetadmin_factory 1.1.0 waits up to 10 seconds for the VolumeInfo GUID to land and answers an error instead of a false "initialized". |
+| v5.5.2 | prompt_loader 45.1: `cert_bypass` reads the console user from the session (`context.user_id`), not `whoami`, which shows nothing about the console before the agent holds its pass, so the console override can be switched on before approval. The person falls back to the HA person whose `user_id` matches. The loader's version follows the newest cortex slot. |
+| v5.5.1 | Plain cert descriptions for the approval prompt; real `max_level`. |
+| v5.5.0 | Cert names under `zenos.*` (one-release alias). |
 | v5.4.21 | cabinetadmin's `expand_drawer` is retired, with its `source_cabinet`, `source_drawer` and `space_threshold` fields. Use [FileCabinet's `expand_drawer` and `collapse_drawer`](zen_dojotools_filecabinet_readme.md#expansions--expand_drawer-and-collapse_drawer), the only way to make an expansion. A missing, unknown or retired mode answers help, and help names the replacement. |
 | v5.4.20 | cabinetadmin_factory stamps the cabinet `class` from `cabinet_type`. |
 | v5.4.19 | cabinetadmin's result carries `repair_results` only for `repair_volumeinfo`; `hammer_ok` defaults to `false` when absent. |

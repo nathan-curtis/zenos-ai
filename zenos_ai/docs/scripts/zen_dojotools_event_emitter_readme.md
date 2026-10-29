@@ -1,4 +1,4 @@
-# Zen DojoTools Event Emitter — v1.0.0
+# Zen DojoTools Event Emitter — v1.1.0
 
 Overview
 
@@ -34,6 +34,8 @@ Version 1.1.2 introduces the canonical event schema used by all ZenOS-AI agents.
 
 
 ---
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 Design Goals
 

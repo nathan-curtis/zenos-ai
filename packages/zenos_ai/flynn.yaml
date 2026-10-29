@@ -1,5 +1,26 @@
 ###############################################################################
-# FLYNN — UNIFIED ENGINE (v5.1.11)
+# FLYNN — UNIFIED ENGINE (v5.3.1)
+# v5.3.1: the cert catalog refresh runs ahead of the all-green early exit
+#   (it never ran on a healthy system), and Gate 2.1's own check now also
+#   sees a never-written vault (only the early-exit check did, so the pass
+#   went on but never called init).
+# v5.3.0: Gate 2.2 asks identity to rebuild the cert catalog cache in the
+#   vault when it is stale (fire and forget; skipped with no vault). Gate 2.1
+#   also inits a vault that was never written (unknown with no variables),
+#   so an existing install gets its vault on the next pass after warmup.
+# v5.2.1: flynn_initialize_cabinets inits the vault slot (Vault Cabinet),
+#   so the required vault provisions on boot like history.
+# v5.2.0: Gate 3.5 checks the agent's approval, not only onboarding (#10648): an
+#   onboarded agent without zenos.agent.basic gets one "waiting for approval"
+#   notification (recorded in flynn_active_notification, so a 5-minute pass
+#   does not raise it again; Flynn never asks for the approval itself), and it
+#   clears once the badge is granted. The agent keeps answering as itself:
+#   its gated tools say onboarding_required and point at zen_flynn_oobe
+#   mode=run, which it can call. flynn_active_notification is cleared only
+#   by the gate whose notice it holds (the labels gate and
+#   flynn_bootstrap_content wiped it every pass,
+#   so Gate 3.5 re-raised its notice and Gate 4's note lasted one pass).
+#   The FileCabinet calls use mode and write_mode.
 # v5.1.11: flynn_unified_engine writes onboarding state (_onboarding,
 #   _onboarding_schema) through the FileCabinet engine as Flynn (caller_tool
 #   flynn_unified_engine, internal), not the agent-facing wrapper: on a fresh
@@ -284,7 +305,7 @@ automation:
         response_variable: _smo_ic_raw
         continue_on_error: true
         data:
-          action_type: get
+          mode: get
           volume_entity_id: "{{ _smo_hh }}"
           path: integrations_config
       - variables:
@@ -300,8 +321,8 @@ automation:
           - action: script.zen_sutra_filecabinet
             continue_on_error: true
             data:
-              action_type: update
-              mode: replace
+              mode: update
+              write_mode: replace
               force_action: true
               volume_entity_id: "{{ _smo_hh }}"
               key: integrations_config
@@ -421,6 +442,10 @@ automation:
             {%- set _sde = _sde if _sde is mapping else (_sde | from_json if _sde is string else {}) -%}
             {%- set ns = namespace(found=false) -%}
             {%- for slot, eid in _sde.items() -%}{%- if states(eid) == 'init' -%}{%- set ns.found = true -%}{%- endif -%}{%- endfor -%}
+            {#- A vault that was never written stays unknown with no variables
+                at all (nothing to lose): treat it as virgin too. -#}
+            {%- set _vlt = _sde.get('vault', '') -%}
+            {%- if _vlt and states(_vlt) == 'unknown' and state_attr(_vlt, 'variables') is none -%}{%- set ns.found = true -%}{%- endif -%}
             {{ ns.found }}
           _early_unmounted_history: >-
             {%- set _hist = [
@@ -447,6 +472,23 @@ automation:
             {%- set _bs = _bs.get('value', _bs) if _bs is mapping else {} -%}
             {%- set _bs = (_bs | from_json) if _bs is string else _bs -%}
             {{ (_bs.get('completed', false) | bool) if _bs is mapping else false }}
+      # Cert catalog cache: with exactly one vault online, ask identity to
+      # rebuild the cached cert catalog if it is stale (identity decides; a
+      # fresh copy is left alone). Ahead of the early exit so a healthy
+      # system still refreshes it, and never during warmup or the ha_start
+      # pass. Fire and forget: a rebuild can take minutes and must not hold
+      # the pass. No vault, nothing to do.
+      - if: >-
+          {%- set _v = label_entities('zen_vault_cabinet') | select('match', 'sensor\.') | list -%}
+          {{ not _early_in_warmup and trigger.id != 'ha_start'
+             and _v | count == 1 and states(_v[0]) is match('online') }}
+        then:
+          - action: script.turn_on
+            target:
+              entity_id: script.zen_dojotools_identity
+            data:
+              variables:
+                mode: cert_cache_refresh
       # Early exit: skip when all gates truly green AND oobe done AND no init cabs
       # AND bootstrap has genuinely completed at least once. Optional slots stay
       # ok in cabinet_health even with init-state cabs — we check cabinet_states
@@ -563,8 +605,8 @@ automation:
               - action: script.zen_sutra_filecabinet
                 continue_on_error: true
                 data:
-                  action_type: upsert
-                  mode: replace
+                  mode: upsert
+                  write_mode: replace
                   set_timestamp: true
                   volume_entity_id: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
                   path: flynn_active_notification
@@ -587,20 +629,28 @@ automation:
                 data: {}
               - stop: "Gate 1: Labels assigned, waiting for health update"
 
-      # Clear label notification if we got past gates 0-1
+      # Clear label notification if we got past gates 0-1. The active-notification
+      # drawer is cleared only while it holds this gate's own notice: wiping it
+      # every pass erased every later gate's notice (Gate 3.5 re-raised its
+      # notice each pass; Gate 4's all-green note lasted one pass).
       - action: persistent_notification.dismiss
         data:
           notification_id: flynn_labels_created
-      - action: script.zen_sutra_filecabinet
-        continue_on_error: true
-        data:
-          action_type: upsert
-          mode: replace
-          set_timestamp: true
-          volume_entity_id: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
-          path: flynn_active_notification
-          title: flynn_active_notification
-          value: {}
+      - if: >-
+          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+          {%- set v = CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'flynn_active_notification', {}) | from_json({}) -%}
+          {{ (v.get('id', '') if v is mapping else '') == 'flynn_labels_created' }}
+        then:
+          - action: script.zen_sutra_filecabinet
+            continue_on_error: true
+            data:
+              mode: upsert
+              write_mode: replace
+              set_timestamp: true
+              volume_entity_id: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+              path: flynn_active_notification
+              title: flynn_active_notification
+              value: {}
 
       # Run flynn_assign_labels on every pass past Gates 0-1, so installs
       # whose cabinet labels are already assigned (and never enter Gate 1)
@@ -775,6 +825,9 @@ automation:
             {%- set _sde = _sde if _sde is mapping else (_sde | from_json if _sde is string else {}) -%}
             {%- set ns = namespace(found=false) -%}
             {%- for slot, eid in _sde.items() -%}{%- if states(eid) == 'init' -%}{%- set ns.found = true -%}{%- endif -%}{%- endfor -%}
+            {#- The vault before its first write (see _early_init_cabs). -#}
+            {%- set _vlt = _sde.get('vault', '') -%}
+            {%- if _vlt and states(_vlt) == 'unknown' and state_attr(_vlt, 'variables') is none -%}{%- set ns.found = true -%}{%- endif -%}
             {{ ns.found }}
           _has_unmounted_history: >-
             {%- set _hist = [
@@ -939,6 +992,14 @@ automation:
             {%- set _probe = health.essence_probe(_g35_ai_cab) | from_json -%}
             {{ (_probe.get('name', '') | trim) if _probe is mapping else '' }}
           _g35_input_name: "{{ states('input_text.zenos_persona_name') | trim }}"
+          # Onboarded is not approved (#10648): the badge is what a human granted.
+          _g35_badge: >-
+            {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+            {{ (ID.caller('zenos.agent.basic', 1) | from_json({})).get('cert_ok', false) }}
+          _g35_active_note: >-
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set v = CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'flynn_active_notification', {}) | from_json({}) -%}
+            {{ (v.get('id', '') if v is mapping else '') }}
       - choose:
           # Case 1: placeholder in cabinet but input_text has a name → write it and dismiss
           - conditions: >-
@@ -959,8 +1020,8 @@ automation:
               - action: script.zen_sutra_filecabinet
                 continue_on_error: true
                 data:
-                  action_type: upsert
-                  mode: replace
+                  mode: upsert
+                  write_mode: replace
                   set_timestamp: true
                   volume_entity_id: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
                   path: flynn_active_notification
@@ -984,8 +1045,8 @@ automation:
               - action: script.zen_sutra_filecabinet
                 continue_on_error: true
                 data:
-                  action_type: upsert
-                  mode: replace
+                  mode: upsert
+                  write_mode: replace
                   set_timestamp: true
                   volume_entity_id: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
                   path: flynn_active_notification
@@ -994,21 +1055,62 @@ automation:
                     id: flynn_oobe_pending
                     context: oobe
                     title: "ZenOS-AI: Ready — let's name your agent"
-        # Case 3: cabinet has a real name or _oobe_complete → dismiss
+          # Case 3: onboarded but not approved (#10648): the agent's tools stay
+          # locked until a human grants zenos.agent.basic. One notification,
+          # recorded in flynn_active_notification so later passes do not raise
+          # it again; Flynn never asks for the approval itself (no live ack from
+          # a 5-minute scan). zen_flynn_oobe mode=run asks again.
+          - conditions: "{{ _g35_complete and not _g35_badge }}"
+            sequence:
+              - action: persistent_notification.dismiss
+                data:
+                  notification_id: flynn_oobe_pending
+              - if: "{{ _g35_active_note != 'flynn_admission_pending' }}"
+                then:
+                  - action: persistent_notification.create
+                    data:
+                      title: "ZenOS-AI: Your agent is waiting for approval"
+                      message: >
+                        Setup's done, but {{ _g35_name if _g35_name not in ['', 'your AI', 'unknown'] else 'your agent' }}
+                        hasn't been approved yet, so its tools stay locked. Ask it to request approval
+                        again (zen_flynn_oobe mode=run); the request comes to your phone.
+                      notification_id: flynn_admission_pending
+                  - action: script.zen_sutra_filecabinet
+                    continue_on_error: true
+                    data:
+                      mode: upsert
+                      write_mode: replace
+                      set_timestamp: true
+                      volume_entity_id: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                      path: flynn_active_notification
+                      title: flynn_active_notification
+                      value:
+                        id: flynn_admission_pending
+                        context: admission
+                        title: "ZenOS-AI: Your agent is waiting for approval"
+                        next_step: "zen_flynn_oobe mode=run asks the household admin to approve the agent"
+        # Default: named and approved (or still onboarding with a name) → dismiss
         default:
           - action: persistent_notification.dismiss
             data:
               notification_id: flynn_oobe_pending
-          - action: script.zen_sutra_filecabinet
-            continue_on_error: true
+          - action: persistent_notification.dismiss
             data:
-              action_type: upsert
-              mode: replace
-              set_timestamp: true
-              volume_entity_id: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
-              path: flynn_active_notification
-              title: flynn_active_notification
-              value: {}
+              notification_id: flynn_admission_pending
+          # Clear the drawer only while it holds one of this gate's notices, so
+          # Gate 4's all-green note is not wiped every pass.
+          - if: "{{ _g35_active_note in ['flynn_oobe_pending', 'flynn_admission_pending'] }}"
+            then:
+              - action: script.zen_sutra_filecabinet
+                continue_on_error: true
+                data:
+                  mode: upsert
+                  write_mode: replace
+                  set_timestamp: true
+                  volume_entity_id: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                  path: flynn_active_notification
+                  title: flynn_active_notification
+                  value: {}
 
       #####################################################################
       # GATE 4: All green — notify on transition only, verify sensors first.
@@ -1049,8 +1151,8 @@ automation:
               - action: script.zen_sutra_filecabinet
                 continue_on_error: true
                 data:
-                  action_type: upsert
-                  mode: replace
+                  mode: upsert
+                  write_mode: replace
                   set_timestamp: true
                   volume_entity_id: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
                   path: flynn_active_notification
@@ -1303,12 +1405,18 @@ script:
             {%- for slot, eid in _sde.items() -%}
               {%- if states(eid) == 'init' and slot not in ns.slots -%}{%- set ns.slots = ns.slots + [slot] -%}{%- endif -%}
             {%- endfor -%}
+            {#- The vault before its first write: unknown, no variables (Gate 2.1). -#}
+            {%- set _vlt = _sde.get('vault', '') -%}
+            {%- if _vlt and states(_vlt) == 'unknown' and state_attr(_vlt, 'variables') is none and 'vault' not in ns.slots -%}
+              {%- set ns.slots = ns.slots + ['vault'] -%}
+            {%- endif -%}
             {{ ns.slots }}
           slot_to_entity_raw: "{{ state_attr('sensor.zen_cabinet_health', 'slot_to_default_entity') }}"
           slot_to_entity: "{{ slot_to_entity_raw if slot_to_entity_raw is mapping else (slot_to_entity_raw | from_json if slot_to_entity_raw is string else {}) }}"
           # Slot → CabinetAdmin cabinet_type mapping
           slot_to_type:
             system: "System Cabinet"
+            vault: "Vault Cabinet"
             dojo: "Dojo Cabinet"
             kata: "Kata Cabinet"
             default_household: "Household Cabinet"
@@ -1547,8 +1655,8 @@ script:
               - action: script.zen_sutra_filecabinet
                 continue_on_error: true
                 data:
-                  action_type: upsert
-                  mode: replace
+                  mode: upsert
+                  write_mode: replace
                   set_timestamp: true
                   volume_entity_id: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
                   path: flynn_active_notification
@@ -1559,20 +1667,26 @@ script:
                     title: "ZenOS-AI: One thing needed before I can continue"
               - stop: "Gate 3: Conversation agent invalid or missing"
 
-      # Agent valid — dismiss any prior warning
+      # Agent valid — dismiss any prior warning. The active-notification drawer
+      # is cleared only while it holds this warning (another gate's notice stays).
       - action: persistent_notification.dismiss
         data:
           notification_id: flynn_agent_required
-      - action: script.zen_sutra_filecabinet
-        continue_on_error: true
-        data:
-          action_type: upsert
-          mode: replace
-          set_timestamp: true
-          volume_entity_id: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
-          path: flynn_active_notification
-          title: flynn_active_notification
-          value: {}
+      - if: >-
+          {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+          {%- set v = CABS.cabinet_drawer_value(states('sensor.zen_default_household_cabinet_resolved'), 'flynn_active_notification', {}) | from_json({}) -%}
+          {{ (v.get('id', '') if v is mapping else '') == 'flynn_agent_required' }}
+        then:
+          - action: script.zen_sutra_filecabinet
+            continue_on_error: true
+            data:
+              mode: upsert
+              write_mode: replace
+              set_timestamp: true
+              volume_entity_id: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+              path: flynn_active_notification
+              title: flynn_active_notification
+              value: {}
 
       # Resolve reasoning task entity — auto-select if unset
       # Uses validated agent as fallback; requires explicit config if multiple agents found
@@ -1682,7 +1796,7 @@ script:
             sequence:
               - action: script.zen_sutra_filecabinet
                 data:
-                  action_type: create
+                  mode: create
                   force_action: true
                   set_timestamp: true
                   show_hidden_volumes: false
@@ -1729,7 +1843,7 @@ script:
             sequence:
               - action: script.zen_sutra_filecabinet
                 data:
-                  action_type: create
+                  mode: create
                   force_action: true
                   set_timestamp: true
                   show_hidden_volumes: false
@@ -1748,7 +1862,7 @@ script:
             sequence:
               - action: script.zen_sutra_filecabinet
                 data:
-                  action_type: create
+                  mode: create
                   force_action: false
                   set_timestamp: true
                   show_hidden_volumes: false
@@ -2038,7 +2152,7 @@ script:
         then:
           - action: script.zen_sutra_filecabinet
             data:
-              action_type: create
+              mode: create
               force_action: true
               set_timestamp: true
               show_hidden_volumes: false
@@ -2138,7 +2252,7 @@ script:
               - action: script.zen_sutra_filecabinet
                 data:
                   caller_tool: flynn_unified_engine
-                  action_type: create
+                  mode: create
                   set_timestamp: true
                   show_hidden_volumes: false
                   force_action: true
@@ -2180,7 +2294,7 @@ script:
                       - action: script.zen_sutra_filecabinet
                         data:
                           caller_tool: flynn_unified_engine
-                          action_type: create
+                          mode: create
                           set_timestamp: true
                           show_hidden_volumes: false
                           force_action: true
@@ -2209,7 +2323,7 @@ script:
               - action: script.zen_sutra_filecabinet
                 data:
                   caller_tool: flynn_unified_engine
-                  action_type: update
+                  mode: update
                   force_action: true
                   set_timestamp: true
                   show_hidden_volumes: false
@@ -2238,7 +2352,7 @@ script:
               - action: script.zen_sutra_filecabinet
                 data:
                   caller_tool: flynn_unified_engine
-                  action_type: update
+                  mode: update
                   set_timestamp: true
                   force_action: true
                   show_hidden_volumes: false
@@ -2278,7 +2392,7 @@ script:
               - action: script.zen_sutra_filecabinet
                 data:
                   caller_tool: flynn_unified_engine
-                  action_type: update
+                  mode: update
                   force_action: true
                   show_hidden_volumes: false
                   set_timestamp: true
@@ -2318,7 +2432,7 @@ script:
               - action: script.zen_sutra_filecabinet
                 data:
                   caller_tool: flynn_unified_engine
-                  action_type: update
+                  mode: update
                   set_timestamp: true
                   show_hidden_volumes: false
                   force_action: true
@@ -2359,7 +2473,7 @@ script:
               - action: script.zen_sutra_filecabinet
                 data:
                   caller_tool: flynn_unified_engine
-                  action_type: update
+                  mode: update
                   set_timestamp: true
                   show_hidden_volumes: false
                   force_action: true
@@ -2503,7 +2617,7 @@ script:
                     sequence:
                       - action: script.zen_sutra_filecabinet
                         data:
-                          action_type: create
+                          mode: create
                           force_action: true
                           set_timestamp: true
                           show_hidden_volumes: false
@@ -2640,7 +2754,7 @@ script:
                     sequence:
                       - action: script.zen_sutra_filecabinet
                         data:
-                          action_type: create
+                          mode: create
                           force_action: true
                           set_timestamp: true
                           show_hidden_volumes: false
@@ -2655,7 +2769,7 @@ script:
                     sequence:
                       - action: script.zen_sutra_filecabinet
                         data:
-                          action_type: create
+                          mode: create
                           force_action: true
                           set_timestamp: true
                           show_hidden_volumes: false
@@ -2670,7 +2784,7 @@ script:
                     sequence:
                       - action: script.zen_sutra_filecabinet
                         data:
-                          action_type: create
+                          mode: create
                           force_action: true
                           set_timestamp: true
                           show_hidden_volumes: false

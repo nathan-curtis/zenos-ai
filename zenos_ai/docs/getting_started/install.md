@@ -110,8 +110,28 @@ Generate a token at **Profile → Security → Long-Lived Access Tokens** in you
      message: "ZenOS test — can you see this?"
    ```
    Confirm it actually arrives and is tappable (not just visible in a notification shade preview).
+5. **Give it the name Postman calls first: `notify.admin_devices`.** The first thing onboarding does is ask you to approve your agent (its backstage pass, 2026.11.0). Postman has no routing profile yet at that point, and sends the request to its default target, `notify.admin_devices`. Wrap your phone's notify service in a notify group with that name, in `configuration.yaml` (or a package), and restart:
+   ```yaml
+   notify:
+     - platform: group
+       name: admin_devices
+       services:
+         - action: mobile_app_<your_device>
+   ```
+   Then search **Developer Tools → Actions** for `notify.admin_devices` and send yourself the same test message through it. It has to show up there as an action; a notify entity with that name won't do.
 
-You don't need to configure Postman's routing policy yet — that's covered in [Your First Alert](first_alert.md), right after OOBE. This step is just making sure the *device* is reachable at all before anything tries to depend on it.
+You don't need to configure Postman's routing policy yet — that's covered in [Your First Alert](first_alert.md), right after OOBE, once your agent is approved. This step is just making sure the *device* is reachable at all before anything tries to depend on it.
+
+### If no push can reach you
+
+No phone, no Companion App, or `notify.admin_devices` won't resolve? Then the approval at the start of onboarding fails with `dispatch_failed` or times out, and your agent can use nothing but help and onboarding. The console override stands in for you. Run it yourself from **Developer Tools → Actions**:
+
+1. Switch it on: `script.zen_admintools_prompt_loader` with `mode: cert_bypass`, `action_type: enable`. It answers `enabled: true` with your user.
+2. Start onboarding (ask your agent, or call `zen_flynn_oobe` with `mode: run`). The approval is granted at once.
+3. Check `zen_flynn_oobe` `mode: status` shows `badge_held: true`.
+4. **Switch it off** right away: same action, `action_type: disable`.
+
+While it is on, every live approval answers yes by itself, door locks and the alarm included. It's for getting unstuck, not for running on. The full story is in the [Security & Certification manual, Section 4](security_certification_manual.md#4-granting-a-certification--and-the-mobile-requirement).
 
 > **Companion App already installed from an earlier HA setup?** Skip straight to step 3 to confirm the notify service name.
 
@@ -274,6 +294,10 @@ Continue to [first_run.md](first_run.md) to complete OOBE and enable the summari
 
 If any other sensor shows `warn` or `error`, check its attributes for detail. Flynn will attempt self-repair on the next HA restart or health sensor change.
 
+**Your agent needs its backstage pass.** Until you approve it at the start of onboarding, every ZenOS tool answers the agent with help and `guarded: onboarding_required`, and points it at `zen_flynn_oobe mode=run`. Home Assistant can't tell a dashboard button or your own Developer Tools call from the agent, so those are refused too until then. Approve the agent first; the plugin configure calls below work after that. See the [Security & Certification manual, Section 2.5](security_certification_manual.md#25-the-backstage-pass-zenosagentbasic).
+
+**The vault cabinet.** `sensor.zen_cabinet_health` warns until the vault (`sensor.zenos_vault_cabinet`) is online. Flynn provisions it on its own on the first pass after warmup. Nothing to do unless the warning stays.
+
 **Access control ships in audit mode.** FileCabinet's access gate checks every cabinet call but refuses nothing until you switch it to enforce. While it audits, `fc_acl_audit` warnings from `zen_sutra_filecabinet` in the Home Assistant log are expected, not errors: each one is a call enforcement would have refused or asked you to approve. Read them for a while before you turn enforcement on. The switch and the rollback are in the [FileCabinet readme](../scripts/zen_dojotools_filecabinet_readme.md#access-control-acl-v2).
 
 ---
@@ -293,7 +317,7 @@ Each plugin gets its server URL one of two ways. A few read an `input_text` URL 
 | Kitchen Sync | `plugins/mealie/kitchen_sync.yaml` | Mealie + Grocy both installed | — |
 | Firefly III | `plugins/firefly_iii/firefly_iii.yaml` | Firefly III instance + `input_text.firefly_url` | `firefly_iii_bearer` |
 
-The rest have no URL helper. Their URL lives in the household cabinet's `integrations_config` drawer, written by a configure call. Your AI can make the MCP-exposed calls for you. Run the internal ones yourself from **Developer Tools → Actions**:
+The rest have no URL helper. Their URL lives in the household cabinet's `integrations_config` drawer, written by a configure call. Your AI can make the MCP-exposed calls for you. Run the internal ones yourself from **Developer Tools → Actions**. Either way, the dojotools configure calls work only once your agent has its backstage pass:
 
 | Plugin | File | Configure with | Stored at | Secret Key(s) |
 |---|---|---|---|---|

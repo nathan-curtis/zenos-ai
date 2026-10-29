@@ -68,7 +68,7 @@ An optional add-on bolted onto the same console script — same "inert unless co
 |---|---|---|
 | `containers_list` | read | None beyond "codex configured" — lists every container across all endpoints, each annotated `controllable: true/false` per the admin allow-list |
 | `container_get` | read | Same as above, resolved/inspects a single container by name/substring |
-| `container_restart` | x (write) | Allow-list + `infra_container_control` cert level ≥ `min_cert_level.x` (default 2) |
+| `container_restart` | x (write) | Allow-list + `zenos.infra.container_control` cert level ≥ `min_cert_level.x` (default 2) |
 | `container_start` | x (write) | Same gating as `container_restart` |
 | `container_stop` | d (destructive) | Allow-list + cert level ≥ `min_cert_level.d` (default 3) **plus** a live household-admin acknowledgment |
 | `container_remove` | d (destructive) | Same gating as `container_stop` |
@@ -86,15 +86,15 @@ An optional add-on bolted onto the same console script — same "inert unless co
 
 1. **Container resolution** — `container` must match exactly one container across the searched endpoint(s); ambiguous or zero matches are denied.
 2. **Allow-list check** — the resolved container's name must match an admin-configured pattern in `controllable_containers`.
-3. **Identity + certification** — `zen_dojotools_identity mode=resolve_caller_identity` is called with `required_cert: infra_container_control` and the mode's minimum level. Denied if `policy_status != allowed` or the resolved cert level is below the required minimum.
-4. **(`container_stop`/`container_remove` only) Live household-admin acknowledgment** — delegates to the shared `zen_dojotools_identity mode=request_live_ack` chokepoint (2026-08-15; this exact fire+poll block used to be hand-rolled here, in `zen_dojotools_locks`, and twice in `zen_dojotools_persona_editor`, before consolidation). A decline or timeout denies the action (fail-closed). Note: the pre-consolidation default (`notify_target: mobile`) never actually dispatched — only `notify_target: postman` wires real yes/no capture — so every ack on this path had been failing closed by accident prior to the fix, not by design. An admin can exempt a specific container from this per-call ack via `cert_grant cert_component=infra_container_control cert_scope=["<container name>"]` — resolution goes through the shared `cert_scope_check` macro (`target_entity=<container name>` on `resolve_caller_identity`), same centralized mechanism locks/covers/security_manager/room_manager/ZenLux all use as of 2026-08-16.
+3. **Identity + certification** — `zen_dojotools_identity mode=resolve_caller_identity` is called with `required_cert: zenos.infra.container_control` and the mode's minimum level. Denied if `policy_status != allowed` or the resolved cert level is below the required minimum.
+4. **(`container_stop`/`container_remove` only) Live household-admin acknowledgment** — delegates to the shared `zen_dojotools_identity mode=request_live_ack` chokepoint (2026-08-15; this exact fire+poll block used to be hand-rolled here, in `zen_dojotools_locks`, and twice in `zen_dojotools_persona_editor`, before consolidation). A decline or timeout denies the action (fail-closed). Note: the pre-consolidation default (`notify_target: mobile`) never actually dispatched — only `notify_target: postman` wires real yes/no capture — so every ack on this path had been failing closed by accident prior to the fix, not by design. An admin can exempt a specific container from this per-call ack via `cert_grant cert_component=zenos.infra.container_control cert_scope=["<container name>"]` — resolution goes through the shared `cert_scope_check` macro (`target_entity=<container name>` on `resolve_caller_identity`), same centralized mechanism locks/covers/security_manager/room_manager/ZenLux all use as of 2026-08-16.
 5. **Execute** — POSTs the Docker action (`restart`/`start`/`stop`/`remove`) through `zen_root_portainer`, logs the outcome via `zen_dojotools_event_emitter` (`component: portainer`), and returns `status: success` or `status: error`.
 
 Every denial at any gate also fires a `container_action_denied` event with the specific `reason` (`ambiguous_or_not_found_container`, `not_in_allow_list`, `identity_policy_blocked`, `cert_insufficient`, `hoh_ack_timeout`, `hoh_ack_declined`).
 
 ### Identity Model
 
-There is currently no mechanism binding an MCP session to a specific persona cabinet. `caller_id` is a free-text field the caller can set to whatever they like — it is recorded in audit events for traceability, but every gated action is checked against **the default agent's own `infra_container_control` certification**, regardless of what `caller_id` says. Practically: as of this build, all x/d actions run "as the default agent, or not at all." Per-`caller_id` ACL was considered and explicitly rejected as a false security boundary.
+There is currently no mechanism binding an MCP session to a specific persona cabinet. `caller_id` is a free-text field the caller can set to whatever they like — it is recorded in audit events for traceability, but every gated action is checked against **the default agent's own `zenos.infra.container_control` certification**, regardless of what `caller_id` says. Practically: as of this build, all x/d actions run "as the default agent, or not at all." Per-`caller_id` ACL was considered and explicitly rejected as a false security boundary.
 
 ### Fail Policy
 
@@ -116,7 +116,7 @@ A second, independent add-on on the same console script. Read-only and always ac
 | `zwave_ping` | read | None — fires a device's `button.*_ping` (resolved via `container=` name substring). Non-destructive despite the name |
 | `zwave_capabilities_discover` | read | None — generic per-device select/number config parameter enumeration plus other entities. `container=` name substring |
 | `zwave_mapping_audit` | read | None — flags devices missing an area assignment or with zero registered entities. Not a full registry-consistency sweep |
-| `zwave_diag_enable` | x (write) | `infra_zwave_control` cert required. Enables a device's disabled diagnostic entities via `homeassistant.enable_entity`. `container=` name substring, required |
+| `zwave_diag_enable` | x (write) | `zenos.infra.zwave_control` cert required. Enables a device's disabled diagnostic entities via `homeassistant.enable_entity`. `container=` name substring, required |
 | `zwave_health_correlate` | read (+ optional ticket sync) | None for the scan itself. Live anomaly scan across dropped/timed-out commands, high RTT (>1000ms), and abnormal `node_status`, grouped by area to surface a probable shared cause (2+ anomalous devices in one area) rather than coincidence |
 
 ### `zwave_health_correlate` Scoping
@@ -127,11 +127,11 @@ Auto-resolve (closing tickets for devices no longer anomalous) always evaluates 
 
 Passing `caller_id=sync_tickets` additionally files/updates/closes Radar/Zammad tickets (tag `zwave_issue_<device slug>` plus a shared `zwave_issue` tag) for anomalous devices — one open ticket per device, a note added only if its flags changed since the last note, never re-filed. Inert (`status: not_available`) if Radar/Zammad isn't configured on the install; scan-only calls (no `caller_id=sync_tickets`) work regardless.
 
-Devices with no diagnostic sensors enabled are invisible to `zwave_health_correlate` — run `zwave_diag_audit` first, then `zwave_diag_enable` (requires `infra_zwave_control`) to close any gaps.
+Devices with no diagnostic sensors enabled are invisible to `zwave_health_correlate` — run `zwave_diag_audit` first, then `zwave_diag_enable` (requires `zenos.infra.zwave_control`) to close any gaps.
 
-### Cert: `infra_zwave_control`
+### Cert: `zenos.infra.zwave_control`
 
-Gates `zwave_diag_enable` only (x-class, cert only — no live-ack tier). Grant via `persona_editor mode=cert_req_grant cert_component=infra_zwave_control` (or `zen_dojotools_identity mode=cert_list` to see current status).
+Gates `zwave_diag_enable` only (x-class, cert only — no live-ack tier). Grant via `persona_editor mode=cert_req_grant cert_component=zenos.infra.zwave_control` (or `zen_dojotools_identity mode=cert_list` to see current status).
 
 ---
 
@@ -162,7 +162,7 @@ Gates `zwave_diag_enable` only (x-class, cert only — no live-ack tier). Grant 
 2. For the container-control codex:
    - Set `secrets.yaml: portainer_token` to a Portainer API key.
    - Run `zen_admintools_portainer_acl mode=config_set url="https://portainer.<your-domain>:9443/" controllable_containers='["wud"]' confirm=true` (or pass `portainer_url` on a codex call to self-provision the URL only — the allow-list still needs an explicit admin grant).
-   - Read-only codex modes (`containers_list`, `container_get`) work once the URL is set; write modes additionally need the target container on the allow-list and the default agent's `infra_container_control` certification at the required level.
+   - Read-only codex modes (`containers_list`, `container_get`) work once the URL is set; write modes additionally need the target container on the allow-list and the default agent's `zenos.infra.container_control` certification at the required level.
 
 ---
 

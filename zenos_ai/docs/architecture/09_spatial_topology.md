@@ -61,7 +61,7 @@ Room Manager does not require every to-do list or calendar to be assigned to a r
 
 ## 9.4 Structure edits are certified
 
-Changing the shape of the house is gated. Structural modes (`set`, `setup`, `area_create`, `area_update`, `link`, `unlink`, `boundary_link`, `boundary_unlink`, zone and landmark edits) require the `room_topology_edit` certification at level 1, and `area_delete` requires level 2. Reading the topology is open.
+Changing the shape of the house is gated. Structural modes (`set`, `setup`, `area_create`, `area_update`, `link`, `unlink`, `boundary_link`, `boundary_unlink`, zone and landmark edits) require the `zenos.spatial.room_topology_edit` certification at level 1, and `area_delete` requires level 2. Reading the topology is open.
 
 That completes the graph: what exists, what the system remembers, and how the space fits together. The next question is how much of it the agent should be shown directly.
 

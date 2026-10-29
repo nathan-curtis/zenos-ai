@@ -153,7 +153,7 @@ The one ACL record Identity writes and FileCabinet enforces: VolumeInfo `acls` `
 | Class | r | w | d | a |
 |---|---|---|---|---|
 | system | `*` | door | door | door |
-| vault | `@tool:zen_dojotools_identity` | same | same + ack | door |
+| vault | door | `@tool:zen_dojotools_identity` | same + ack | door |
 | dojo | `*` | `@internal` | `@internal` | door |
 | kata | `*` | `@owner`, `@internal` | `@internal` | door |
 | history | `@owner`, `@prime`, `@internal` | `@internal` | `@internal` + ack | door |

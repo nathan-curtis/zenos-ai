@@ -1,5 +1,11 @@
 ###############################################################################
-# ZENOS-AI ADMINTOOL: CABINET WRITER, the admin door (v1.6.0)
+# ZENOS-AI ADMINTOOL: CABINET WRITER, the admin door (v1.8.0)
+# v1.8.0: mode get reads one drawer. The vault refuses every read outside
+#   this door, so its owner (identity) reads it here. Logged like a write.
+# v1.7.0: zenos.system.cabinet_admin max_level 2. Level 1 is this door;
+#   level 2 also lets a user session change cabinet labels (labels 5.10.0).
+# v1.6.1: each cert this tool declares gets a short plain description for
+#   the approval prompt (the old text moves to detail) and its real max_level.
 #
 # The one place admin-plane cabinet writes fire (#10637, epic #10626). The
 # agent-facing door is zen_dojotools_filecabinet; this is the other door, for
@@ -45,6 +51,7 @@
 #   merge   volume_entity key value(mapping) caller [unset] [force] [bootstrap]
 #   remove  volume_entity key caller
 #   clear   volume_entity caller confirm=true (wipes every drawer)
+#   get     volume_entity key caller (read one drawer: value, timestamp)
 ###############################################################################
 
 script:
@@ -59,18 +66,18 @@ script:
     icon: mdi:door-closed-lock
     fields:
       mode:
-        description: "help (default) | tool_manifest | set | merge | remove | clear"
+        description: "help (default) | tool_manifest | set | merge | remove | clear | get"
         required: false
         selector:
           select:
-            options: [help, tool_manifest, set, merge, remove, clear]
+            options: [help, tool_manifest, set, merge, remove, clear, get]
       volume_entity:
         description: Cabinet sensor entity_id to write.
         required: false
         selector:
           text:
       key:
-        description: Drawer key (set/remove).
+        description: Drawer key (set/merge/remove/get).
         required: false
         selector:
           text:
@@ -149,7 +156,7 @@ script:
                     or ((bootstrap | default(false) | bool) and states(_vol) == 'unknown')) }}
 
       # ── help (default, and any unknown mode) ─────────────────────────────
-      - if: "{{ _mode not in ['tool_manifest', 'set', 'merge', 'remove', 'clear'] }}"
+      - if: "{{ _mode not in ['tool_manifest', 'set', 'merge', 'remove', 'clear', 'get'] }}"
         then:
           - variables:
               result:
@@ -163,6 +170,7 @@ script:
                   merge: "volume_entity key value(mapping) caller [unset] [reason] [force] [bootstrap]: the given keys over the stored value"
                   remove: "volume_entity key caller [reason]"
                   clear: "volume_entity caller confirm=true [reason] (wipes every drawer)"
+                  get: "volume_entity key caller: read one drawer (value, timestamp); the only read path into the vault"
                   tool_manifest: self-description
                 rules:
                   - caller is required on every write and is logged
@@ -181,13 +189,13 @@ script:
                   tool='zen_admintools_cabinet_writer',
                   display_name='Cabinet Writer (admin door)',
                   tier='admintools',
-                  version='1.6.0',
+                  version='1.8.0',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['zen_cabinet'],
                   consumes=['volume_entity', 'key', 'value'],
                   returns=['write_ack'],
                   failure_policy='hard',
-                  modes={'help': 'help', 'manifest': 'tool_manifest', 'set': 'set', 'merge': 'merge', 'remove': 'remove', 'clear': 'clear'},
+                  modes={'help': 'help', 'manifest': 'tool_manifest', 'set': 'set', 'merge': 'merge', 'remove': 'remove', 'clear': 'clear', 'get': 'get'},
                   icon='mdi:door-closed-lock',
                   color='deep-orange',
                   mcp_exposed=false,
@@ -196,8 +204,8 @@ script:
                   'certs_required': [{
                     'cert': 'zenos.system.cabinet_admin',
                     'display_name': 'Cabinet admin (admin door)',
-                    'description': 'Structural, system-cabinet and vault writes through the admin door when an agent or console session starts them. Each such write also asks a live human. Boot and automation writes (no user session) do not need it.',
-                    'max_level': 1,
+                    'description': "Make protected system changes (asks you each time); level 2 also changes cabinet labels", 'detail': 'Structural, system-cabinet and vault writes through the admin door when an agent or console session starts them. Each such write also asks a live human. Boot and automation writes (no user session) do not need it.',
+                    'max_level': 2,
                     'gates': ['set', 'merge', 'remove', 'clear'],
                     'live_ack_required_for': ['set', 'merge', 'remove', 'clear'],
                     'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.system.cabinet_admin'
@@ -211,7 +219,7 @@ script:
               _err: >-
                 {%- if _caller == '' -%}caller is required on every admin write
                 {%- elif not _is_cabinet -%}volume_entity '{{ _vol }}' is not an online zen_cabinet
-                {%- elif _mode in ['set', 'merge', 'remove'] and _key == '' -%}key is required for {{ _mode }}
+                {%- elif _mode in ['set', 'merge', 'remove', 'get'] and _key == '' -%}key is required for {{ _mode }}
                 {%- elif _mode == 'set' and value is not defined -%}value is required for set
                 {%- elif _mode == 'merge' and not (value is defined and value is mapping) -%}merge needs value as a mapping
                 {%- elif _mode == 'clear' and not (confirm | default(false) | bool) -%}clear wipes every drawer; pass confirm=true
@@ -225,6 +233,31 @@ script:
                     mode: "{{ _mode }}"
                     message: "guarded: {{ _err }}"
                     caller_token: "{{ _token }}"
+
+      # ── get: read one drawer ──────────────────────────────────────────────
+      # The read path for drawers whose read rule is the door (the vault).
+      # A read changes nothing, so the write gate below does not apply; it is
+      # logged with its caller like every write.
+      - if: "{{ result is not defined and _mode == 'get' }}"
+        then:
+          - variables:
+              _gd: "{{ (state_attr(_vol, 'variables') or {}).get(_key) }}"
+          - action: system_log.write
+            data:
+              level: debug
+              logger: zen_admintools_cabinet_writer
+              message: "admin_cabinet_read caller={{ _caller }} volume={{ _vol }} key={{ _key }} found={{ _gd is mapping }}"
+          - variables:
+              result:
+                status: "{{ 'success' if _gd is mapping else 'not_found' }}"
+                tool: zen_admintools_cabinet_writer
+                mode: get
+                volume_entity: "{{ _vol }}"
+                key: "{{ _key }}"
+                caller: "{{ _caller }}"
+                value: "{{ _gd.get('value') if _gd is mapping else none }}"
+                timestamp: "{{ _gd.get('timestamp', '') if _gd is mapping else '' }}"
+                caller_token: "{{ _token }}"
 
       # ── door gate (#10626 / #10632), AUDIT ONLY (#10633) ─────────────────
       # A write chain no user started (boot, Flynn's bootstrap, automations:

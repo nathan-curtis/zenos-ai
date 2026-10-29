@@ -76,7 +76,7 @@ Friday can explain this about herself, because each tool declares it. Asked abou
   <img src="images/ch20_arm_disarm_authority.jpg" width="400" alt="Friday describes a monitored alarm panel with door, window, motion, and smoke zones, reports it disarmed with all thirteen zones closed and healthy, says she can arm it in four modes if told which, and when asked whether anyone can arm it explains that arming requires the security-control authorization while disarming also requires a fresh household-admin approval every time." />
 </p>
 
-*Friday asked about the security system and whether she can arm it. Arming needs `security_control`; disarming needs that and a fresh household-admin approval every time, and she will not act without an explicit instruction. That is the security tool's own `certs_required` declaration, read back accurately: arm is cert only, disarm is live acknowledgement on every call. Real 2026.10.0 output, September 2026; camera locations redacted.*
+*Friday asked about the security system and whether she can arm it. Arming needs `zenos.actuation.security_control`; disarming needs that and a fresh household-admin approval every time, and she will not act without an explicit instruction. That is the security tool's own `certs_required` declaration, read back accurately: arm is cert only, disarm is live acknowledgement on every call. Real 2026.10.0 output, September 2026; camera locations redacted.*
 
 1. It fires an actionable notification through `zen_dojotools_alertmanager mode=fire`, to Postman by default, with yes and no buttons and `breakthrough: true` so the quiet-hours gate cannot suppress it.
 2. It polls `get_response` for the answer.
@@ -144,7 +144,7 @@ Every claim in this chapter can be checked in the code. These are the places to 
 
 * The identity policy rung: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`sim_mode_allowed`, `policy_status`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
 * Live acknowledgement through AlertManager and Postman: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`request_live_ack`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
-* The pause asymmetry: setting Paused is open, clearing it is gated: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`room_control_override`). Docs: [room_manager.md](../components/room_manager.md).
+* The pause asymmetry: setting Paused is open, clearing it is gated: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`zenos.room.control_override`). Docs: [room_manager.md](../components/room_manager.md).
 <!-- /where -->
 
 <!-- nav -->

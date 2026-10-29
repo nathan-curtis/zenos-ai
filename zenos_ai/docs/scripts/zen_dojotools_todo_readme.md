@@ -1,4 +1,4 @@
-# Zen DojoTools ToDo — v5.2.0
+# Zen DojoTools ToDo — v5.4.1
 
 **File:** `packages/zenos_ai/dojotools/dojotools_todo.yaml`
 **Script:** `zen_dojotools_todo`
@@ -8,6 +8,8 @@ Wraps HA todo services with `continue_on_error` isolation so auth failures (401s
 
 ---
 
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 > **Response envelope (2026.10.0):** `zen_dojotools_todo` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
 ## Actions
@@ -15,9 +17,9 @@ Wraps HA todo services with `continue_on_error` isolation so auth failures (401s
 | Action | Description |
 |--------|-------------|
 | `read` | Read items from one or all lists. Omit `list_name` or pass `*` for wildcard discovery. |
-| `create` | Create one or more items. Accepts strings or `{item, due_date, description, reminder}` objects. Requires the `todo_control` certification (level 1), which is in the `zenos_agent_basic` bundle, as of 2026.10.1 (it was `pii_disclosure_control` level 1 before) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
-| `update` | Single-item full edit (rename, due_date, description, status) or bulk status update for multiple items. Also requires `todo_control` (level 1). |
-| `delete` | Delete item(s) by exact name. Requires the `todo_control` certification (level 2) — irreversible item removal is its own risk axis, independent of `pii_disclosure_control`; see the [Security Certification Manual](../getting_started/security_certification_manual.md). Uses `continue_on_error` — verify the list if auth is stale. |
+| `create` | Create one or more items. Accepts strings or `{item, due_date, description, reminder}` objects. Requires the `zenos.comms.todo_control` certification (level 1), which is in the `zenos_agent_basic` bundle, as of 2026.10.1 (it was `zenos.comms.pii_disclosure` level 1 before) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
+| `update` | Single-item full edit (rename, due_date, description, status) or bulk status update for multiple items. Also requires `zenos.comms.todo_control` (level 1). |
+| `delete` | Delete item(s) by exact name. Requires the `zenos.comms.todo_control` certification (level 2) — irreversible item removal is its own risk axis, independent of `zenos.comms.pii_disclosure`; see the [Security Certification Manual](../getting_started/security_certification_manual.md). Uses `continue_on_error` — verify the list if auth is stale. |
 | `help` | Return full field docs and examples. |
 
 **Default:** `mode: read`

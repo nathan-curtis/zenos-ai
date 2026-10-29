@@ -1,10 +1,12 @@
-# Zen DojoTools Display — v0.5.5 (beta)
+# Zen DojoTools Display — v0.7.1 (beta)
 
 **File:** `packages/zenos_ai/dojotools/dojotools_display.yaml`
 **Script:** `zen_dojotools_display`
 **2026.10.0 "Tron" — the agent-composable display surface, net-new this cycle. Beta: finishes in 2026.11.0, which ships the shared display dashboard.**
 
 ---
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only; `show` and `discover` stay open, because a cert request can cast its approval ask to a display. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -39,7 +41,7 @@ flowchart TD
   Adb["androidtv integration entities"]
   Webos["webostv integration entities"]
   Show["mode=show / update"]
-  Cert["display_control cert gate"]
+  Cert["zenos.actuation.display_control cert gate"]
   Family{"Which family?"}
   CastGo["cast.show_lovelace_view (no wake needed... except panel-wake bug, see below)"]
   AdbGo["media_player.turn_on + 3s delay + androidtv.adb_command (am start -p com.amazon.cloud9)"]
@@ -130,10 +132,10 @@ sensor; per-target `status` still tracks each independently underneath.
 | Mode | Cert? | Description |
 |---|---|---|
 | `discover` | No | List castable targets by family (`entity_id`/`room`/`label=` scoping — label=zen_display_target narrows to household-designated displays). |
-| `show` | `display_control` | Dispatch a new session. `dashboard_path`+`view_path` required. `base_url` is optional (see Base URL Resolution below). Content fields optional. |
-| `update` | `display_control` | Patch an active session's content. Requires an existing session (`no_active_session` error otherwise). Skips wake+delay on adb/webos (target's presumably already up). |
+| `show` | `zenos.actuation.display_control` | Dispatch a new session. `dashboard_path`+`view_path` required. `base_url` is optional (see Base URL Resolution below). Content fields optional. |
+| `update` | `zenos.actuation.display_control` | Patch an active session's content. Requires an existing session (`no_active_session` error otherwise). Skips wake+delay on adb/webos (target's presumably already up). |
 | `status` | No | Active-session lookup for one target — the mechanism other tools (Media Manager) can consult before taking over a screen. |
-| `dismiss` | `display_control` | Clear a session. Idempotent — succeeds even if none exists or the receiver's offline. |
+| `dismiss` | `zenos.actuation.display_control` | Clear a session. Idempotent — succeeds even if none exists or the receiver's offline. |
 | `register` / `unregister` | No | Lens Bus provider registration (`lens_registry` drawer), same shape as `zen_dojotools_locks`. |
 | `stacks_by_anchor` | No | Lens Bus evidence query, `anchor_type=area_id` only. |
 | `help` / `tool_manifest` | No | Self-description. |
@@ -210,11 +212,11 @@ before resolving a watch/listen intent onto a display-capable screen. Design int
 
 ---
 
-## Cert: `display_control`
+## Cert: `zenos.actuation.display_control`
 
 Level 1, no live-ack tier (info boards aren't physical-security risk the way exterior lock
 unlock is). Gates `show`/`update`/`dismiss` only — `discover`/`status`/`help` stay open. Grant
-via `persona_editor mode=cert_req_grant cert_component=display_control cert_level=1`.
+via `persona_editor mode=cert_req_grant cert_component=zenos.actuation.display_control cert_level=1`.
 
 ---
 

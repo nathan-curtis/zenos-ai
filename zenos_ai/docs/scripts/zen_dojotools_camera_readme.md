@@ -1,4 +1,4 @@
-# Zen DojoTools Camera — v5.2.0
+# Zen DojoTools Camera — v5.4.1
 
 **File:** `packages/zenos_ai/dojotools/dojotools_camera.yaml`
 **Script:** `zen_dojotools_camera`
@@ -7,6 +7,8 @@
 ---
 
 > **Response envelope (2026.10.0):** `zen_dojotools_camera` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -154,7 +156,7 @@ caller_token: ""
 
 Writes a `_alert_policy` drawer to the camera's cache entry. Defines how motion events from this camera are classified and where they route. Readable via `info`.
 
-Requires the `camera_alert_policy_edit` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md).
+Requires the `zenos.alerts.camera_policy_edit` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md).
 
 ```yaml
 zen_dojotools_camera:

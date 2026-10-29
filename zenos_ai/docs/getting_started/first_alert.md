@@ -267,6 +267,8 @@ Use `clear_all` carefully on a live home, since it clears real alerts too.
 
 Everything above used `notify_target: persistent` deliberately — it proves the pipeline with zero setup. But a persistent HA notification is not enough for what's coming next: **certifications** (locks, covers, alarm, infra, room overrides — see the [Security & Certification manual](security_certification_manual.md)) require a real push notification reaching a real phone, every single time, with no fallback. If you did [Install Step 3.5](install.md#step-35--set-up-your-mobile-notification-path), your phone can already receive a notification — this step connects that to Postman so ZenOS can actually route one to you.
 
+This step runs after your agent is approved (its backstage pass, granted at the start of OOBE): `author_policy` and `resolve` refuse every caller before that, you at Developer Tools included. Until then, approvals go to Postman's default, `notify.admin_devices`.
+
 Seed the minimum needed — your own user profile, with `push_targets` pointing at the notify service from Install Step 3.5:
 
 ```yaml
@@ -296,7 +298,7 @@ data:
 | `Default User Phone` | `notify.default_user` |
 | *(anything else)* | `notify.<slugified value>` |
 
-If your notify service from Step 3.5 was `notify.mobile_app_johns_iphone` and you don't already have an `admin_devices` group wrapping it, either create that group in HA (Settings → Devices & Services → Helpers → Notify Group), or set `push_targets` to whatever name resolves to your actual service.
+If you did Install Step 3.5 item 5, `Admin Devices` already resolves to your phone. Otherwise, set `push_targets` to whatever name resolves to your actual service, such as `Mobile App Johns Iphone` for `notify.mobile_app_johns_iphone`. Postman calls a notify *action*; the Notify Group helper in Settings makes a notify entity, which Postman can't call.
 
 Now fire a real test through Postman instead of the persistent path:
 

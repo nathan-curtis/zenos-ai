@@ -1,6 +1,6 @@
 # OOBE — Out-of-Box Experience
 
-> **Version:** 2026.10.0 'Tron' | **Last Updated:** Sep 2026
+> **Version:** 2026.11.0 'This Is Spinal Tap' | **Last Updated:** Oct 2026
 
 *First-boot onboarding protocol for ZenOS-AI*
 
@@ -40,7 +40,9 @@ flowchart TD
 
 ## How OOBE Starts
 
-Flynn manages OOBE detection automatically at boot (Gate 3.5). There are two entry paths:
+Flynn manages OOBE detection automatically at boot (Gate 3.5). There are two entry paths.
+
+**First, you approve your agent.** Before any setup step, `zen_flynn_oobe mode=run` asks you to approve the agent: one push to your phone for the `zenos_agent_basic` bundle, which carries `zenos.agent.basic`, the agent's backstage pass. Until you say yes, the setup steps' tools refuse the agent, and `run` answers `approval_required` and nothing else. The push goes to `notify.admin_devices` ([Install Step 3.5](install.md#step-35--set-up-your-mobile-notification-path)). If it can't reach you, use the console override ([If no push can reach you](install.md#if-no-push-can-reach-you)). An agent that finished onboarding but was never approved gets one "waiting for approval" notice from Flynn, and answers as itself in the meantime.
 
 **Path 1 — Conversational (recommended)**
 
@@ -191,9 +193,9 @@ The script itself is not a general-purpose dojotool — it is surfaced only thro
 
 | Mode | What It Does |
 |---|---|
-| `run` | Returns the full onboarding protocol for the AI to follow |
-| `status` | Reports current OOBE state (complete flag, persona name, pending status) |
-| `complete` | Writes the `_oobe_complete` flag to the AI user cabinet, then requests the `zenos_agent_basic` starter bundle, which includes the `zenos.agent.basic` badge (one live ack). If the bundle is declined or doesn't grant the badge, it asks for the badge alone (a second live ack). Declining doesn't undo completion. |
+| `run` | Asks you to approve the agent (the `zenos_agent_basic` bundle, one live ack) when it doesn't hold `zenos.agent.basic` yet, then returns the full onboarding protocol. Declined or timed out: `approval_required`, and no protocol |
+| `status` | Reports current OOBE state (complete flag, persona name, pending status), `badge_held`, and whether admission is granted or pending |
+| `complete` | Writes the `_oobe_complete` flag to the AI user cabinet. If the badge is still missing, it asks for the bundle, then the badge alone. Still missing after that: `admission_pending`, with `next_step` pointing at `run`. Declining doesn't undo completion |
 
 ### Status response
 

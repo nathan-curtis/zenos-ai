@@ -149,12 +149,12 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 * [`components/autovac.md`](components/autovac.md) — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
 * [`components/spamaster.md`](components/spamaster.md) — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
 * [`components/alertmanager.md`](components/alertmanager.md) — AlertManager: severity labels, priority inject, auto-expiry, GC sweep, Postman ack lifecycle
-* [`components/security_manager.md`](components/security_manager.md) — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern, `security_control` identity gate (disarm requires a fresh live ack every call)
-* [`components/infra.md`](components/infra.md) — Infrastructure Console: node/container/monitor/update/cert health, container-control codex gated on `infra_container_control`
+* [`components/security_manager.md`](components/security_manager.md) — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern, `zenos.actuation.security_control` identity gate (disarm requires a fresh live ack every call)
+* [`components/infra.md`](components/infra.md) — Infrastructure Console: node/container/monitor/update/cert health, container-control codex gated on `zenos.infra.container_control`
 * [`components/systemtools.md`](components/systemtools.md) — SystemTools: home mode, quiet/work hours, scheduler anchors, guest/entertaining toggles, home_status rollup
 * [`plugins/grocy.md`](plugins/grocy.md) — Grocy Inventory Component: governed inventory, room locations, stock_area_volatile, shopping, chores, AutoVac and SpaMaster consumables, area inventory getting-started walkthrough
-* [`components/zenlux.md`](components/zenlux.md) — ZenLux: lighting *and switch* control, bleed-aware scenes, `scene_stage` (relocated in from Room Manager), media awareness, sync_shades, Room Manager v3 room-lock guard, reflex_sync, `lighting_control` identity gate
-* [`components/zenshade.md`](components/zenshade.md) — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync, `cover_control` identity gate (asymmetric barrier/non-barrier risk)
+* [`components/zenlux.md`](components/zenlux.md) — ZenLux: lighting *and switch* control, bleed-aware scenes, `scene_stage` (relocated in from Room Manager), media awareness, sync_shades, Room Manager v3 room-lock guard, reflex_sync, `zenos.actuation.lighting_control` identity gate
+* [`components/zenshade.md`](components/zenshade.md) — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync, `zenos.actuation.cover_control` identity gate (asymmetric barrier/non-barrier risk)
 * [`plugins/finance.md`](plugins/finance.md) — Finance: Firefly III budgeting/transactions, Lens Bus provider for label/person/transaction anchors
 * [`plugins/twenty.md`](plugins/twenty.md) — Rolodex (Twenty CRM): contact/company records, guest and occupant-prefs lookup shared with Room Manager
 * [`plugins/zammad.md`](plugins/zammad.md) — Zammad (Radar): ticketing/servicedesk, Lens Bus provider for ticket anchors

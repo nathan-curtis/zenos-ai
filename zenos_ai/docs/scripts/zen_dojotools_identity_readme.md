@@ -1,8 +1,10 @@
-# Zen DojoTools Identity — v1.2.0
+# Zen DojoTools Identity — v5.14.0
 
 *Identity resolution, presence, and household/family group management for ZenOS-AI*
 
 ---
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only; `whoami` (a trimmed view), `resolve_caller_identity` and `request_live_ack` stay open, because every other tool's cert checks and live acks go through them. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -69,7 +71,7 @@ flowchart TD
 | Mode | Description | Writes? |
 |---|---|---|
 | `resolve` | Returns identity record for target, or full roster if no target. A record carries `name`, `person_entity`, `member_type` and `memberships` (each container the member belongs to, with its type, role and depth); a person is found anywhere in the household tree. | No |
-| `whoami` | Shared "who is asking" resolver. Human: `console_user`, `resolved_person`, `is_hoh` (from the household cabinet ACLs, never a label; informational only). Agent: `agent`, `agent_entity`, `agent_onboarded`, `is_default`, `is_prime`. Both: household and family memberships. Other tools call this rather than re-deriving identity. | No |
+| `whoami` | Shared "who is asking" resolver. Human: `console_user`, `resolved_person`, `is_hoh` (from the household cabinet ACLs, never a label; informational only). Agent: `agent`, `agent_entity`, `agent_onboarded`, `is_default`, `is_prime`. Both: household and family memberships. Other tools call this rather than re-deriving identity. Before the agent holds `zenos.agent.basic`, a call with a user gets only the agent (`agent`, `agent_entity`, `agent_onboarded`, `has_basic: false`) and `next_step: zen_flynn_oobe mode=run`; internal calls get the full view. Code that needs the console user before approval reads `context.user_id` itself. | No |
 | `prompt` | Returns rendered prompt capsule for target construct | No |
 | `build_identity_manifest` | Builds `{roster, tree}` and writes to household cabinet | Yes |
 | `household_add_family` | Wires a family cabinet into the household `members.families` list | Yes |
@@ -87,7 +89,8 @@ flowchart TD
 | `provision_member` | Full orchestration — provision expansion slot, wire into family, rebuild manifest. Takes the first free slot (no user drawers, not an expansion slave), keeps `profile_payload` fields and the person link | Yes |
 | `resolve_caller_identity` | Platform-wide SP1 identity/cert-check chokepoint — delegates to `zen_root_authentik`, enforces the OS sim_mode policy, optionally runs a cert check on the caller's behalf | No |
 | `request_live_ack` (2026-08-15) | Single shared chokepoint for "get a live human yes/no" — fires an alert via AlertManager, polls for response, returns approved/declined/timeout. The console override approves at once | No |
-| `cert_list` (2026-08-15) | Combined static cert catalog + live-grant view — what could exist, and what's actually held right now | No |
+| `cert_list` (2026-08-15) | Combined cert catalog + live-grant view — what could exist, and what's actually held right now | No |
+| `cert_cache_refresh` | Internal (Flynn, the scheduler's script reload), not in the MCP mode list. Rebuilds the cert catalog cache in the vault when it is stale (a day old, or older than HA's start), or always with `force_refresh: true`. No vault: `skipped`, nothing cached | No |
 | `acl_migrate` | Brings every cabinet's VolumeInfo to the ACL v2 record and repairs bad identity data. Dry run by default | Yes |
 | `acl_set` | The owner changes `ops` on a cabinet's or a drawer's ACL | Yes |
 | `take_ownership` | Escape hatch: makes the caller the ACL owner (or rewrites a drawer's ops). Cert + live ack on every call, audited | Yes |
@@ -115,7 +118,7 @@ A call with no mode and no input returns the tool's roots (`who`, `belongs`, `ma
 | `ai_entity` | entity (sensor) | Entity B for link_partners / unlink_partners |
 | `household_entity` | entity (sensor) | Explicit household cabinet — overrides default resolver |
 | `confirm_action` | boolean | `acl_migrate`: required (with `dry_run: false`) to apply. `set_principal`: required when the target HoH/prime slot is already occupied by a **different** entity than `member_entity`. Not required to fill an empty slot or re-set the same entity already occupying it. Default `false` |
-| `required_cert` | text | `resolve_caller_identity` only. Cert name to check on the caller's behalf (e.g. `infra_container_control`). When set, the mode runs the `cert_list` lookup itself against the resolved identity and returns `authorized: true/false` — the caller never touches `persona_editor` directly |
+| `required_cert` | text | `resolve_caller_identity` only. Cert name to check on the caller's behalf (e.g. `zenos.infra.container_control`). When set, the mode runs the `cert_list` lookup itself against the resolved identity and returns `authorized: true/false` — the caller never touches `persona_editor` directly |
 | `required_cert_level` | number | `resolve_caller_identity` only. Minimum cert level needed when `required_cert` is set. Default `1` |
 | `dry_run` | boolean | `acl_migrate` only. `true` (default) plans and writes nothing |
 | `force_action` | boolean | Setup modes: upgrade an old-schema household or family first instead of refusing. Default `false` |
@@ -501,7 +504,7 @@ The platform-wide call-site for identity resolution under SP1. Delegates to `zen
 ```yaml
 zen_dojotools_identity:
   mode: resolve_caller_identity
-  # required_cert: infra_container_control   # optional
+  # required_cert: zenos.infra.container_control   # optional
   # required_cert_level: 2                   # optional, default 1
 ```
 
@@ -639,7 +642,11 @@ Answer fields: `status`, `target`, `old_acl`, `new_acl`, `approver` (`live_ack`,
 
 ### `cert_list` — Combined Cert Catalog + Live-Grant View (2026-08-15)
 
-"What could exist, and what do I actually hold right now." Combines the static catalog (`.persona_certs/cert_catalog.json` — every cert that *could* exist, its description, what it gates) with the live grant roster from `zen_dojotools_persona_editor`'s own `cert_list`, so a caller gets one answer instead of cross-referencing two tools.
+"What could exist, and what do I actually hold right now." Combines the cert catalog (`zen_dojotools_manifest mode=cert_audit`: every cert any tool declares, with its short `description`, its `detail` and its `max_level`) with the live grant roster from `zen_dojotools_persona_editor`'s own `cert_list`, so a caller gets one answer instead of cross-referencing two tools.
+
+- **The catalog is cached in the vault.** When exactly one cabinet carries `zen_vault_cabinet` and it is online, the catalog comes from `zen_cert_catalog` there, read through the admin door. Otherwise it is built live and nothing is cached. `catalog_source` says which (`cache` or `live`); `force_refresh: true` builds it live and refreshes the cache. Grants are always read live.
+- **Dates.** A grant made in 2026.11.0 or later shows `not_before` and `not_after` (one year), in UTC. Nothing enforces expiry yet.
+- **Renamed certs.** A grant held under a cert's pre-2026.11.0 flat name shows as held, with `reissue_pending`, until 2026.12. The alias map is `cert_aliases()` in `zen_identity.jinja`.
 
 Gated on `resolve_caller_identity` returning `policy_status: allowed` — no specific cert required, no live ack. Reading your own current permission state isn't dangerous the way granting/revoking is (that's why `cert_grant`/`cert_revoke` get the full catalog-plus-live-ack treatment and this doesn't), but it isn't wide open to a caller whose identity resolution is itself blocked either.
 

@@ -1,4 +1,4 @@
-# Zen DojoTools Scheduler — v5.2.4
+# Zen DojoTools Scheduler — v5.2.7
 
 *Automation — no `tool_manifest`, so the file header version is canonical.*
 
@@ -59,7 +59,7 @@ kata_key: security_manager
 ```
 
 - **`trigger_subscriptions`** — list of trigger IDs this component wants to fire on
-- **`delay_seconds`** — how long to wait before running the Ninja Summarizer (skipped on `force_summary`)
+- **`delay_seconds`** — how long after the trigger to run the Ninja Summarizer (skipped on `force_summary`). It is an offset from the trigger, not a wait after the previous subscriber: subscribers run in `delay_seconds` order, and each sleeps only the gap since the one before, so a pass waits at most its largest delay. A copy of the scheduler loop of your own needs the same rule; summing the delays held the queued scheduler for minutes, and every deferred reload behind it.
 - **`kata_key`** — the drawer key in the Kata cabinet where this component's summary is stored
 
 When the scheduler fires, it reads every KFC drawer and dispatches the Ninja Summarizer for each component whose `trigger_subscriptions` includes the current `trigger.id`.
@@ -110,6 +110,12 @@ event_data:
 ```
 
 `zen_pipeline_autofire_on_enable` uses `ninja_force` and `supersummary_force` internally when kill switches are re-enabled.
+
+---
+
+## Cert Catalog Refresh
+
+The deferred script reload and `reload_all` also rebuild the cert catalog cache in the vault (`zen_dojotools_identity mode=cert_cache_refresh`, forced), so a reload that changes a tool's certs shows in `cert_list` at once.
 
 ---
 

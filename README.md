@@ -22,7 +22,9 @@ And a few things that are.
 
 Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets behind it. FileCabinet holds identity, configuration, certs and the material that becomes agent context, so permission to change a drawer is permission to change what the system believes. The drawer is the next boundary.
 
-**The locks are built, and running in audit mode.** Every FileCabinet call, and every agent or console write through the admin door, is decided by a real access gate that logs what it would refuse or ask a human about, then lets the call through. Out of the box nothing is refused; the logs show what enforcement will change before it changes anything. FileCabinet's gate can be switched to enforce with one admin-door drawer (`fc_acl_mode`), and removing it switches back.
+**The backstage pass is checked at every door.** `zenos.agent.basic` is the agent's backstage pass: Flynn, the roadie, asks you to approve it when onboarding starts. Until you do, every ZenOS tool gives the agent help and onboarding, and nothing else. It gets in to see the band; touching the guitar still takes the guitar's own cert. This gate ships on.
+
+**The locks are built, and running in audit mode.** Every FileCabinet call, and every agent or console write through the admin door, is decided by a real access gate that logs what it would refuse or ask a human about, then lets the call through. Out of the box no cabinet call is refused; the logs show what enforcement will change before it changes anything. FileCabinet's gate can be switched to enforce with one admin-door drawer (`fc_acl_mode`), and removing it switches back.
 
 **One ACL record.** Identity and FileCabinet share one record per cabinet: owner, prime agent, partners, and a rule for each of read, write, delete and admin, naming who may do it, the cert it needs, and whether a live human must say yes. One reading of the rules, not two.
 
@@ -32,11 +34,11 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 
 **FileCabinet, rebuilt to be lockable.** One exit per action, honest writes (an unconfirmed write says so instead of claiming success), every write a stated merge or replace, a drawer envelope with room for its own rules, and an admin door (`zen_admintools_cabinet_writer`) as the one writer for structural, system and vault cabinet writes.
 
-**Upgrading?** The ACL migration is mandatory. Flynn runs it on its own; you can dry-run it first with `zen_dojotools_identity mode=acl_migrate` and review the plan. Expect audit lines in the log; they're the preview of enforcement, not errors. See [Read this before upgrading](zenos_ai/docs/releases/spinal_tap.md#read-this-before-upgrading).
+**Upgrading?** Approve your agent if it never got its pass: run `zen_flynn_oobe mode=run` and say yes to the push. Certs are renamed under `zenos.*`; old grants keep working until 2026.12. The ACL migration is mandatory. Flynn runs it on its own; you can dry-run it first with `zen_dojotools_identity mode=acl_migrate` and review the plan. Expect audit lines in the log; they're the preview of enforcement, not errors. See [Read this before upgrading](zenos_ai/docs/releases/spinal_tap.md#read-this-before-upgrading).
 
-**Also in the beta:** semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, and Cortex 45.
+**Also in the beta:** semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, Cortex 45, and every cert under `zenos.*` with a plain-words approval prompt.
 
-**Still to come this cycle:** enforcement, admission enforcement for `zenos.agent.basic`, hiding unreadable drawers from listings, the operator permission report, and the Display dashboard.
+**Still to come this cycle:** enforcement, hiding unreadable drawers from listings, the operator permission report, and the Display dashboard.
 
 → [Release Notes — This Is Spinal Tap](zenos_ai/docs/releases/spinal_tap.md)
 

@@ -1,4 +1,4 @@
-# Zen AdminTools CertAdmin — v1.2.0
+# Zen AdminTools CertAdmin — v1.4.0
 
 *Admin-only cert issuance/revocation authority for AI persona (ai_user) cabinets*
 
@@ -83,6 +83,10 @@ This is not a full admin-role check — HA has no built-in `is_admin()` template
 ## Behavior Notes
 
 - **Catalog check** (moved verbatim from persona_editor's `cert_req_grant`): `cert_component` must be declared by some tool's own `tool_manifest` `certs_required` — there is no separate hand-maintained catalog. `cert_req_grant` calls `zen_dojotools_manifest mode=cert_audit` to read the live catalog and refuses with the list of available components if `cert_component` isn't in it.
+- **Plain approval prompts.** The live ack reads "<agent> asks to: <description> (<cert>, level N). Approve?", using the cert's short `description` from the catalog (its cert name when the description is empty). A bundle grant lists each member by its description; revokes and bundle create, change and delete read the same way.
+- **Renamed certs (2026.11.0).** A grant under a renamed cert's new `zenos.*` name replaces a grant held under its old flat name and keeps its scope; a bundle grant drops its members' old-name grants. The alias map is `cert_aliases()` in `zen_identity.jinja`, removed in 2026.12.
+- **Dates.** Every grant records `not_before` (issue time) and `not_after` (one year), UTC. Nothing enforces expiry yet.
+- **Console user.** The console-admin bypass reads the logged-in user from the call's own session (`context.user_id`), because `whoami` shows nothing about the console before the agent holds its pass.
 - **Live-ack is unconditional** for both `cert_req_grant` and `cert_req_revoke` — requesting `waives_live_ack` does not skip it; it's layer 1 of the 3 required for the waiver itself.
 - **Scope merge, not replace**: `cert_req_grant` merges `cert_scope` entries into any existing scope for that component (ported verbatim from persona_editor). When `waives_live_ack` is actually granted, `waives_live_ack: true` is stamped only onto the merged scope entries that were part of *this* request — existing entries from prior grants keep whatever waiver state they already had unless re-listed in the current call.
 - **Target resolution**: refuses if an explicit `target` doesn't resolve to a real entity, or if no default AI user cabinet resolves and none was given — never silently writes to a nonexistent cabinet.

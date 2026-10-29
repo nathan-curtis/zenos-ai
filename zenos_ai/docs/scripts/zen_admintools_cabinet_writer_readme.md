@@ -1,4 +1,4 @@
-# Zen AdminTools Cabinet Writer — v1.6.0
+# Zen AdminTools Cabinet Writer — v1.8.0
 
 **File:** `packages/zenos_ai/dojotools/dojotools_cabinet_writer.yaml`
 **Script:** `zen_admintools_cabinet_writer`
@@ -14,6 +14,7 @@ Callers are admin-plane scripts and tools that own a structural write: Identity 
 
 | Mode | Fields | Notes |
 |---|---|---|
+| `get` | `volume_entity`, `key`, `caller` | Reads one drawer. The vault's read rule is the admin door, so this is the one way to read it; Identity reads the cert catalog cache here. Logged at debug. The write gate does not apply to reads. |
 | `set` | `volume_entity`, `key`, `value`, `caller`, optional `reason`, `force`, `bootstrap`, `meta`, `acl` | Writes a drawer. The value is written as given (mapping, list or string); `meta` and `acl` pass through to the drawer envelope. |
 | `merge` | `volume_entity`, `key`, `value` (a mapping), `caller`, optional `unset`, `reason`, `force`, `bootstrap` | Reads the stored value (a mapping, or a JSON string of one) when it writes, lays the given keys over it and drops the top-level keys named in `unset`. A caller sends only what it changes, so a partial value can never replace the whole drawer. Queued, so concurrent merges serialize. Identity's VolumeInfo writes use it. |
 | `remove` | `volume_entity`, `key`, `caller`, optional `reason` | Removes a drawer. |
@@ -31,7 +32,7 @@ A `set` or `merge` also checks that the stored value equals what it meant to wri
 
 ## Gate (audit only)
 
-An agent or console write chain needs cert `zenos.system.cabinet_admin` and would ask a live human. A chain with no user session (boot, Flynn's bootstrap, automations) is exempt. Nothing is refused yet: the decision is logged (`zen_event door_gate_audit` and a `system_log` line) and answered as `gate_audit`: `{mode: audit, exempt, caller_guid, cert, would_deny, reasons, would_ack}`.
+An agent or console write chain needs cert `zenos.system.cabinet_admin` and would ask a live human. Its `max_level` is 2: level 1 is this door, and level 2 also lets a user session change cabinet labels (Labels 5.10.0). A chain with no user session (boot, Flynn's bootstrap, automations) is exempt. Nothing is refused yet: the decision is logged (`zen_event door_gate_audit` and a `system_log` line) and answered as `gate_audit`: `{mode: audit, exempt, caller_guid, cert, would_deny, reasons, would_ack}`.
 
 ## Logging
 
@@ -45,6 +46,9 @@ Every write fires a `zen_event` of kind `admin_cabinet_write` and writes a `syst
 
 | Version | Change |
 |---|---|
+| v1.8.0 | `get` mode: the one read path into the vault. |
+| v1.7.0 | `zenos.system.cabinet_admin` `max_level` 2; level 2 covers cabinet labels. |
+| v1.6.1 | Plain cert description for the approval prompt. |
 | v1.6.0 | Door gate, audit only: agent and console writes are checked against `zenos.system.cabinet_admin` and answered with `gate_audit`. |
 | v1.5.0 | `merge` mode: only the changed keys, laid over the stored value at write time. |
 | v1.4.0 | `meta` and `acl` pass through to the drawer envelope. |

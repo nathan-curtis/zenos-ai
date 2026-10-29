@@ -1,4 +1,4 @@
-# Zen DojoTool Dispatcher — v5.4.7
+# Zen DojoTool Dispatcher — v5.4.8
 
 *Automation — no `tool_manifest`, so the file header version is canonical. `zen_dojotools_lens_dispatch` (same file): v1.1.2. An item a provider returns through two anchors is one entry carrying both anchor contexts.*
 
@@ -6,6 +6,8 @@
 **Automations:** `zen_dojotool_dispatcher` and supporting routers (single dispatch automation as of v5.2.0 — see below)
 
 ---
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 

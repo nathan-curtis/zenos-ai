@@ -1,6 +1,24 @@
 ###############################################################################
 # ZenOS-AI DojoTools: SystemTools Package
-# Version: 5.2.11
+# Version: 5.3.1
+# v5.3.1: each cert this tool declares gets a short plain description for
+#   the approval prompt (the old text moves to detail) and its real max_level.
+# v5.3.0: onboarding gate (zen_os_1 entry_gate) on SystemTools, HA Log
+#   Viewer 1.2.0 and Event Emitter 1.1.0. An agent without zenos.agent.basic
+#   gets help and tool_manifest, plus SystemTools zen_health_report (its
+#   onboarding view); anything else answers onboarding_required with
+#   next_step zen_flynn_oobe. The SystemTools dispatch keeps a set result (the
+#   gate refusal or the reload_restart cert check) as its first branch.
+# v5.2.13: zen_health_report before onboarding: an agent call without
+#   zenos.agent.basic gets the cert approval path only (agent and approval
+#   cabinets, Flynn readiness, internal API, known issues on postman /
+#   alertmanager / display / identity) and next_step zen_flynn_oobe. The full
+#   report names the house's areas, devices and integrations; it returns once
+#   the agent is approved. Internal calls keep the full report.
+# v5.2.12: zen_health_report warns when a cabinet is at or past 90% of the
+#   131,072-byte cap (zen_cabinet_health cabinet_capacity), naming each one
+#   and expand_drawer as the way out. The cabinet health state is unchanged:
+#   Flynn reads its warn as a schema upgrade.
 # v5.2.11: an unknown mode answers status error naming the mode it got
 #   (it said "No tool selected." even for mode=health; system health is
 #   mode=zen_health_report).
@@ -711,6 +729,28 @@ script:
         # bare call (no mode, no tool) = help instead of "No tool selected."
         tool: "{{ (mode | default('', true) | trim) or (tool | default('', true) | trim) or 'help' }}"
         confirm: '{{ confirm_action | default(false) }}'
+    # Onboarding gate (zen_os_1 entry_gate): an agent without
+    # zenos.agent.basic gets help, tool_manifest and zen_health_report (its
+    # onboarding view); anything else answers onboarding_required. Calls no
+    # user started pass.
+    - variables:
+        _st_gate: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{ OS.entry_gate((context.user_id if context is defined else '') or '', 'zen_dojotools_systemtools', tool | string | lower) | from_json({'pass': false, 'reason': 'guarded: the onboarding gate could not be read'}) }}
+    - if: "{{ not _st_gate.get('pass', false) }}"
+      then:
+        - variables:
+            response:
+              status: error
+              result: error
+              tool: "{{ tool }}"
+              reason: "{{ _st_gate.reason }}"
+              next_step: "{{ _st_gate.next_step }}"
+        - action: system_log.write
+          data:
+            level: warning
+            logger: zen_entry_gate
+            message: "{{ _st_gate.get('log') or 'onboarding gate refused a call (gate result unreadable)' }}"
     # ── Single-exit architecture: every branch across
     # all 8 choose: clusters in this script sets `response` and falls
     # through; ONE stop at the true bottom (the existing "return" exit),
@@ -730,7 +770,7 @@ script:
                 tool='zen_dojotools_systemtools',
                 display_name='SystemTools - ZenOS Platform Kernel',
                 tier='dojotools',
-                version='5.2.8',
+                version='5.3.1',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools', 'zen_kfc_provider'],
                 optional_labels=['system_monitor', 'system_status'],
@@ -749,11 +789,11 @@ script:
                 'kfc_components': ['zen_system'],
                 'certs_required': [
                   {'cert': 'zenos.system.reload_restart', 'display_name': 'Reload/Restart Control',
-                   'description': 'Supplementary to the existing confirm_action gate on ha_restart/ha_reload_all -- a standing cert layer so a compromised/confused agent cannot even attempt the call, not just get refused at the confirm step.',
+                   'description': "Restart or reload Home Assistant", 'detail': 'Supplementary to the existing confirm_action gate on ha_restart/ha_reload_all -- a standing cert layer so a compromised/confused agent cannot even attempt the call, not just get refused at the confirm step.',
                    'max_level': 1, 'gates': ['tool=ha_restart/ha_reload_all (cert only, in addition to confirm_action)'],
                    'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.system.reload_restart (or zen_dojotools_identity mode=cert_list to see current status)'},
                   {'cert': 'zenos.system.home_config_write', 'bundle': ['zenos_agent_steward'], 'display_name': 'Home Config Write',
-                   'description': 'Durable household-config writes: home_mode, quiet_hours, work_hours, scheduler_anchors, guest_mode, entertaining. Write path only -- reads stay open.',
+                   'description': "Change home mode, quiet hours and schedules", 'detail': 'Durable household-config writes: home_mode, quiet_hours, work_hours, scheduler_anchors, guest_mode, entertaining. Write path only -- reads stay open.',
                    'max_level': 1, 'gates': ['tool=home_mode/quiet_hours/work_hours/scheduler_anchors/guest_mode/entertaining (write only, cert only)'],
                    'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.system.home_config_write (or zen_dojotools_identity mode=cert_list to see current status)'}
                 ]
@@ -923,6 +963,13 @@ script:
                 caller_token: "{{ caller_token | default('') }}"
 
     - choose:
+      - conditions:
+        - alias: Already answered (onboarding gate or cert check)
+          condition: template
+          value_template: "{{ response is defined }}"
+        sequence:
+        - variables:
+            _st_answered: true
       - conditions:
         - alias: 'Error: Action Not Confirmed'
           condition: template
@@ -2051,6 +2098,18 @@ script:
               {%- if _stopped | count > 0 -%}
                 {%- set _ns.issues = _ns.issues + ['Component(s) stopped running: ' ~ (_stopped | map(attribute='slug') | join(', ')) ~ ' (see component_freshness)'] -%}
               {%- endif -%}
+              {#- A cabinet at or past 90% of the 131,072-byte cap refuses writes
+                  soon. Reported here, not in zen_cabinet_health's state: Flynn
+                  reads that state's warn as a schema upgrade. -#}
+              {%- set _cap = state_attr('sensor.zen_cabinet_health', 'cabinet_capacity') -%}
+              {%- set _cap = _cap if _cap is mapping else (_cap | from_json({}) if _cap is string else {}) -%}
+              {%- set _capw = _cap.get('warning', []) if _cap.get('warning') is sequence and _cap.get('warning') is not string else [] -%}
+              {%- if _capw | count > 0 -%}
+                {%- set _capc = _cap.get('cabinets', {}) if _cap.get('cabinets') is mapping else {} -%}
+                {%- set cn = namespace(l=[]) -%}
+                {%- for eid in _capw -%}{%- set cn.l = cn.l + [eid ~ ' ' ~ (_capc.get(eid, '?') | string) ~ '%'] -%}{%- endfor -%}
+                {%- set _ns.issues = _ns.issues + ['warn: cabinet near full (90%+ of the 131,072-byte cap): ' ~ (cn.l | join(', ')) ~ '. Writes are refused at the cap; filecabinet mode=expand_drawer moves a root drawer into a free expansion slot (mode=expansion_sitrep lists them).'] -%}
+              {%- endif -%}
               {%- if _ns.issues | count == 0 -%}
                 All gates nominal.
               {%- else -%}
@@ -2171,6 +2230,60 @@ script:
                   {%- else -%}
                     Healthy headroom.
                   {%- endif -%}
+        # Before onboarding: an agent call without zenos.agent.basic gets only
+        # what gets a cert approved (the agent and approval cabinets, Flynn's
+        # readiness, the internal API, and known issues on the approval path:
+        # postman, alertmanager, display, identity). The full report names the
+        # house's areas, devices and integrations; it returns once a human
+        # approves the agent. Internal calls keep the full report.
+        - if: >-
+            {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+            {{ ((context.user_id if context is defined else '') or '') != ''
+               and not (ID.caller('zenos.agent.basic', 1) | from_json({})).get('cert_ok', false) }}
+          then:
+          - variables:
+              _hr0_issues: >-
+                {{ (response.known_issues | default([], true))
+                   | selectattr('issue_id', 'search', 'zen_dojotools_(postman|alertmanager|display|identity)') | list }}
+              _hr0_res: "{{ response.resolvers | default({}, true) }}"
+              _hr0_flynn: >-
+                {%- set f = response.flynn_ready | default({}, true) -%}
+                {%- set ns = namespace(d={}) -%}
+                {%- for k, v in (f.get('dependencies', {}) or {}).items() -%}
+                  {%- set ns.d = dict(ns.d, **{k: {'state': (v.get('state', '') if v is mapping else ''), 'reason': (v.get('reason', '') if v is mapping else '')}}) -%}
+                {%- endfor -%}
+                {{ {'state': f.get('state', ''), 'dependencies': ns.d} }}
+              _hr0_api: "{{ (response.dependencies | default({}, true)).get('internal_api_ok', false) }}"
+          - variables:
+              _hr0_lines: >-
+                {%- set ns = namespace(l=[]) -%}
+                {%- for k in ['ai_user', 'kata', 'system', 'household'] if (_hr0_res.get(k, '') | string) in ['', 'unknown', 'unavailable', 'none'] -%}
+                  {%- set ns.l = ns.l + [k ~ ' cabinet resolver is not answering (the grant or its approval has nowhere to land)'] -%}
+                {%- endfor -%}
+                {%- if not _hr0_api -%}{%- set ns.l = ns.l + ['the internal HA API check failed (the approval path calls it)'] -%}{%- endif -%}
+                {%- for i in _hr0_issues -%}{%- set ns.l = ns.l + ['approval path: ' ~ i.issue_id ~ ((' (' ~ i.install_hint ~ ')') if i.get('install_hint') else '')] -%}{%- endfor -%}
+                {{ ns.l }}
+          - variables:
+              response:
+                generated: "{{ response.generated }}"
+                onboarding_required: true
+                next_step:
+                  tool: zen_flynn_oobe
+                  mode: run
+                overall: "{{ 'ok' if _hr0_lines | count == 0 else 'issues_found' }}"
+                diagnosis: "{{ 'The approval path looks ready: run zen_flynn_oobe mode=run.' if _hr0_lines | count == 0 else (_hr0_lines | join(' | ')) }}"
+                resolvers:
+                  ai_user: "{{ _hr0_res.get('ai_user', '') }}"
+                  kata: "{{ _hr0_res.get('kata', '') }}"
+                  system: "{{ _hr0_res.get('system', '') }}"
+                  household: "{{ _hr0_res.get('household', '') }}"
+                flynn_ready: "{{ _hr0_flynn }}"
+                internal_api_ok: "{{ _hr0_api }}"
+                approval_path_issues: "{{ _hr0_issues }}"
+                note: >-
+                  This agent is not approved yet (zenos.agent.basic), so this report
+                  covers only the cert approval path. The full report returns once
+                  it is approved.
         # ── Single-exit architecture: `response` (already the right var
         # name/shape) falls through to the one real, enveloped exit like
         # every other mode -- no early stop of its own.
@@ -3503,7 +3616,7 @@ script:
 
   zen_dojotools_ha_log_viewer:
     alias: Zen DojoTools HA Log Viewer
-    description: "Zen DojoTools HA Log Viewer PRO (1.1.0)\nLLM Instructions (general-purpose):\n\
+    description: "Zen DojoTools HA Log Viewer PRO (1.2.0)\nLLM Instructions (general-purpose):\n\
       Retrieves Home Assistant core logs using safe, pre-approved shell commands.\n\
       Log file guard detects HA 2025.11+ journal mode automatically — missing log\n\
       file returns structured journal_mode guidance instead of an error.\n\nModes:\n\
@@ -3576,6 +3689,26 @@ script:
           {%- set _raw = pattern | default('', true) | string | trim -%}
           {%- set _safe = _raw | replace("'", "") | replace('"', "") | replace(';', "") | replace('`', "") -%}
           {{ _safe }}
+    # Onboarding gate (zen_os_1 entry_gate): an agent without
+    # zenos.agent.basic gets help and tool_manifest only. Calls no user
+    # started pass.
+    - variables:
+        _lv_gate: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{ OS.entry_gate((context.user_id if context is defined else '') or '', 'zen_dojotools_ha_log_viewer', m | string | trim | lower) | from_json({'pass': false, 'reason': 'guarded: the onboarding gate could not be read'}) }}
+    - if: "{{ not _lv_gate.get('pass', false) }}"
+      then:
+        - variables:
+            response:
+              status: error
+              mode: "{{ m }}"
+              reason: "{{ _lv_gate.reason }}"
+              next_step: "{{ _lv_gate.next_step }}"
+        - action: system_log.write
+          data:
+            level: warning
+            logger: zen_entry_gate
+            message: "{{ _lv_gate.get('log') or 'onboarding gate refused a call (gate result unreadable)' }}"
     # ── Single-exit architecture: every branch sets
     # `response` and falls through; ONE stop at the true end. Was 5
     # separate stops (tool_manifest/journal_mode/legacy_missing_error/
@@ -3607,7 +3740,7 @@ script:
                 tool='zen_dojotools_ha_log_viewer',
                 display_name='HA Log Viewer - Core Log Inspector',
                 tier='dojotools',
-                version='1.1.0',
+                version='1.2.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=[],
@@ -3774,7 +3907,7 @@ script:
 
   zen_dojotools_event_emitter:
     alias: Zen DojoTools Event Emitter
-    description: "Zen DojoTools Event Emitter (v1.0.0). Advanced mode for Zen!\nEmits
+    description: "Zen DojoTools Event Emitter (v1.1.0). Advanced mode for Zen!\nEmits
       structured ZenOS-AI events or returns a dictionary of canonical event shapes.
       Used for breadcrumbs, observability, and trace reconstruction by Zen Constructs
       and the Monastery.\nModes:\n  emit → send a zen_event to the HA EventBus\n  help
@@ -3869,6 +4002,29 @@ script:
     - variables:
         caller_token: "{{- caller_token | default('') -}}"
 
+    # Onboarding gate (zen_os_1 entry_gate): an agent without
+    # zenos.agent.basic gets help and tool_manifest only (a bare call is
+    # help). Calls no user started pass.
+    - variables:
+        _ee_gate: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {%- set _m = mode | default('', true) | string | trim | lower -%}
+          {%- set _bare = _m == '' and (component | default('', true) | string | trim) == '' and (kind | default('', true) | string | trim) == '' and (summary | default('', true) | string | trim) == '' -%}
+          {{ OS.entry_gate((context.user_id if context is defined else '') or '', 'zen_dojotools_event_emitter', 'help' if _bare else (_m or 'emit')) | from_json({'pass': false, 'reason': 'guarded: the onboarding gate could not be read'}) }}
+    - if: "{{ not _ee_gate.get('pass', false) }}"
+      then:
+        - variables:
+            response:
+              status: error
+              mode: "{{ mode | default('', true) }}"
+              reason: "{{ _ee_gate.reason }}"
+              next_step: "{{ _ee_gate.next_step }}"
+        - action: system_log.write
+          data:
+            level: warning
+            logger: zen_entry_gate
+            message: "{{ _ee_gate.get('log') or 'onboarding gate refused a call (gate result unreadable)' }}"
+
     # ── Single-exit architecture: every mode sets
     # `response` and falls through; ONE stop at the true end of the
     # sequence. Was 3 separate stops (tool_manifest/help/emit), each
@@ -3886,7 +4042,7 @@ script:
                 tool='zen_dojotools_event_emitter',
                 display_name='Event Emitter - ZenOS Event Bus',
                 tier='dojotools',
-                version='1.0.0',
+                version='1.1.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=[],

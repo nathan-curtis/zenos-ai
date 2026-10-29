@@ -354,7 +354,7 @@ The current pattern is RBAC-like, but it is not full role-based access control. 
 | Policy dimension | Portainer implementation |
 |---|---|
 | Principal | `resolve_caller_identity` resolves the acting identity |
-| Capability | The resolved identity carries the named `infra_container_control` certification |
+| Capability | The resolved identity carries the named `zenos.infra.container_control` certification |
 | Capability strength | The certification has a numeric level compared with the action's configured minimum |
 | Action class | `rwxda`; current container writes use `x` or `d` |
 | Resource scope | Target container must match the admin-managed `controllable_containers` allow-list |
@@ -704,6 +704,26 @@ Return through the shared `envelope()` macro in `zen_os_1.jinja`: `{status, mode
 
 Build the response in one variable and return it once, at the end. A denial is set early and every later branch checks for it before overwriting. A tool with several `stop` points can leave along a path that skipped its checks. A tool with one exit cannot.
 
+Every top-level `if:` waits on the result variable (`result is not defined and ...`), and a `choose:` dispatch opens with a branch that matches when a result is already set and keeps it. One exit does not mean nothing runs after the answer: a branch that tests only `mode` still runs after a refusal, overwrites it, and does its side effect. The 2026.11.0 rollout of the onboarding gate found more than 20 such branches, one of them a real cert bypass. Prove a guard by forcing it to refuse and checking that nothing downstream ran, not only that the answer says error.
+
+### The onboarding gate
+
+Every agent-facing script calls `OS.entry_gate(user_id, tool, mode)` from `zen_os_1.jinja` as its first real step, after its mode is resolved:
+
+```yaml
+- variables:
+    _gate: >-
+      {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+      {{ OS.entry_gate((context.user_id if context is defined else '') or '', 'zen_dojotools_example', _mode) | from_json({'pass': false, 'reason': 'guarded: the onboarding gate could not be read'}) }}
+```
+
+- **What it does.** An agent without `zenos.agent.basic` (the backstage pass) gets `help`, `tool_manifest` and `kfc_manifest`. Anything else is refused with the gate's `reason` and `next_step`, and the script writes the gate's `log` line to `system_log` (logger `zen_entry_gate`). A call no user started passes.
+- **The open set lives in the macro,** in one place: onboarding, discovery, and each hop a cert request's live ack travels. A tool never opens a mode on its own.
+- **Single-exit script:** the gate sets the result variable, and every later step waits on it (above).
+- **Early-exit script:** the gate is the first step and has its own `stop`.
+- **Internal scripts stay ungated and are never MCP-exposed:** `zen_stack_*`, `zen_sutra_*`, `zen_codex_*`, GC. Every path into them goes through a gated tool. A script that becomes agent-facing gates as its first step.
+- **Editing a file with several scripts:** place inserts by line number, inside the target script's range (its key line to the next script's), and check the inserted line landed there. Repeated preambles make text anchors land in the wrong script.
+
 ### Help
 
 `mode=help` returns `{status: help, message}`, with `mode` accepted as an alias. The message states the tool's modes and required fields. `zen_dojotools_manifest mode=audit_help` checks every tool for a conforming help response and a complete manifest. Sutras, Stacks, and Codices are exempt.
@@ -711,7 +731,8 @@ Build the response in one variable and return it once, at the end. A denial is s
 ### Certification
 
 - Resolve the caller through `resolve_caller_identity` and read its answer with `resolve_identity_fields()`. Do not re-implement identity or scope logic in the tool.
-- Pass `required_cert` and the required level. Name certs in the dotted `zenos.*` form where a hierarchy applies; a grant on a parent covers its children, and the longest match wins.
+- Pass `required_cert` and the required level. Every cert is named `zenos.<domain>.<capability>`; a grant on a parent covers its children, and the longest match wins.
+- Declare each cert with a short plain `description` (one line, phone-sized: it is what the approval prompt shows), a `detail` for the long form, and the real `max_level` (the highest level the tool actually checks). Every tool that declares a shared cert carries the same values.
 - Treat `scope_decision` as authoritative: `deny` blocks the call outright, `allow` exempts the target from the per-call acknowledgement, `default` means the tool's own rule applies.
 - Build every refusal with `cert_denial()`, so every denial carries the same `status`, `error`, `message`, `can_request`, and `request_via` fields.
 - An action that needs a human in the loop calls `request_live_ack` and proceeds only on `approved`. `declined`, `timeout`, and `dispatch_failed` are all refusals.

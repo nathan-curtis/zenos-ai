@@ -9,7 +9,7 @@ Certification came out of a very specific worry. Once an agent can unlock a door
 There is no hand-maintained list of certifications. Each tool declares the certifications it enforces in its own `tool_manifest`, under `certs_required`:
 
 ```text
-{'cert': 'calendar_control', 'level': 2, 'modes': ['delete']}
+{'cert': 'zenos.comms.calendar_control', 'level': 2, 'modes': ['delete']}
 ```
 
 `zen_dojotools_manifest mode=cert_audit` fans out across every tool's manifest and assembles the live catalog from those declarations. Granting a certification that no tool declares is refused, which catches typos and dead names. The catalog currently holds 45 distinct certification names across the tool surface.
@@ -20,7 +20,7 @@ The declaration and the gate are separate pieces of code, and they can drift. A 
 
 Certification names come in two forms.
 
-**Flat names** describe one capability on one tool family: `lock_control`, `cover_control`, `security_control`, `lighting_control`, `calendar_control`, `pii_disclosure_control`.
+**Flat names** describe one capability on one tool family: `zenos.actuation.lock_control`, `zenos.actuation.cover_control`, `zenos.actuation.security_control`, `zenos.actuation.lighting_control`, `zenos.comms.calendar_control`, `zenos.comms.pii_disclosure`.
 
 **Dotted names** live in the `zenos.*` namespace and form a hierarchy: `zenos.media.generate`, `zenos.media.print_control`, `zenos.media.playback_control`, `zenos.comms.dispatch`, `zenos.identity.profile_write`, `zenos.system.reload_restart`, `zenos.system.home_config_write`.
 
@@ -49,10 +49,10 @@ A level is an integer, 1 and up. A gated action declares the minimum level it ne
 
 | Tool | Certification | Level 1 | Level 2 or higher |
 |---|---|---|---|
-| Mail, Teams | `pii_disclosure_control` | send (Mail `create`, Teams `send`) | edit the mail whitelist (2) |
-| Calendar, To Do | `calendar_control`, `todo_control` | (none defined) | delete (2) |
-| Infra | `infra_container_control` | (none) | restart or start (2); stop or remove (3) |
-| Room Manager | `room_topology_edit` | structural edits | delete an area (2) |
+| Mail, Teams | `zenos.comms.pii_disclosure` | send (Mail `create`, Teams `send`) | edit the mail whitelist (2) |
+| Calendar, To Do | `zenos.comms.calendar_control`, `zenos.comms.todo_control` | (none defined) | delete (2) |
+| Infra | `zenos.infra.container_control` | (none) | restart or start (2); stop or remove (3) |
+| Room Manager | `zenos.spatial.room_topology_edit` | structural edits | delete an area (2) |
 
 ## 19.4 Where certifications live
 
@@ -121,7 +121,7 @@ A certification is one control. It is not the whole of authority, and the next c
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
-* Certificates declared by each tool, the catalog built from them: [`dojotools_locks.yaml`](../../../packages/zenos_ai/dojotools/dojotools_locks.yaml) (`'cert': 'lock_control'`). Docs: [zen_dojotools_locks_readme.md](../scripts/zen_dojotools_locks_readme.md).
+* Certificates declared by each tool, the catalog built from them: [`dojotools_locks.yaml`](../../../packages/zenos_ai/dojotools/dojotools_locks.yaml) (`'cert': 'zenos.actuation.lock_control'`). Docs: [zen_dojotools_locks_readme.md](../scripts/zen_dojotools_locks_readme.md).
 * Scope resolution and the shared denial shape: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro cert_scope_check`, `macro cert_denial`). Docs: [zen_os1_jinja.md](../custom_templates/zen_os1_jinja.md).
 * Granting and revoking: not agent-exposed, and every write needs a live acknowledgement or the console: [`dojotools_certadmin.yaml`](../../../packages/zenos_ai/dojotools/dojotools_certadmin.yaml) (`cert_req_grant`, `mcp_exposed`). Docs: [zen_admintools_certadmin_readme.md](../scripts/zen_admintools_certadmin_readme.md).
 * Where a persona's certificates live: [`dojotools_certadmin.yaml`](../../../packages/zenos_ai/dojotools/dojotools_certadmin.yaml) (`zen_ai_certs`). Docs: [zen_admintools_certadmin_readme.md](../scripts/zen_admintools_certadmin_readme.md).

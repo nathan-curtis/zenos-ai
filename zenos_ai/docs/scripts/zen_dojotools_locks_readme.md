@@ -1,8 +1,10 @@
-# Zen DojoTools Locks — v1.6.4
+# Zen DojoTools Locks — v1.8.1
 
 *Room-targetable lock/unlock control for the `lock.*` domain, with a full Keymaster-aware inspect surface*
 
 ---
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -34,11 +36,11 @@ Bare `discover`/`status` with no filters returns a whole-house lock overview —
 
 ## Identity Gate on `mode=set`
 
-Read modes (`discover`/`status`/`inspect`) stay open. Actuation (`set`) requires the default agent's own `lock_control` certification, checked via `zen_dojotools_identity mode=resolve_caller_identity required_cert=lock_control required_cert_level=1`. **Fail-closed by design, not by bug** — until `lock_control` is granted via `zen_dojotools_persona_editor mode=cert_req_grant` (itself gated, see that tool's readme), every `mode=set` call is denied with `error: identity_policy_blocked` or `error: cert_insufficient`. `caller_token` is audit-only here, same as everywhere else in the platform — never a trust input.
+Read modes (`discover`/`status`/`inspect`) stay open. Actuation (`set`) requires the default agent's own `zenos.actuation.lock_control` certification, checked via `zen_dojotools_identity mode=resolve_caller_identity required_cert=zenos.actuation.lock_control required_cert_level=1`. **Fail-closed by design, not by bug** — until `zenos.actuation.lock_control` is granted via `zen_dojotools_persona_editor mode=cert_req_grant` (itself gated, see that tool's readme), every `mode=set` call is denied with `error: identity_policy_blocked` or `error: cert_insufficient`. `caller_token` is audit-only here, same as everywhere else in the platform — never a trust input.
 
-This tool self-declares `lock_control` in its own `tool_manifest`'s `certs_required` field — that's what makes it a valid `cert_grant` target at all under the live-calculated catalog (see `zen_dojotools_profile_readme.md`'s certification section; there's no separate hand-maintained cert list to also update).
+This tool self-declares `zenos.actuation.lock_control` in its own `tool_manifest`'s `certs_required` field — that's what makes it a valid `cert_grant` target at all under the live-calculated catalog (see `zen_dojotools_profile_readme.md`'s certification section; there's no separate hand-maintained cert list to also update).
 
-**Exterior unlock requires a fresh live ack every single call, even with `lock_control` already held (2026-08-15).** Holding the cert is necessary but not sufficient for `action=unlock` on an `ext_lock`-labeled target — every such call additionally fires `zen_dojotools_identity mode=request_live_ack`, no exceptions, because a standing cert was never meant to mean "unattended exterior access forever." An admin can exempt specific targets from this per-call ack via `cert_grant cert_component=lock_control cert_scope=["lock.front_door"]` — the scope list is checked by entity_id, not by label, so scope it to exactly the lock(s) intended. Interior-only actions and read modes are unaffected either way.
+**Exterior unlock requires a fresh live ack every single call, even with `zenos.actuation.lock_control` already held (2026-08-15).** Holding the cert is necessary but not sufficient for `action=unlock` on an `ext_lock`-labeled target — every such call additionally fires `zen_dojotools_identity mode=request_live_ack`, no exceptions, because a standing cert was never meant to mean "unattended exterior access forever." An admin can exempt specific targets from this per-call ack via `cert_grant cert_component=zenos.actuation.lock_control cert_scope=["lock.front_door"]` — the scope list is checked by entity_id, not by label, so scope it to exactly the lock(s) intended. Interior-only actions and read modes are unaffected either way.
 
 **Scope resolution centralized (2026-08-16).** This tool no longer walks `cert_scope` itself — it passes `target_entity=<lock entity_id>` on the `resolve_caller_identity` call and reads `scope_decision` straight back, resolved once by the shared `cert_scope_check` macro. Same mechanism as documented above; only the implementation moved, not the behavior. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md) for the full model, or the identity readme's `target_entity` field for the shared resolver itself.
 
@@ -73,7 +75,7 @@ The underlying mechanism took three wrong turns before landing right, worth know
 - `custom_templates/zenos_ai/zen_target_resolve.jinja` — shared targeting core (`resolve_targets`, `resolve_room_entities`, `entity_extended_notes`, `discover_targets`)
 - `custom_templates/zenos_ai/zen_os_1.jinja` — `envelope()` macro (response shape)
 - `zen_dojotools_identity` — `resolve_caller_identity` (set gate), `request_live_ack` (escalation + every exterior unlock)
-- `zen_dojotools_persona_editor` — `lock_control` certification grant/revoke
+- `zen_dojotools_persona_editor` — `zenos.actuation.lock_control` certification grant/revoke
 - `zen_dojotools_manifest` — `mode=cert_audit` reads this tool's self-declared `certs_required`
 - `zen_dojotools_event_emitter` — audit trail on real actuations
 - `zen_dojotools_autovac` — lens provider registration precedent
@@ -81,7 +83,7 @@ The underlying mechanism took three wrong turns before landing right, worth know
 ## Cross-References
 
 - [DojoTools Identity](zen_dojotools_identity_readme.md) — `resolve_caller_identity`, `request_live_ack`
-- [DojoTools Profile Editor](zen_dojotools_profile_readme.md) — `cert_grant`/`cert_revoke` for `lock_control`
+- [DojoTools Profile Editor](zen_dojotools_profile_readme.md) — `cert_grant`/`cert_revoke` for `zenos.actuation.lock_control`
 - [Script Modules](readme.md) — return path to the internal tool map
 
 ---

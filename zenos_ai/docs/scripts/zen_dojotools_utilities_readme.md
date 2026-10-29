@@ -8,6 +8,8 @@
 
 > **Response envelope (2026.10.0):** Every script in this bundle returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
 
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
+
 ## Overview
 
 Utilities is a collection of general-purpose tools that don't belong to a specific subsystem. It covers math, randomness, TTS, music lookup, system introspection, cabinet auditing, and canonical GET+SET wrappers for HA domains that HA's own MCP built-ins handle inconsistently.
@@ -33,7 +35,7 @@ The canonical domain tools (`select_control`, `number`, `text`, `climate`, `wate
 | `zen_dojotools_number` | CANONICAL: `number` / `input_number` GET+SET+arithmetic |
 | `zen_dojotools_timekeeper` | CANONICAL: `timer` GET+SET, plus dashboard/worldclock/alarms read-only modes |
 | `zen_dojotools_text` | CANONICAL: `text` / `input_text` GET+SET+string ops |
-| `zen_dojotools_climate` | CANONICAL: `climate` **and `fan`** GET+SET with topology context, `climate_control` identity gate |
+| `zen_dojotools_climate` | CANONICAL: `climate` **and `fan`** GET+SET with topology context, `zenos.actuation.climate_control` identity gate |
 | `zen_dojotools_water_heater` | CANONICAL: `water_heater` GET+SET |
 | `zen_dojotools_datetime` | CANONICAL: `input_datetime` GET+SET |
 | `zen_dojotools_zones` | CANONICAL: zone CRUD + haversine bearing |
@@ -148,7 +150,7 @@ Direct MA service wrapper. Fields: `query`, `artist`, `album`, `media_type`, `nu
 |------|------|
 | `about` (default) | System overview including architecture, design principles, safety notes, the Pantheon roster, module list, escalation contacts, and a real-time inventory of all `zen`-labeled scripts currently loaded in HA. |
 | `help` | Proxy to a specific tool's own `mode=help` — pass `tool=<script_name>`. Returns that tool's canonical help schema directly. If the target's response doesn't look like real help (e.g. a tool with no help handler falling through to a live read), returns `status: unsupported` instead of passing live data through. Requires `tool`; without it, returns an error naming `mode=directory` as the discovery path. Only existing `zen_dojotools_`, `zen_stack_`, `zen_sutra_` and `zen_codex_` tools can be proxied; any other script name is refused with a `guarded:` error. |
-| `directory` | Auto-discover every `zen_dojotools_*`/`zen_stack_*`/`zen_sutra_*`/`zen_codex_*` script currently loaded (`on`/`off` state) and check each one's `tool_manifest` for `help` in its supported modes — no static list to maintain, new tools appear automatically as long as they implement `mode=help`. |
+| `directory` | Auto-discover every `zen_dojotools_*`/`zen_stack_*`/`zen_sutra_*`/`zen_codex_*` script currently loaded (`on`/`off` state) and check each one's `tool_manifest` (read out of its envelope) for `help` in its supported modes — no static list to maintain, new tools appear automatically as long as they implement `mode=help`. Each entry is `script, display_name, tier, returns, version`. |
 | `troubleshooting` | **Static** — zero live calls, zero fan-out (deliberately: a fan-out-based troubleshooting mode would hit the exact failure class it documents). System-level known platform quirks — currently the `script:` platform's entity_id/unique_id drift class (symptom `ServiceNotFound` from a dynamically-templated action even though the entity looks healthy in `states.script`; cause, fix, and diagnostic path all included) — plus pointers to every other diagnostic surface (`zen_dojotools_systemtools` health report, `zen_dojotools_manifest` audit modes, this tool's own `mode=about`/`mode=directory`, the entity registry, repo/community links). Wired bidirectionally with this tool's own `mode=about` Diagnostics section. Start-here reference for an agent in a vacuum with an unexplained error and no other context. |
 | `tool_manifest` | Self-description (UMP contract). |
 
@@ -343,7 +345,7 @@ GET response includes a `topology_context` block: open doors/windows, area tempe
 | `get` | Any truthy value forces read-only |
 | `mode` | `read` forces a read-only reply. `set` requires at least one real setter field — returns `missing_setter` if none given. `tool_manifest` for self-description. Omitting `mode` still works identically. |
 
-**Identity gate (2026-08-16):** GET stays open. Any real setter requires the `climate_control` certification — cert-only, no live-ack tier (same shape as ZenLux's `lighting_control`; nothing on a thermostat or fan is exterior-security-grade). `cert_scope` deny is enforced as a hard block via the shared `cert_scope_check` macro. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
+**Identity gate (2026-08-16):** GET stays open. Any real setter requires the `zenos.actuation.climate_control` certification — cert-only, no live-ack tier (same shape as ZenLux's `zenos.actuation.lighting_control`; nothing on a thermostat or fan is exterior-security-grade). `cert_scope` deny is enforced as a hard block via the shared `cert_scope_check` macro. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
 
 **SESE conversion note:** this tool doesn't fit the mode-dispatch `choose:` shape the other gated tools use — multiple setters can combine in one call, always could. Uses a flat-guard restructure instead: every stop point sets `result` and falls through, every later block gains `result is not defined and` on its own condition. GET keeps its own terminal exit, same read/write split every tool in this file uses.
 

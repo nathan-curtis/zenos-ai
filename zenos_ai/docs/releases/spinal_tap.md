@@ -15,6 +15,8 @@ Tron made admission explicit and put a badge in every agent's hands. This releas
 
 The rule is the one the guitar's owner laid down: don't touch it, don't look at it, don't even point at it. Once enforcement is on, a cabinet your agent has no pass for won't just refuse the read. It won't show up in the listing.
 
+And the pass is now real. `zenos.agent.basic` is the agent's backstage pass: Flynn, the roadie, hands it out when onboarding starts, and every door checks it. Without it, an agent can say it is here and ask for the pass, and nothing else. With it, the agent gets in to see the band. Touching the guitar still takes the guitar's own cert.
+
 **Backstage passes for agents, locks on the cabinets, and a working screen for the show.**
 
 ---
@@ -28,7 +30,7 @@ The rule is the one the guitar's owner laid down: don't touch it, don't look at 
 1. **Access-path audit.** Every way into a protected drawer is mapped before any enforcement lands: tool calls, mounts, live drawers, boot and repair paths.
 2. **FileCabinet security.** One enforcement point. Read, write, protected configuration and cabinet administration are separate permissions. They cover listing, search, copies, moves, mounts, expansion and live-drawer dispatch. Authorization follows the resolved destination, and a cross-cabinet operation checks both sides. Following a mount confers no authority, so mount resolution happens before the access check. Callers see only what they may read: a hidden drawer is indistinguishable from one that does not exist. You can't touch the guitar, and you can't point at it either. Effective inherited access can be shown per drawer.
 3. **Trusted entry points.** System and Default Agent authority are separated. Flynn and the prompt loader are named trusted entry points, and there is no agent-selectable "system" bypass.
-4. **Admission enforcement.** `zenos.agent.basic` stops being a badge that is requested and becomes one that is checked, through an admission-token contract with `zen_root_authentik`. A Postman approval is bound to the enrollment it was given for and cannot be replayed. Participation stays distinct from administrative authority.
+4. **Admission enforcement.** `zenos.agent.basic` stops being a badge that is requested and becomes one that is checked. In 11.0 the check is the onboarding gate: the backstage pass, checked by every agent-facing tool. Participation stays distinct from administrative authority. The admission-token contract with `zen_root_authentik`, and Postman approvals bound to the enrollment they were given for, are not in 11.0: they need an OIDC plugin first, and the gate is their precursor.
 5. **Bootstrap and recovery.** Flynn's cold boot, upgrade, revocation and recovery run on a trusted path, and each is proven.
 6. **Audit-only rollout.** Enforcement ships first as would-deny logging, with a rollback, then turns on.
 7. **Operator permission report.** Shows the resolved identity, granted capabilities, effective cabinet access and the reason an operation was denied. Secrets are excluded.
@@ -41,7 +43,7 @@ The rule is the one the guitar's owner laid down: don't touch it, don't look at 
 - Identity and Labels event-ordering hardening.
 - Display, finished: the shared dashboard ships, interruption awareness covers the remaining Media Manager watch paths, and expiry and dismissal are tested against the real scheduler cadence.
 
-**Later phase:** binding to the conversation or session. It needs its own design and acceptance criteria before it joins scope.
+**Later phase:** binding to the conversation or session. It needs its own design and acceptance criteria before it joins scope. The admission-token contract follows the OIDC plugin.
 
 Order of work: audit, designs, audit-only mode, enforcement.
 
@@ -57,7 +59,9 @@ Identity in this release tells Flynn, the agent and the user apart. Telling one 
 
 ## Where It Stands: the Amps Are Wired, the Volume Is at Ten
 
-Every lock in this release is built, wired to its door, and running in **audit mode**. The gate decides every FileCabinet call and every admin-door write, logs what it would have refused or asked a human about, and lets the call through. Out of the box, nothing is refused. The rules it will enforce, the principals they name, and the migration that puts them on every cabinet are all in place, and the logs show what enforcement will change before it changes anything.
+Every lock on the cabinets is built, wired to its door, and running in **audit mode**. The gate decides every FileCabinet call and every admin-door write, logs what it would have refused or asked a human about, and lets the call through. Out of the box, no cabinet call is refused.
+
+One gate ships on: the backstage pass. An agent you haven't approved gets help and onboarding, and nothing else. See [The Backstage Pass](#the-backstage-pass). The rules it will enforce, the principals they name, and the migration that puts them on every cabinet are all in place, and the logs show what enforcement will change before it changes anything.
 
 FileCabinet's gate now has the knob to eleven: one admin-door drawer, `fc_acl_mode`, switches it to enforce, and removing the drawer switches it back. It ships off. 11.0 does not enforce by default, and the admin door's gate stays audit only.
 
@@ -66,10 +70,38 @@ FileCabinet's gate now has the knob to eleven: one admin-door drawer, `fc_acl_mo
 | Access-path audit | The audit drove the default table and caller origin below. | Finishing the map of every path in. |
 | FileCabinet security | One gate, checking every hop of a mount chain. Separate read, write, delete and admin rules. Default rules for every cabinet class, and locks on credential and approval drawers. Effective access per drawer (`CABS.acl_for`). An enforce switch, off by default. | Enforcement on by default. Hiding unreadable drawers from listings and search. |
 | Trusted entry points | The gate tells an agent from a tool (caller origin). Boot, Flynn and automations are exempt at the admin door. Provisioning and Flynn's cabinet setup are named lifecycle principals. | Separating System and Default Agent authority. |
-| Admission enforcement | | The admission-token contract with `zen_root_authentik`. |
+| Admission enforcement | The backstage pass: every agent-facing tool checks `zenos.agent.basic` first. It ships on, not in audit. Flynn asks for it when onboarding starts. | The admission-token contract with `zen_root_authentik`, after the OIDC plugin (a later phase). |
 | Bootstrap and recovery | Flynn's bootstrap is built to migrate and stamp a fresh install. An upgrade migrates and stamps when the bootstrap next runs, or on `acl_migrate` / `cabinet_schema_upgrade`. | A cold fresh-install run with the stamp. Revocation and recovery on the trusted path. |
 | Audit-only rollout | Shipping now: `fc_acl_audit` and `door_gate_audit`, and FileCabinet's opt-in enforce switch. | Enforcement by default, and at the admin door. |
 | Operator permission report | | The report. |
+
+---
+
+## The Backstage Pass
+
+Before 11.0, `zenos.agent.basic` was a badge an agent was given at the end of onboarding, and nothing checked it. Now it is the ticket to play.
+
+**No pass, no tools.** Every agent-facing tool calls one gate first, `OS.entry_gate` in `zen_os_1.jinja`. An agent without the pass gets each tool's `help`, `tool_manifest` and `kfc_manifest`, and the few steps it needs to ask for the pass and help you fix whatever stops the ask from reaching you: onboarding, `whoami`, the cert request, the live ack and the alert, push and display hops it travels, and a health report trimmed to the approval path. Anything else answers `guarded: onboarding_required` with `next_step: zen_flynn_oobe mode=run`, and logs one `zen_entry_gate` warning. Calls no user started (boot, Flynn, automations, the scheduler) pass.
+
+**Flynn hands it out first.** `zen_flynn_oobe mode=run` asks you to approve the agent (the `zenos_agent_basic` bundle, one push) before it hands out a single setup step. An agent that finished onboarding but was never approved gets one "waiting for approval" notice from Flynn, and answers as itself until you say yes.
+
+**No onboarding, no pass, no breakage.** An unapproved agent can't do anything, so it can't break anything, and it still has enough to walk you through fixing the approval path. If the push can't reach you, the console override stands in, and now works before approval. Both routes are in the [Install Guide](../getting_started/install.md#step-35--set-up-your-mobile-notification-path) and the [Security & Certification manual](../getting_started/security_certification_manual.md#25-the-backstage-pass-zenosagentbasic).
+
+**Home Assistant can't tell you from the agent.** A dashboard button, or your own call from Developer Tools, runs as a logged-in user, the same as the agent. Until the agent is approved, those calls are refused too.
+
+**Putting the gate in found more than 20 tools where a refusal didn't stop the call.** In a single-exit tool, a branch that checked only the mode ran after a refusal, overwrote it, and did its side effect. One was a real cert bypass: a denied Autovac `pause` still paused. Every top-level branch now waits on the result. See Fixed.
+
+---
+
+## Certs, Renamed and Readable
+
+**Every cert lives under `zenos.*`.** The 42 flat names moved to dotted ones: `lock_control` is `zenos.actuation.lock_control`, `todo_control` is `zenos.comms.todo_control`, and so on. For one release, a grant under either name satisfies a check against the other, and `cert_list` shows an old-name grant as held with `reissue_pending`. Reissuing it under the new name replaces the old grant and keeps its scope. The alias goes in 2026.12.
+
+**Approvals read in plain words.** Every cert has a short `description` written for the phone, and a `detail` for the long form. The approval prompt reads "<agent> asks to: Lock any door and unlock interior doors (zenos.actuation.lock_control, level 1). Approve?" A bundle lists each member the same way. The catalog is in the [Security & Certification manual](../getting_started/security_certification_manual.md#3-the-certification-catalog).
+
+**Grants are dated.** Every new grant records `not_before` and `not_after` (one year), in UTC, with the X.509 field names. Nothing enforces expiry yet.
+
+**The vault holds the catalog.** The vault cabinet is now a required system cabinet that Flynn provisions on boot, and only the admin door can read it. `cert_list` reads the cert catalog from a cache there, so it answers in a fraction of the time, and builds it live whenever the vault isn't there. Grants are always read live.
 
 ---
 
@@ -77,7 +109,7 @@ FileCabinet's gate now has the knob to eleven: one admin-door drawer, `fc_acl_mo
 
 **One record.** Identity and FileCabinet share one ACL record in each cabinet's VolumeInfo: `acls: {v: 2, owner, prime, partners, ops}`. Principals are cabinet GUIDs, never names. `ops` holds a rule for each of read, write, delete and admin: who may do it (`who`), the cert it needs, and whether a live human must say yes (`ack`). Identity writes the record, through the admin door. FileCabinet and Identity read it only through the CABS `acl_*` macros and `ID.principals`, so there is one reading of the rules, not two.
 
-**Every cabinet has a class, and every class has defaults.** A cabinet is `system`, `vault`, `dojo`, `kata`, `history`, `household`, `family`, `user`, `ai_user` or `scratchpad`. Each class has a default row: the system cabinet is read-only to everything but the admin door, the vault answers only to Identity, a person's cabinet answers to that person, their partners and the prime agent, and a scratchpad is open. A drawer may tighten or loosen its own ops; each op falls back on its own to the cabinet's rule and then the class default. The full table is in the [zenos_cabinets.jinja reference](../custom_templates/zenos_cabinets_jinja.md#acl-v2). The class is a stamp in VolumeInfo, which only the admin door can change. The gate never reads a label.
+**Every cabinet has a class, and every class has defaults.** A cabinet is `system`, `vault`, `dojo`, `kata`, `history`, `household`, `family`, `user`, `ai_user` or `scratchpad`. Each class has a default row: the system cabinet is read-only to everything but the admin door, the vault takes writes only from Identity and is read only through the admin door, a person's cabinet answers to that person, their partners and the prime agent, and a scratchpad is open. A drawer may tighten or loosen its own ops; each op falls back on its own to the cabinet's rule and then the class default. The full table is in the [zenos_cabinets.jinja reference](../custom_templates/zenos_cabinets_jinja.md#acl-v2). The class is a stamp in VolumeInfo, which only the admin door can change. The gate never reads a label.
 
 **Some drawers no owner can open.** Certs (`zen_ai_certs`), integration settings (`integrations_config`) and live-ack answers (`alert_response_*`) take writes only from tools, and the console override (`cert_admin_console_bypass`) and the enforce switch (`fc_acl_mode`) only from the admin door. These built-in locks win over every other rule, so `acl_set` can't loosen them.
 
@@ -115,7 +147,7 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **The ACL v2 migration is mandatory.** Identity setup refuses an old-schema household or family with `acl_schema_upgrade_required`. The migration also stamps each cabinet's class; until it does, a cabinet already on v2 gets the unclassified defaults. After reloading (templates, automations, template entities, then scripts), run `zen_dojotools_identity mode=acl_migrate` to see the plan (a dry run is the default). Check every proposed cabinet `class`, especially any it calls `scratchpad`. Then apply it with `dry_run: false` and `confirm_action: true`, or run `zen_dojotools_systemtools tool=cabinet_schema_upgrade`, which applies it when the schema stamp is behind. A second dry run should plan nothing, and the system cabinet then holds `acl_schema` version 3. Flynn's bootstrap runs the same migration on its own until the stamp is current: on a fresh install, and on an existing one the next time the bootstrap runs. Drawers need no migration of their own; existing ones read as before.
 - **Enforcement is opt-in.** An upgraded install stays in audit until an admin sets `fc_acl_mode` to enforce. Read the `fc_acl_audit` lines first: they are what enforce would refuse or ask about.
 - **Expect audit lines.** Agents that don't hold `zenos.system.cabinet_admin` log `door_gate_audit` lines, and the FileCabinet gate logs `fc_acl_audit` wherever enforcement would have refused or asked. They are the preview of enforcement, not errors.
-- **Re-grant `zenos_agent_basic` if to-do writes fail.** `todo_control` level 1 joined the bundle in 2026.10.1, but an agent that was granted the bundle's certs before then doesn't inherit it. Re-grant `zenos_agent_basic`, or grant `todo_control` level 1, before to-do writes work.
+- **Re-grant `zenos_agent_basic` if to-do writes fail.** `zenos.comms.todo_control` level 1 (then `todo_control`) joined the bundle in 2026.10.1, but an agent that was granted the bundle's certs before then doesn't hold it. Re-grant `zenos_agent_basic`, or grant `zenos.comms.todo_control` level 1, before to-do writes work.
 - **FileCabinet reads return content in `value`.** The `{path: value}` map that `read` put in `result` is retired; `result` is only the tool envelope, and `read` is a plain alias of `get`. Anything of your own that reads `result.<path>` needs to read `value`.
 - **FileCabinet writes are honest.** A create, update, upsert or delete the cabinet never confirmed answers `status: error`, `code: write_unverified` instead of success. `update` on a missing key answers `not_found` (`force_action` creates it), and `create` on an existing key is an error unless `force_action`.
 - **Every write is a merge or a replace.** `upsert` deep-merges by default and `update` replaces. A read-modify-write caller passes `mode: replace`; under a merge, a key you removed comes back.
@@ -123,6 +155,13 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **The lens and codex registries have one writer each:** `prompt_loader mode=lens_registry` and `mode=codex_registry`. Code writing those drawers directly needs to go through them.
 - **`run_repair` has one action, `acl_migrate`.** The 4.5.6 repair names are refused, and `maint_4_5_6.yaml` and `repair_fam_cab_volumeinfo.yaml` are gone. The cabinet factory no longer takes `family_guid`.
 - **`reset_all` wipes.** Cabinet admin's `reset_all` did nothing while answering success; it now wipes every cabinet. A wipe clears the console override and every cert along with everything else, so throw the override from the console and re-request certs afterwards.
+
+- **Approve your agent.** An agent that never received `zenos.agent.basic` loses every ZenOS tool except help and onboarding until you approve it: run `zen_flynn_oobe mode=run` (or ask the agent to) and say yes to the push. An agent you approved at the end of onboarding in 2026.10 already holds it. Until then, dashboard buttons and your own Developer Tools calls to ZenOS tools are refused too. The push goes to `notify.admin_devices` until Postman has a profile; if no push can reach you, use the console override ([Install Guide](../getting_started/install.md#if-no-push-can-reach-you)).
+- **Certs are renamed, and you have until 2026.12.** Nothing to do now: an old-name grant keeps working and shows `reissue_pending` in `cert_list`. Reissue it under its `zenos.*` name before 2026.12. Re-granting `zenos_agent_basic` reissues every member at once.
+- **Cabinet labels need `zenos.system.cabinet_admin` level 2.** Tagging or untagging a cabinet, or creating, changing or deleting a `zen_*cabinet` label, is refused without it. Automations, the scheduler and Flynn are not affected.
+- **The vault cabinet provisions itself.** `sensor.zen_cabinet_health` warns until the vault is online; Flynn provisions it on the first pass after warmup. An install whose vault never left `unknown` (every vault write was dropped before this release) gets it initialized on that pass too.
+- **If `script.zen_admintools_kungfu_loader` shows unavailable,** delete its entity registry row. The loader was retired in this release.
+- **Your own copy of the scheduler loop** needs the same fix as the scheduler (see Fixed): sleep the gap since the previous subscriber, not each subscriber's whole delay.
 
 ---
 
@@ -137,10 +176,15 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **The ACL record, cabinet classes, built-in locks, caller origin, both audit gates, and Identity's `acl_migrate`, `acl_set` and `take_ownership`.** See [The Locks, in Audit Mode](#the-locks-in-audit-mode).
 - **FileCabinet GC `repair` mode.** Normalizes one drawer to the `{value, meta}` envelope, with `dry_run`.
 - **Inspect lists the lenses that apply.** Every inspection carries `domain_context.lens_options`: each lens provider that matches one of its anchors, what it returns and whether it is available, built from the registry with no provider calls. `+lenses` fetches all of them; `lenses=<provider,...>` fetches the ones you name.
-- **Scribe asks instead of refusing.** A live KFC write by a caller without `scribe_kfc_publish` asks the household admin to approve that one write; declined or timed out, it is refused as before.
+- **Scribe asks instead of refusing.** A live KFC write by a caller without `zenos.knowledge.kfc_publish` asks the household admin to approve that one write; declined or timed out, it is refused as before.
 - **The lens registry can be expanded.** Lens register and unregister go through the central lens writer and read through the pointer, so `lens_registry`, one of the household cabinet's biggest drawers, can move to an expansion without being wiped.
 - **FileCabinet `collapse_drawer`.** Undoes an expansion: the tree comes back to its cabinet, verified, and the slot is freed.
-- **Cabinet capacity.** `sensor.zen_cabinet_health` gains a `cabinet_capacity` attribute: each cabinet's size as a percentage of the 128 KB cap, the fullest cabinet, and a warning list at 90% and over. The sensor's state is unchanged.
+- **Cabinet capacity.** `sensor.zen_cabinet_health` gains a `cabinet_capacity` attribute: each cabinet's size as a percentage of the 128 KB cap, the fullest cabinet, and a warning list at 90% and over. The sensor's state is unchanged. `zen_health_report` adds a `cabinet near full` warning for each one, naming `expand_drawer` and `expansion_sitrep`.
+- **The backstage pass.** Every agent-facing tool checks `zenos.agent.basic` first. See [The Backstage Pass](#the-backstage-pass).
+- **Approval first.** `zen_flynn_oobe mode=run` asks for the `zenos_agent_basic` bundle before the setup protocol; `complete` answers `admission_pending` while the pass is still missing; `status` reports `badge_held`. Flynn's Sentinel posts one "waiting for approval" notice for an onboarded agent without the pass, and clears it once the pass is granted.
+- **Views before approval.** Identity `whoami` shows an unapproved agent only itself (name, cabinet, onboarded, `has_basic: false`) and the next step. `zen_health_report` covers only the approval path; the full report names the house's areas and devices.
+- **Plain cert descriptions and approval prompts, dated grants, and the cert catalog cached in the vault.** See [Certs, Renamed and Readable](#certs-renamed-and-readable). `cert_list` gains `catalog_source` and `force_refresh`; the scheduler's script reloads and Flynn keep the cache fresh.
+- **The vault is a required system cabinet.** Flynn labels and initializes it on boot. `sensor.zen_vault_cabinet_resolved` resolves only when exactly one cabinet carries `zen_vault_cabinet`. Its read rule is the admin door: Cabinet Writer's new `get` mode is the one way to read it.
 
 ## Changed
 
@@ -152,6 +196,12 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **`prompt_loader` runs queued,** up to 25 at once, so a burst of registry calls waits its turn instead of being dropped. When `sim_mode_allowed` is unset, it stamps it from Flynn's `input_boolean.zenos_sim_mode_override` (on by default) instead of `false`, so a load right after `reset_all` still resolves its caller.
 - **Identity `area_labels` holds only real HA areas,** so data-routing labels no longer show up in a "who" answer.
 - **FileCabinet takes `mode` for the action,** like every other tool, and `write_mode` (`merge` or `replace`) for how a write lands. `action_type`, `merge` and the old `mode: merge|replace` still work, so existing callers are unchanged.
+- **Every cert is under `zenos.*`,** with a one-release alias for the old flat names. See [Certs, Renamed and Readable](#certs-renamed-and-readable).
+- **`expand_drawer` moves up to 200 keys** per root drawer, up from 30. A bigger tree is refused with the fix: move some children under a new root drawer (`mode=move`) and expand each root.
+- **Cabinet labels are gated.** Labels needs `zenos.system.cabinet_admin` level 2 to tag or untag a cabinet, or to touch a `zen_*cabinet` label, so a second cabinet can't be tagged as the vault and knock the resolver offline.
+- **Help's tool directory** reads each manifest out of its envelope and lists every tool: 66 where it found 9. Entries carry `tier` and `returns`.
+- **Inventory area modes take `homeassistant_area_id`,** as the field always was; the description and quickstart said `area=`. A call with no area is refused with what it needs.
+- **The agent, not a persona name,** in shipped help text, descriptions and cert text. Zammad's audit actor is the configured persona name, else `agent`.
 - **Inspect fetches lens evidence only on request.** A drawer peek no longer calls lens providers on its own. Pass `+lenses` or `lenses=` to get evidence. Fetched evidence is merged by item across anchors and providers, and `providers` carries status and counts, not a second copy of the documents.
 
 ## Fixed
@@ -194,6 +244,23 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **Twenty REST calls** strip a leading `/` or `/rest/` from the endpoint.
 - **Inspect reads `config_entry_id`** before the deprecated `config_entries` device field.
 - **Help matches the code.** SystemTools answers an unknown mode with a `guarded:` error pointing at `mode=help` and `zen_health_report`; Labels' `tag`/`untag` need no `confirm`; Postman's family-policy recipe no longer suggests seeding `{}`.
+- **A refusal stops the call.** Branches that ran after a refusal or cert denial, overwriting it and doing their side effect, now wait on the result in Room Manager, Labels (a refused `tag` still tagged), Lights, Media Manager, Climate, Scribe, Display, Plant, Finance, Manifest, Covers, Service Desk, SystemTools, Timekeeper, Calendar, Todo, Library, Spa Master, Camera and Infra.
+- **Autovac's cert check holds.** `pause`, `unpause`, `queue`, `dequeue`, `clear`, `skip`, `unskip`, `ready`, `unready` and `mark_cleaned` wrote their state after `zenos.autovac.operate` denied: a denied pause answered ok and paused.
+- **FileCabinet GC's side effects run only on a real run.** Priority-inject eviction, the active-alert clear, Postman log aging and the kata broadcast ran on any `gc` call, a refused one included.
+- **Taskmaster checks before it registers.** `register` and `unregister` ran ahead of every check.
+- **The scheduler's subscriber delays no longer add up.** A delay is an offset from the trigger, but the loop slept each one in turn, holding the queued scheduler for minutes on a busy install, deferred script reloads included. Each subscriber now sleeps only the gap since the previous one.
+- **Flynn's notices stay up.** `flynn_active_notification` was wiped on every Sentinel pass, so each notice was raised again every pass and Gate 4's note lasted one pass. Only the gate whose notice it is clears it now.
+- **The console override works before approval.** `prompt_loader cert_bypass` read the console user from `whoami`, which shows nothing before the agent is approved, so it couldn't be switched on in the one state it exists for. It reads the session now.
+- **The vault takes writes.** The volume redirector knew the vault but had no route for it, so every vault write was dropped. Flynn also inits a vault that was never written.
+- **Cabinet factory waits for the GUID** (up to 10 seconds) and answers an error instead of a false "initialized".
+- **Provisioner's deprovision removes every type label** as a list, where it crashed on joined label names, and keeps `zen_cabinet`, so a freed slot stays a slot.
+- **Taskmaster's almanac works on a busy calendar.** It copied the whole calendar response into one variable and went past Home Assistant's 262,144-character template limit on every call. It keeps four fields per event now.
+- **Calendar start and end take a space-separated datetime** (`2026-11-14 18:00:00`), not only a `T`.
+- **FileCabinet takes a list `volume_entity_id`.** An MCP client sends an array as a JSON list string, which crashed the wrapper on every call, help included.
+- **The cert catalog has no gaps.** `cert_audit` fills short-form cert entries with their gates, description and `max_level`, so an approval prompt no longer reads "no description on file". A grant no longer logs two "Disallowed recursion" warnings.
+- **Grocy reads the area you pass.** `area_id_norm` read Home Assistant's `area_id()` function when no area was passed, so every area mode called without one used it as the area. `chores_by_area` and `room_brief` read the area like every other area mode.
+- **Security Manager's envelope names the mode** for an `action=` call answered before dispatch; it reported `mode: ""`.
+- **Versions agree.** Header and manifest disagreed on Locks, Infra, Taskmaster, Kitchen, Service Desk and Finance; Camera's help named an old version.
 - **Smaller fixes.** A re-fired alert's answer replaces the cached one. Provisioner's deprovision reports an error when the cabinet doesn't end up unmounted. `flip_schema_version` flips back. Stack and lens unregisters remove their entry. Grocy, Lights, Media Manager, Room Manager and cabinet inspect read drawer content from `value`.
 
 ## Removed

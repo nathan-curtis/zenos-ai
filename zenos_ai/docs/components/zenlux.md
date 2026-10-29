@@ -20,7 +20,7 @@ Key capabilities:
 * `mode=scene_stage` — relocated here from Room Manager (see below)
 * Topology-aware bleed: propagates scenes to adjacent rooms via Room Manager portal transmission values
 * RM hold gate + room-lock guard: hard-blocks hardware writes when a room is in Hold/Pause, or when a human has parked `room_control_manager` on Paused/Automation/Cleaning
-* Identity-gated writes: `lighting_control` certification required on every write mode (see Identity Gate below)
+* Identity-gated writes: `zenos.actuation.lighting_control` certification required on every write mode (see Identity Gate below)
 * Per-room lighting preferences stored in household cabinet, re-resolved live at apply time
 * ZenShade sync: optional cover scene applied alongside light bleed
 * Discovery and label suggestion for initial setup
@@ -117,7 +117,7 @@ Confirm all role slots resolve and advisory is clear.
 | `scene_set` | Activate HA scene entity OR apply intent preset. Intent presets: `movie` / `sleep` / `morning` / `work` / `away` / `party` with pre-defined brightness + color_temp. Supports `transition`. |
 | `bleed_set` | Primary room scene + propagate to adjacent rooms via Room Manager topology. See Bleed below. |
 | `reflex_sync` | Fires whatever Room Manager v3's REFLEX Stage 2 currently resolves for this room's live state, by calling `zen_dojotools_room_manager mode=reflex_wire` and reading `wired_matrix` — not a separate re-derivation of resolution logic. Not gated by the room-lock check below: a locked room's own resolved state already accounts for the lock (it fires that state's own wired scene, which isn't a violation of the lock, it *is* the lock's scene). |
-| `toggle` (2026-08-16) | Domain-agnostic — `homeassistant.toggle` on `entity_id=`, works on `light.*` or `switch.*`. `entity_id=`-only, deliberately: `room=` would be ambiguous light-vs-switch without an explicit hint. RM hold gate + room-lock guard + `lighting_control` cert all apply, same as every other write mode. Returns `previous_state`, `state` and `changed`. |
+| `toggle` (2026-08-16) | Domain-agnostic — `homeassistant.toggle` on `entity_id=`, works on `light.*` or `switch.*`. `entity_id=`-only, deliberately: `room=` would be ambiguous light-vs-switch without an explicit hint. RM hold gate + room-lock guard + `zenos.actuation.lighting_control` cert all apply, same as every other write mode. Returns `previous_state`, `state` and `changed`. |
 | `switch_set` (2026-08-16) | Explicit `switch.*` write: `switch_state=on\|off\|toggle`. `entity_id=` overrides; otherwise `room=` (+ optional `target_role=`) resolves via the same room/role/`primary`-tiebreak convention the light modes use — but switches have no fixed role-label taxonomy the way lights do, so `target_role=` here is a plain label filter, not one of the `zen_lm_*` roles. |
 | `scene_stage` (2026-08-16, relocated from Room Manager) | Works around a real HA limitation: `scene.create` doesn't persist. `scene_phase=before` snapshots every light/cover/climate/media_player/switch/fan/humidifier entity in a room before a scene-worthy action; `scene_phase=after` snapshots again; `scene_phase=confirm` auto-detects and tags what actually changed between the two. `room=` required. Room Manager still exposes its own `mode=scene_stage` as a thin backward-compatible delegator to this one — logic lives here now, not there (RBAC locality: the write belongs with the tool that owns the domain it's staging). |
 
@@ -184,7 +184,7 @@ RM entity resolved by label (room_manager label on input_select in the area) or 
 
 ## Identity Gate (2026-08-16)
 
-Every write mode listed above additionally requires the `lighting_control` certification — declared-but-unenforced when this doc last covered it, turned on for real this pass. Cert-only: unlike locks' exterior unlock, covers' barrier-open, or security_manager's disarm, no ZenLux action requires a fresh live acknowledgment on top of the cert — lighting/switch control isn't treated as a physical-security action. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md) for the full model and grant syntax.
+Every write mode listed above additionally requires the `zenos.actuation.lighting_control` certification — declared-but-unenforced when this doc last covered it, turned on for real this pass. Cert-only: unlike locks' exterior unlock, covers' barrier-open, or security_manager's disarm, no ZenLux action requires a fresh live acknowledgment on top of the cert — lighting/switch control isn't treated as a physical-security action. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md) for the full model and grant syntax.
 
 Resolution goes through the shared `cert_scope_check` macro (`zen_os_1.jinja`) via `zen_dojotools_identity mode=resolve_caller_identity target_entity=<entity>` — the same single chokepoint locks/covers/security_manager/room_manager/infra all use as of 2026-08-16, rather than each tool walking its own `cert_scope` array. Because lighting has no live-ack tier, the `scope_decision` this returns doesn't currently change ZenLux's own behavior — it's wired in for consistency and to be ready if that ever changes, not because it's load-bearing here today.
 

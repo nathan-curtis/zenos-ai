@@ -19,7 +19,7 @@ Every principal is backed by a cabinet, and the cabinet's type label says what k
 
 A cabinet's identity is its GUID, stored in its `AI_Cabinet_VolumeInfo` header. Names, friendly names, and entity IDs can change. The GUID does not.
 
-Cabinets come into service through `zen_dojotools_provisioner`. A cabinet waiting in the stacks pool is `init` or `online_unmounted`. Provisioning validates its GUID (present, valid UUID, unique across mounted cabinets), applies the type label, mounts it, and seeds the profile and essence drawers. Deprovisioning reverses it and returns the cabinet to the pool. Provisioning a principal is identity-slot activation, not hardware management. Both provision and deprovision require the `cabinet_lifecycle_control` certification.
+Cabinets come into service through `zen_dojotools_provisioner`. A cabinet waiting in the stacks pool is `init` or `online_unmounted`. Provisioning validates its GUID (present, valid UUID, unique across mounted cabinets), applies the type label, mounts it, and seeds the profile and essence drawers. Deprovisioning reverses it and returns the cabinet to the pool. Provisioning a principal is identity-slot activation, not hardware management. Both provision and deprovision require the `zenos.system.cabinet_lifecycle_control` certification.
 
 ## 18.2 Occupancy and belonging
 

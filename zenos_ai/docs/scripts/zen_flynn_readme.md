@@ -1,4 +1,4 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.1.11
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.3.1
 
 *ZenOS-AI's boot guard, initializer, and onboarding driver*
 
@@ -142,6 +142,8 @@ default_user, default_ai_user, history, index
 
 Detects cabinets that are present but genuinely uninitialized — `state=init` with no VolumeInfo. These are virgin cabinets: the sensor has evaluated at least once and found nothing. Flynn calls `script.flynn_initialize_cabinets` to bootstrap them.
 
+**The vault.** The vault is a required system cabinet. Flynn's label gate labels it, and Gate 2.1 initializes it as "Vault Cabinet" on the first pass after warmup (not on the `ha_start` pass). Gate 2.1 also initializes a vault that was never written (state `unknown`, no `variables`): before 2026.11.0 every vault write was dropped, so an existing install's vault never left `unknown`.
+
 **Why this gate exists:** `zen_cabinet_health` rolls up optional slots as healthy even when their underlying entity is still in `init`. New installs were deadlocking — present-but-uninitialized cabinets never appeared in `missing_cabinets`, so Gate 2 never saw them, and nothing ever called cabinetadmin. Gate 2.1 catches them by reading `slot_to_default_entity` directly and checking entity state.
 
 **Safety guards:**
@@ -153,6 +155,12 @@ Detects cabinets that are present but genuinely uninitialized — `state=init` w
 **Event fired:** Handled internally by `script.flynn_initialize_cabinets`.
 
 **History cabinet mount lifecycle (2026.7.1):** Gate 2.1's re-init trigger now also fires when any of the 4 history cabinets (`default_household_history`, `default_family_history`, `default_user_history`, `default_ai_user_history`) is `online_unmounted` — mounted but not yet wired to its parent cabinet's `history` mount point. When that happens, Flynn: waits for the cabinet's state to stabilize (bounded `wait_template`s, each with `continue_on_timeout: true`), calls `mount_cabinet`, extracts the mounted cabinet's GUID from its `VolumeInfo` (guarded against the value being a JSON string vs. an already-parsed mapping), then calls `set_mount` to wire that GUID into the parent's `history` mount point — skipping if already wired. If a cabinet has residue data that blocks auto-init (`reason: rearm_required`), Flynn posts a persistent notification asking a human to run `repair_volumeinfo` or `hammer` manually rather than guessing. This whole path degrades gracefully (`continue_on_error: true` throughout) rather than blocking boot — a stuck history cabinet delays its own mount wiring, not the rest of the system, and Gate 2.1 re-evaluates it on the same 5-minute Stepgate Sentinel cadence as everything else (see [Troubleshooting](#troubleshooting) below), not a tight retry loop.
+
+---
+
+### Gate 2.2 — Cert Catalog Cache
+
+After warmup, each pass asks Identity (`cert_cache_refresh`) to rebuild the cert catalog cache in the vault. Fire and forget: Identity skips a fresh copy, and skips it entirely with no vault. It runs ahead of the all-green early exit, so a healthy system keeps its cache fresh.
 
 ---
 
@@ -237,6 +245,10 @@ Three cases:
 The fastest path through OOBE: set `input_text.zenos_persona_name` in Settings → Helpers, then restart or let Flynn re-run. Flynn will write the name and clear the gate.
 
 The conversational path: start chatting with your AI agent — Flynn's Agent Builder (mode: oobe) walks through the Q&A setup interactively.
+
+**Onboarded is not approved.** An agent that finished onboarding but doesn't hold `zenos.agent.basic` (its backstage pass) gets one "waiting for approval" notification. It is recorded in `flynn_active_notification`, so a 5-minute pass doesn't raise it again, and it clears once the pass is granted. Flynn never asks for the approval itself: the agent keeps answering as itself, and its gated tools point it at `zen_flynn_oobe mode=run`, which asks you.
+
+**One notice per gate.** `flynn_active_notification` is cleared only by the gate whose notice it holds. The labels gate and the content bootstrap used to wipe it every pass, so Gate 3.5 raised its notice again every pass and Gate 4's note lasted one pass.
 
 ---
 

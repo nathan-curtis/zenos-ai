@@ -1,6 +1,6 @@
 # ZenOS-AI Room Manager v3 & REFLEX
 
-**Version:** rev 6 (2026-08-24) — `room_signal_fire` (evidence-simulating manual mode), `presence_hold` tier, `entertaining_cascade_enable`/`_check`, cascade redesign (child-engaged retired, child_emergency/child_paused cascade unconditionally), `room_control_override` restored as its own distinct unpause cert, per-state sensor icons, real fixes to the wasp self-latch/`asleep_hold`/`child_release` and several `room_control_set` race conditions. Same-day follow-ups: `asleep_hold` extended to the redundant-timer "held for any reason" guard in `zen_room_manager_dispatch.yaml`; a bounded 8s wall-clock bridge on `_child_occ_hi` closes the dark-flash-then-scene gap between a child's real state change and `child_release`'s compensating burnout timer; new `child_cascade_arm` trigger/action pair (mirrors `child_release`) cancels a grandparent's own stale local `room_timer` the moment a child starts cascade-sustaining it, same redundant-timer class as wasp/asleep_hold, single-hop by construction so it stays portable to any cascade depth. Previous: rev 5 (2026-08-08) — `room_control_manager` isolation, wasp-hold rewrite, entertaining/guest hold, asleep window
+**Version:** rev 6 (2026-08-24) — `room_signal_fire` (evidence-simulating manual mode), `presence_hold` tier, `entertaining_cascade_enable`/`_check`, cascade redesign (child-engaged retired, child_emergency/child_paused cascade unconditionally), `zenos.room.control_override` restored as its own distinct unpause cert, per-state sensor icons, real fixes to the wasp self-latch/`asleep_hold`/`child_release` and several `room_control_set` race conditions. Same-day follow-ups: `asleep_hold` extended to the redundant-timer "held for any reason" guard in `zen_room_manager_dispatch.yaml`; a bounded 8s wall-clock bridge on `_child_occ_hi` closes the dark-flash-then-scene gap between a child's real state change and `child_release`'s compensating burnout timer; new `child_cascade_arm` trigger/action pair (mirrors `child_release`) cancels a grandparent's own stale local `room_timer` the moment a child starts cascade-sustaining it, same redundant-timer class as wasp/asleep_hold, single-hop by construction so it stays portable to any cascade depth. Previous: rev 5 (2026-08-08) — `room_control_manager` isolation, wasp-hold rewrite, entertaining/guest hold, asleep window
 **Files:** `blueprints/template/zenos/room_state.yaml`, `packages/zenos_ai/room_manager_v3/zen_room_manager_dispatch.yaml`
 **Codename:** REFLEX
 
@@ -320,12 +320,12 @@ they're not interchangeable:
 agent, no friction (raising a safety flag never needs permission).
 Clearing a room OUT of Paused (via either mode above) always requires a
 fresh live household-admin ack, every single call, UNLESS the caller
-holds a scoped `room_control_override` cert naming that exact
+holds a scoped `zenos.room.control_override` cert naming that exact
 `area_id`. This is a real, code-enforced gate — see
 `components/room_manager.md`'s certs section — not merely a documented
-convention. `room_control_override` is deliberately its own distinct
-cert, separate from the broader `room_behavior_control` cert that gates
-every other non-Paused write; holding `room_behavior_control` alone does
+convention. `zenos.room.control_override` is deliberately its own distinct
+cert, separate from the broader `zenos.room.behavior_control` cert that gates
+every other non-Paused write; holding `zenos.room.behavior_control` alone does
 not grant the unpause exemption.
 
 ## Entertaining Cascade (opt-in, default off)
