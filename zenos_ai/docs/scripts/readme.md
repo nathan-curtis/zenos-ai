@@ -115,7 +115,7 @@ Guide: fire a component summarizer run from a real-world trigger and act on the 
 
 ---
 
-## 7. Zen DojoTools Summarizers — Ninja v4.6.0 · SuperSummary v4.6.0
+## 7. Zen DojoTools Summarizers — Ninja v4.6.0 · SuperSummary v4.6.1
 **File:** [`zen_dojotools_summarizers_readme.md`](zen_dojotools_summarizers_readme.md)
 
 The KF4 action pipeline — Ninja Summarizer (per-component kata writer) and SuperSummary (whole-home synthesizer). Both MCP-exposed. Pipeline tier split: `direct` (keeper), `ambient` (Trapper Keeper pre-digest + breadcrumb), `system` (background). Trapper Keeper pre-digests ambient-tier katas into a navigation index. SuperSummary run governor (default 600s burnout). Context size guard (>200K abort, 28K max_context_tokens). Three kill switches — default off; enable only after pointing at a local inference model.

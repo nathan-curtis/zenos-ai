@@ -1,4 +1,4 @@
-# Zen DojoTools Summarizers — Ninja Summarizer v4.6.0 · SuperSummary v4.6.0
+# Zen DojoTools Summarizers — Ninja Summarizer v4.6.0 · SuperSummary v4.6.1
 
 *Ninja Summarizer + SuperSummary — the KF4 action pipeline — MCP-exposed*
 
@@ -209,7 +209,7 @@ v5.1.0 separates components into three pipeline tiers. Tier is set by the `pipel
 - Urgency 4–5 → also added to `attention` list
 - Urgency 6–10 → promoted to `active_components` (same as keeper tier)
 
-**Trapper Keeper** is SuperSummary's ambient pre-processor. It reads all ambient-tier component kata drawers, extracts a compact breadcrumb (component name, urgency, one-line summary), and builds a navigation index of which ambient components are available and how to reach them via a targeted Ninja run. The Trapper Keeper output is injected into the SuperSummary monk prompt as a navigation aid rather than full data.
+**Trapper Keeper** is SuperSummary's ambient pre-processor. It reads all ambient-tier component kata drawers, extracts a compact breadcrumb (component name, urgency, one-line summary), and builds a navigation index of which ambient components are available and how to reach them via a targeted Ninja run. The Trapper Keeper output is injected into the SuperSummary monk prompt as a navigation aid rather than full data. Its input is only the ambient tier: components on every other tier go to SuperSummary directly, so their absence, or a short or empty input, is normal. With nothing to digest it answers all clear at urgency 0, and it never reports a component missing or a pipeline failure because of what isn't in its input.
 
 ### Active Component Selection
 
@@ -322,6 +322,7 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| SuperSummary v4.6.1 | The Trapper Keeper KFC says its input is only the ambient tier. It used to list the core managers it shouldn't summarize, and a model that didn't find them in its input reported them missing as a pipeline failure at urgency 5. `kfc_manifest` reports 4.6.1. |
 | v4.5.6 | Ninja never calls the model with nothing to read: an empty input writes an urgency-0 no-input kata and emits `ninja_no_input`. The one-hop index envelope is unwrapped before use, so the inspect supplement receives data. `trapper_keeper` is seeded with `{kata_tier: <tier>}`. (4.5.4: `kata_emit` is fired directly as a `zen_event`.) |
 | v4.5.2 | `pipeline_tier` canonical name changed from `direct` to `keeper` (Scheduler already defaulted to `keeper`; docs and `building_a_kfc.md` already used it). Default value, comment block, and prompt-instruction wording updated to match — filter behavior unchanged (`direct` and `keeper` land in the same bucket). Stripped stale incident-narration comments from step 5. |
 | v5.1.0 | Pipeline tier split: `direct`/`ambient`/`system` tiers via `pipeline_tier` KFC field. Trapper Keeper pre-digests ambient-tier components (breadcrumb + navigation index). Ambient urgency promotion rule (0–3=breadcrumb only; 4–5=attention; 6–10=active_components). SuperSummary run governor (`super_burnout_seconds`, default 600s, `force` bypass). Size guard (>200K bytes → abort). Context budget guard (`max_context_tokens`, default 28K). Ninja: `index_call_override`, `parent_component_id`, `staleness_minutes` input fields. `response_variable: result` on all stop steps. Namespace scoping fix on `active_components` iteration. `ZEN_SUMMARY` key case fix. Event→action migration. `library_console` rename. Kata cabinet variable fix. |

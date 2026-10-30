@@ -270,6 +270,7 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **Help's tool directory lists every tool.** It read each manifest without unwrapping its envelope, and found 9 tools of 66. Entries now carry `tier` and `returns`.
 - **Security Manager's envelope names the mode** for an `action=` call answered before dispatch; it reported `mode: ""`.
 - **Versions agree.** Header and manifest disagreed on Locks, Infra, Taskmaster, Kitchen, Service Desk, Finance, Postman, AlertManager, Media Manager, Rolodex, Query and Help; Camera's help named an old version.
+- **Trapper Keeper stops raising a false pipeline failure.** Its KFC listed the core managers it shouldn't summarize, so a model expected them in its input and, finding them absent, reported them missing at urgency 5, which SuperSummary carried forward. Its input is only the ambient tier; the KFC now says other tiers are absent by design, and with nothing to digest it answers all clear.
 - **Scribe's live ack names its cert in plain words,** like every other approval; it named the old flat cert.
 - **Smaller fixes.** A re-fired alert's answer replaces the cached one. Provisioner's deprovision reports an error when the cabinet doesn't end up unmounted. `flip_schema_version` flips back. Stack and lens unregisters remove their entry. Grocy, Lights, Media Manager, Room Manager and cabinet inspect read drawer content from `value`.
 
