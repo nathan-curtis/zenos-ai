@@ -119,7 +119,7 @@ Ring-2 cabinet maintenance tool. Provisions new expansion cabinets, inspects cab
 | `init` | Conditional | Stamp a virgin cabinet with VolumeInfo + GUID. Refuses if already initialized (`good`) or has residue (`potentially_bad` — hammer first). Requires `confirm_action: true` when state is `unknown` |
 | `hammer` | **Yes** | Clear all drawers + stamp `_hammered` marker. Set `confirm_init: true` to re-stamp immediately. Requires `hammer_ok: true` |
 | `restore` | No | Attempt recovery of a cabinet that lost VolumeInfo after HA restart |
-| `reset` | **Yes** | Clear all drawers with no audit marker |
+| `reset` | **Yes** | Clear all drawers with no audit marker. Asks for the same per-call live household-admin acknowledgement as `hammer` |
 | `mount_status` | No | Return mounted/unmounted state for all `zen_cabinet` entities. No target needed |
 | `repair_mount` | No | Force `meta.mounted: true` on a stuck cabinet. Does not touch drawer content |
 | `repair_dismount` | No | Force `meta.mounted: false` on a stuck cabinet. Mirror of `repair_mount` |
