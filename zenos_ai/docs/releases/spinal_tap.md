@@ -21,7 +21,11 @@ No pass, no further. An agent without `zenos.agent.basic` gets as far as the doo
 
 "Yeah, let 'em in."
 
-Backstage isn't the stage. The pass gets the agent in to see the band; every instrument still takes its own cert. The certs are new too: each one now lives under `zenos.*`, carries a date, and asks you on your phone in plain words. And the guitar?
+Backstage isn't the stage. The pass gets the agent in to see the band; every instrument still takes its own cert. The certs are new too: each one now lives under `zenos.*`, carries a date, and asks you on your phone in plain words.
+
+The road crew needs passes too. The summarizer works when no one's on stage: it reads the house on a schedule and sometimes decides something needs doing. In 11 it works as a named agent, the one responsible for your household, and it acts on its own only with a cert you approved for the background.
+
+And the guitar?
 
 Don't touch it. Don't look at it. Don't EVEN point at it. Once cabinet enforcement is on, a cabinet your agent has no pass for won't just refuse the read. It won't show up in the listing.
 
@@ -47,6 +51,7 @@ Don't touch it. Don't look at it. Don't EVEN point at it. Once cabinet enforceme
 
 **Also planned**
 - Home Assistant's naming model: names in parts, `friendly_name` as legacy only, and child devices. See [Names in Parts](#names-in-parts).
+- The summarizer pipeline acts as a named agent, with certs a person granted for the background, in place of the seed and act whitelists (#10549, added in Beta 4). See [The Pipeline Gets a Pass](#the-pipeline-gets-a-pass).
 - Every tool guards its inputs (the contract sweep begun in 2026.10.1).
 - One configure contract across plugin setup.
 - Identity and Labels event-ordering hardening.
@@ -85,6 +90,7 @@ One gate ships on: the backstage pass. An agent you haven't approved gets help a
 | Bootstrap and recovery | Flynn's bootstrap is built to migrate and stamp a fresh install. An upgrade migrates and stamps when the bootstrap next runs, or on `acl_migrate` / `cabinet_schema_upgrade`. | A cold fresh-install run with the stamp. Revocation and recovery on the trusted path. |
 | Audit-only rollout | Shipping now: `fc_acl_audit` and `door_gate_audit`, and FileCabinet's opt-in enforce switch. | Enforcement by default, and at the admin door. |
 | Operator permission report | | The report. |
+| Pipeline authority (added in Beta 4) | The summarizer acts as the household's responsible agent, which must be onboarded. Seeds are modes the tool declares; acts need a cert granted for the Ninja emit stage. Ships on, not in audit, with the old whitelists as a bridge. | Stage checks for live drawers, SuperSummary and the scheduler. Removing the whitelists in 2026.12. |
 
 ---
 
@@ -114,9 +120,19 @@ Before 11.0, `zenos.agent.basic` was a badge an agent was given at the end of on
 
 **The vault holds the catalog.** The vault cabinet is now a required system cabinet that Flynn provisions on boot, and only the admin door can read it. `cert_list` reads the cert catalog from a cache there, so it answers in a fraction of the time, and builds it live whenever the vault isn't there. Grants are always read live.
 
-## Certs in the Background
+## The Pipeline Gets a Pass
 
-A cert used to answer one question: may the agent do this when someone asks? The summarizer pipeline acts with no one asking, and it answered to two syscab lists instead, a seed whitelist and an act whitelist. In 11.0 those lists become certs, and a grant says where it may be used.
+The summarizer pipeline works differently in 11.0. A Ninja run reads one component of the house, a model writes its summary, and if the summary calls for action the run can act, usually by sending a notification through Postman. SuperSummary then writes the whole-house summary from those. Until now the pipeline answered to two lists in the system cabinet: a seed whitelist for the tools a run could read from first, and an act whitelist for the acts it could take. Neither said which agent was acting, and nobody approved either on a phone.
+
+In 11.0 a run:
+
+1. **Acts as a named agent:** the one responsible for the household, which must be onboarded. Otherwise the run stops and summaries pause, with a notification saying why.
+2. **Reads only what the tool declares:** a seed must be a mode the tool lists for the summarizer, or the run stops before the model is called.
+3. **Acts only with a cert granted for the background:** the act's cert must be held with the Ninja emit stage, which a person approved. Otherwise the act doesn't happen, and the summary records what to grant.
+
+SuperSummary writes as the same agent and builds its capsule from it, not from the persona-name helper.
+
+A cert used to answer one question: may the agent do this when someone asks? Now a grant also says where it may be used.
 
 **Grants name their stages.** A grant carries `st`, one letter per pipeline stage, stored the way the ACL ops are:
 
@@ -241,7 +257,7 @@ ZenOS speaks that model in 11.0, and it took Display's place to do it. Display b
 - **Plain cert descriptions and approval prompts, dated grants, and the cert catalog cached in the vault.** See [Certs, Renamed and Readable](#certs-renamed-and-readable). `cert_list` gains `catalog_source` and `force_refresh`; the scheduler's script reloads and Flynn keep the cache fresh. It also answers with plain `notes` when grants are still under an old name or held above a cert's `max_level`, since that's the one place the agent learns its grant state.
 - **Name parts and child devices.** See [Names in Parts](#names-in-parts). Inspect adds `entity_name`, `device_name` and `area_name`, and its device tree adds `via_device_name`, `parent_device_id`, `parent_device_name` and `child_devices`. `device_info` adds `parent_device_id` and `child_devices`, and `device_list` adds `parent_device_id`. ZQ-1 adds `entity_name_regex` and `device_name_regex`.
 - **Radar moves a ticket between tags.** `ticket_untag` removes a tag. `ticket_retag` swaps one for another: it adds the new tag first and removes the old one only if the add worked, so a ticket never ends up with neither.
-- **Pipeline stages on cert grants, the responsible agent, and `zenos_agent_autonomous`.** See [Certs in the Background](#certs-in-the-background). Identity gains `cert_stages`, `stage_letters` and `responsible_agent`, and `ID.caller` takes a container and a stage. The cert catalog carries each cert's `st_ok`, and `my_certs` each grant's `st`. `tool_manifest` takes `seed_modes`.
+- **Pipeline stages on cert grants, the responsible agent, and `zenos_agent_autonomous`.** See [The Pipeline Gets a Pass](#the-pipeline-gets-a-pass). Identity gains `cert_stages`, `stage_letters` and `responsible_agent`, and `ID.caller` takes a container and a stage. The cert catalog carries each cert's `st_ok`, and `my_certs` each grant's `st`. `tool_manifest` takes `seed_modes`.
 - **The vault is a required system cabinet.** Flynn labels and initializes it on boot. `sensor.zen_vault_cabinet_resolved` resolves only when exactly one cabinet carries `zen_vault_cabinet`. Its read rule is the admin door: Cabinet Writer's new `get` mode is the one way to read it.
 
 ## Changed
@@ -259,7 +275,7 @@ ZenOS speaks that model in 11.0, and it took Display's place to do it. Display b
 - **Cabinet labels are gated.** Labels needs `zenos.system.cabinet_admin` level 2 to tag or untag a cabinet, or to touch a `zen_*cabinet` label, so a second cabinet can't be tagged as the vault and knock the resolver offline.
 - **Inventory area modes take `homeassistant_area_id`,** as the field always was; the description and quickstart said `area=`. A call with no area is refused with what it needs.
 - **The agent, not a persona name,** in shipped help text, descriptions and cert text. Zammad's audit actor is the configured persona name, else `agent`.
-- **The summarizer's seed and act whitelists become certs.** A seed is a mode the tool declares, and an act needs the target tool's emit cert held with the Ninja emit stage. The lists keep working through 11 as a bridge. See [Certs in the Background](#certs-in-the-background).
+- **The summarizer's seed and act whitelists become certs.** A seed is a mode the tool declares, and an act needs the target tool's emit cert held with the Ninja emit stage. The lists keep working through 11 as a bridge. See [The Pipeline Gets a Pass](#the-pipeline-gets-a-pass).
 - **`friendly_name_regex` outlives `friendly_name`.** Once HA stops setting the attribute, it matches the device name + entity name. While HA sets it, matches are unchanged.
 - **Inspect fetches lens evidence only on request.** A drawer peek no longer calls lens providers on its own. Pass `+lenses` or `lenses=` to get evidence. Fetched evidence is merged by item across anchors and providers, and `providers` carries status and counts, not a second copy of the documents.
 
