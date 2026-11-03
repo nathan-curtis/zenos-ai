@@ -117,9 +117,9 @@ sensor.zen_label_health          ← updates every 1 minute
 
 | State | Condition |
 |---|---|
-| `critical` | Dojo or kata cabinet unavailable; OR schema invalid (no `zen_template.value.structure`); OR KF switches active but no `zen_summary` drawer |
-| `warn` | Monk status in error/timeout/none; OR summary >15 minutes stale; OR no active Kung Fu switches |
-| `ok` | Schema valid, summary <15 min old, monk status ok, ≥1 active switch |
+| `critical` | Dojo or kata cabinet unavailable; OR schema invalid (no `zen_template.value.structure`); OR monk status in error/timeout/none and summary 45+ minutes old; OR KF switches active but no `zen_summary` drawer |
+| `warn` | Monk status in error/timeout/none; OR summary 25+ minutes old; OR no active Kung Fu switches |
+| `ok` | Schema valid, summary under 25 min old, monk status ok, ≥1 active switch |
 
 **Staleness thresholds:**
 - `>15 min` → warn
@@ -172,9 +172,9 @@ sensor.zen_label_health          ← updates every 1 minute
 | State | Condition |
 |---|---|
 | `critical` | Kata cabinet unavailable/unknown/missing |
-| `warn` | Monk status is error/timeout/none/null; OR summary >15 minutes stale; OR summary 15–30 minutes stale |
+| `warn` | Monk status is error/timeout/none/null; OR summary 25+ minutes old (45+ is critically stale and still `warn`) |
 | `disabled` | `input_boolean.zen_supersummarizer_enabled` or `input_boolean.zen_summarizers_enabled` is `off` |
-| `ok` | Monk status ok AND summary ≤15 minutes old |
+| `ok` | Monk status ok AND summary under 25 minutes old |
 
 **Key attributes:**
 
