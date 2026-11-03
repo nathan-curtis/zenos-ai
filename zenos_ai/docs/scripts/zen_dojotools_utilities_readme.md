@@ -1,6 +1,6 @@
 # Zen DojoTools Utilities
 
-**Script versions** (per-script `tool_manifest`, canonical): `help` 3.1.1 · `calculator` 1.3.0 · `dice_roller` 1.0.0 · `wait` 1.0.0 · `select_control` 1.1.1 · `boolean` 1.1.1 · `number` 1.1.1 · `text` 1.1.1 · `timekeeper` 1.3.0 · `climate` 2.0.1 · `water_heater` 1.1.1 · `datetime` 1.1.1 · `zones` 1.1.0.
+**Script versions** (per-script `tool_manifest`, canonical): `help` 3.1.2 · `calculator` 1.3.0 · `dice_roller` 1.0.0 · `wait` 1.0.0 · `select_control` 1.1.1 · `boolean` 1.1.1 · `number` 1.1.1 · `text` 1.1.1 · `timekeeper` 1.3.0 · `climate` 2.0.1 · `water_heater` 1.1.1 · `datetime` 1.1.1 · `zones` 1.1.0.
 
 *Calculator, dice, announcements, music search, system help, wait, cabinet audit, and canonical HA domain control tools*
 
@@ -147,7 +147,7 @@ Direct MA service wrapper. Fields: `query`, `artist`, `album`, `media_type`, `nu
 | Mode | Does |
 |------|------|
 | `about` (default) | System overview including architecture, design principles, safety notes, the Pantheon roster, module list, escalation contacts, and a real-time inventory of all `zen`-labeled scripts currently loaded in HA. |
-| `help` | Proxy to a specific tool's own `mode=help` — pass `tool=<script_name>`. Returns that tool's canonical help schema directly. If the target's response doesn't look like real help (e.g. a tool with no help handler falling through to a live read), returns `status: unsupported` instead of passing live data through. Requires `tool`; without it, returns an error naming `mode=directory` as the discovery path. |
+| `help` | Proxy to a specific tool's own `mode=help` — pass `tool=<script_name>`. Returns that tool's canonical help schema directly. If the target's response doesn't look like real help (e.g. a tool with no help handler falling through to a live read), returns `status: unsupported` instead of passing live data through. Requires `tool`; without it, returns an error naming `mode=directory` as the discovery path. Only existing `zen_dojotools_`, `zen_stack_`, `zen_sutra_` and `zen_codex_` tools can be proxied; any other script name is refused with a `guarded:` error. |
 | `directory` | Auto-discover every `zen_dojotools_*`/`zen_stack_*`/`zen_sutra_*`/`zen_codex_*` script currently loaded (`on`/`off` state) and check each one's `tool_manifest` for `help` in its supported modes — no static list to maintain, new tools appear automatically as long as they implement `mode=help`. |
 | `troubleshooting` | **Static** — zero live calls, zero fan-out (deliberately: a fan-out-based troubleshooting mode would hit the exact failure class it documents). System-level known platform quirks — currently the `script:` platform's entity_id/unique_id drift class (symptom `ServiceNotFound` from a dynamically-templated action even though the entity looks healthy in `states.script`; cause, fix, and diagnostic path all included) — plus pointers to every other diagnostic surface (`zen_dojotools_systemtools` health report, `zen_dojotools_manifest` audit modes, this tool's own `mode=about`/`mode=directory`, the entity registry, repo/community links). Wired bidirectionally with this tool's own `mode=about` Diagnostics section. Start-here reference for an agent in a vacuum with an unexplained error and no other context. |
 | `tool_manifest` | Self-description (UMP contract). |
