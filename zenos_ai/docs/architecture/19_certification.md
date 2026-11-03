@@ -38,10 +38,10 @@ The certification entry is shaped the same way, and for the same reason (Chapter
 | Name constraints, permitted and excluded subtrees | Scope `allow` and `deny` entries |
 | Subject | The persona cabinet the certification is written to |
 | Issuer | CertAdmin, with a human's live acknowledgement or console presence |
-| Validity period | None yet |
+| Validity period | `not_before` and `not_after`, one year, on every new grant since 2026.11.0; not enforced |
 | Revocation checked at use | Explicit revoke only |
 
-> **Not yet built.** The structure maps onto a certificate. The cryptography and the lifecycle do not exist yet: nothing is signed, nothing expires, and nothing is checked against a revocation list at the moment of use. Those arrive with the certificate authority the entry is shaped for.
+> **Not yet built.** The structure maps onto a certificate. The cryptography and most of the lifecycle do not exist yet: nothing is signed, nothing is checked against a revocation list at the moment of use, and the validity period every new grant records is not enforced. Those arrive with the certificate authority the entry is shaped for.
 
 ## 19.3 Levels
 
@@ -62,15 +62,18 @@ Certifications are stored on the AI persona that holds them: the persona's cabin
 |---|---|
 | `level` | The level held. |
 | `certified` | The date it was granted. |
+| `not_before`, `not_after` | The validity period in UTC, with the X.509 field names: issue time, and one year later. Recorded on every new grant since 2026.11.0. Nothing enforces it yet. |
 | `tool` | The tool the grant was issued against. |
 | `scope` | Optional per-target scope entries (19.5). |
 | `constraints` | Optional additional restrictions, interpreted by the consuming tool. |
 
 > **Not yet built. In progress.** Certifications move out of the persona's cabinet into a secure enclave cabinet built only to hold them. Nothing outside the enclave reads a certification directly. A caller gets controlled access through a representative token instead. A session is one Home Assistant conversation, identified by its conversation ID, and the token is derived from that ID, salted and hashed. Sessions are short on purpose: they dissolve hard five minutes after they start, by the clock. The token's expiry is fixed at the session's start plus five minutes and thirty seconds, a grace window and never longer. The certification never leaves the enclave; the token stands in for it while the session lasts. It is also the missing half of session binding (Chapter 18): a token bound to a session is what lets the session, rather than a default, decide whose certifications apply.
+>
+> 2026.11.0 laid two pieces of the ground. The vault is now a required system cabinet that takes writes only from Identity and is read only through the admin door, and it holds the cert catalog cache. And a persona's `zen_ai_certs` drawer takes writes only from tools, a lock no cabinet rule can loosen. The grants themselves still live in the persona's cabinet, and the token is not built.
 
 `zen_dojotools_identity mode=cert_list` answers two questions in one call: what certifications exist (the live catalog) and what the resolved caller actually holds.
 
-> **Not yet built.** Certifications do not expire and are not checked against a revocation list at use time. A grant stays in force until it is revoked explicitly. Expiry and lifecycle are design direction.
+> **Not yet built.** Certifications do not expire at use. Every new grant records `not_after`, one year out, but no check reads it, and nothing consults a revocation list. A grant stays in force until it is revoked explicitly. Enforcing expiry, and the rest of the lifecycle, is design direction.
 
 ## 19.5 Scope
 

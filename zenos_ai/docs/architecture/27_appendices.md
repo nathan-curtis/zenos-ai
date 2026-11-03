@@ -130,14 +130,14 @@ Every "Not yet built" box in the book, in one place.
 |---|---|---|
 | 4 | History cabinet as long-term episodic memory | In active development |
 | 4 | Self model layers (drives and values, meta-awareness); trajectory and prediction in SuperSummary | Design direction |
-| 8 | FileCabinet certification gate, single exit, envelope; no bypass traverse checking through mounts; security resolved before a LiveDrawer target runs | Scope of 2026.11.0 'This Is Spinal Tap' |
+| 8 | FileCabinet's canonical response envelope | Not yet; the gate and single exit landed in 2026.11.0 |
 | 10 | Tool search: send core tools and discover the rest on demand | Depends on Home Assistant's agent integration |
 | 14 | Search and vector backends behind the index, seamless to the agent | Under investigation |
 | 17 | A real `session_token` in the prompt frame | Arrives with session binding |
-| 18 | Partner-aware authorization | Design direction |
+| 18 | Partner-aware authorization beyond the cabinets | Design direction; the cabinet gate reads partners, in audit mode |
 | 18 | Cryptographic binding of an MCP session to a persona | Design direction. Every call resolves to the default agent |
 | 19 | A registered OID space, so dotted certification names become real object identifiers | Being pursued |
-| 19 | Certification expiry and revocation checks at use time | Design direction |
+| 19 | Certification expiry and revocation checks at use time | Design direction; grants record `not_after` since 2026.11.0 |
 | 19 | Signed certificates issued by a certificate authority | Design direction; the entry is already shaped for it |
 | 19 | Secure enclave cabinet for certifications, accessed only through a representative token derived from the conversation ID (salted and hashed), expiring at session start plus 5:30 | In progress |
 | 19 | A gate that reads `waives_live_ack` | Recorded by CertAdmin, read by no tool |
