@@ -264,7 +264,7 @@ Fixes and tooling gaps found running 2026.10.0 on live installs, plus two certif
 
 ## 2026.10.2 — Security Patch
 
-**Status:** Release candidate 2 on `feat/2026.10.2` (cut from `v2026.10.1`)
+**Status:** Released 2026-11-03 (security patch on 2026.10.0, `feat/2026.10.2`)
 
 Three authorization fixes, plus the field fixes from beta testing that break things or lose data. None changes how a correctly behaving agent works. Everything else from the same testing ships in 2026.11.0.
 
