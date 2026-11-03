@@ -95,7 +95,7 @@ The `read_state` response includes a `lens` field describing the handoff to the 
 
 ## Zone Discovery
 
-Discovery uses `device_entities(device_id)` to walk the full device tree for each alarm panel device — no entity IDs are hardcoded. Zones are classified by `device_class` and paired by `_fault` / `_bypass` `object_id` suffix convention.
+Discovery uses `device_entities(device_id)` to walk the full device tree for each alarm panel device, including the panel's child devices (HA 2026.9+, Security Manager 5.7.0) — no entity IDs are hardcoded. Zones are classified by `device_class` and paired by `_fault` / `_bypass` `object_id` suffix convention.
 
 Zone states:
 - `state` — `on` (open/active) or `off` (closed/secure)

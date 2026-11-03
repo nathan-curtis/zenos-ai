@@ -1,6 +1,6 @@
 # ZenOS-AI Zammad (Radar) Plugin
 
-**Version:** 0.5.1 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
+**Version:** 0.5.3 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
 **Package:** `packages/zenos_ai/plugins/zammad/zammad.yaml`
 **MCP-facing script:** `zen_dojotools_servicedesk`
 **Lens Bus stack provider:** `zen_stack_radar`
@@ -42,6 +42,8 @@ Use `mode=help` for the full field catalog. Key modes:
 | `article_add` | Add an internal note or email reply to a ticket. |
 | `articles_list` | List all articles on a ticket. |
 | `ticket_tag` | Add a tag to a ticket. |
+| `ticket_untag` | Remove a tag from a ticket. Needs `ticket_id` and `tag`. |
+| `ticket_retag` | Replace one tag with another, for example moving a ticket between release trains. Needs `ticket_id`, `from_tag` (removed) and `tag` (added), and the two must differ. It adds `tag` first and removes `from_tag` only if the add succeeded, so a ticket never ends up with neither. The response carries `added`, `removed` and both HTTP statuses. |
 | `triage_set` | Record structured Radar triage metadata (rank, lane, sequence, blocked_by, milestone, release_train) as deterministic `radar_*` tags plus a receipt note. |
 | `triage_get` | Read triage metadata back from ticket tags and receipt notes. |
 | `tickets_by_anchor` | Find tickets tagged with an HA slug — label, area, person, zone, company, family, or household. |
@@ -158,6 +160,8 @@ A successful configure call connects to Zammad, writes the URL to `integrations_
 
 | Version | Change |
 |---------|--------|
+| v0.5.3 (2026.11.0) | HA naming: name outputs carry `entity_name` and `device_name` next to the legacy `friendly_name`. |
+| v0.5.2 (2026.11.0) | `ticket_untag` and `ticket_retag`. A missing required field returns `reason: "guarded: input_json.<field> is required for <mode>"` next to the unchanged `message`. The help version matches the header (it said 0.4.0). |
 | v0.4.0 (2026.7.1 fix) | `ticket_create`/`ticket_update` priority normalization — bare numbers/words (`high`, `3`) now map to Zammad's canonical `"3 high"` form; previously silently ignored by the Zammad API, leaving tickets at default priority with no error. `zen_stack_radar` lens manifest: `required_labels` changed `["radar"]` → `["zammad"]`, `radar` moved to optional alongside `servicedesk`/`tickets`. |
 | v0.4.0 (Radar) | `radar_setup` mode: idempotent init wizard (find-or-creates house/zenos personas, writes `radar_defaults` to household cabinet). `ticket_assign` mode. `batch_update` mode. `object_attribute_create` mode. `reporter` shorthand on `ticket_create`: `house`=household persona, `zenos`=dev persona. `ticket_id` accepts display number (e.g. `10073`) or raw DB id. |
 | v0.3.1 | Baseline Radar: `configure`, `ticket_create/get/find/list/search/update/close/complete`, `article_add/list`, `triage_set/get`, `tickets_by_anchor`, `ticket_link/unlink`, `customer_find/create`, `org_find/create`, `queue_get`, `view_get`, `workflow_context_get`. `zen_stack_radar` Lens Bus registration. |

@@ -46,6 +46,7 @@ Don't touch it. Don't look at it. Don't EVEN point at it. Once cabinet enforceme
 **FileCabinet interface cleanup.** The `action_type` field moves to `mode=`, with merge and replace behavior in `write_mode=`, and a compatibility shim carries existing callers. It follows the audit, because the audit maps the same callers.
 
 **Also planned**
+- Home Assistant's naming model: names in parts, `friendly_name` as legacy only, and child devices. See [Names in Parts](#names-in-parts).
 - Every tool guards its inputs (the contract sweep begun in 2026.10.1).
 - One configure contract across plugin setup.
 - Identity and Labels event-ordering hardening.
@@ -152,6 +153,19 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 
 ---
 
+## Names in Parts
+
+Home Assistant now builds a name from parts: the entity's own name, its device's name and its area. It plans to deprecate the `friendly_name` attribute and later remove it; it is still set today, and no removal date is announced. HA 2026.9 also added child devices: a device that is part of another (`parent_device_id`), separate from the hub HA reaches a device through (`via_device_id`).
+
+ZenOS speaks that model in 11.0.
+
+- **Nothing decides anything from `friendly_name`.** Inspect decides that an entity exists from its state object, so an entity without the attribute still returns its state and attributes. Room sensors find themselves by their room, and Room Manager finds a person's zone sensor by the person, not by a display name.
+- **Names come in parts.** Outputs carry `entity_name` and `device_name` (Inspect adds `area_name`) next to the name key they already had, never one composed string. Text composes from the parts where HA has `entity_name()` (2026.4 and later), else from the legacy `friendly_name`, else the entity id.
+- **`friendly_name` stays, as legacy,** while HA still sets it. ZenOS's own `friendly_name` fields (VolumeInfo, KFC, capsules) are its own schema and are unchanged.
+- **The device name is the effective one** (`device_name()`), so a name you set wins over the integration's.
+- **Child devices are followed.** Inspect's device tree keeps the hub (via) and the parent apart and lists child devices. A device selector in Index, Security Manager's zone walk and Spa Master's anchor device include child devices' entities, the way HA targets a parent.
+- **Gated on the HA version,** read from the core update entity. Without Supervisor there is no update entity, and the code detects the feature instead.
+
 ## Read this before upgrading
 
 - **Approve your agent.** An agent that never received `zenos.agent.basic` loses every ZenOS tool except help and onboarding until you approve it: run `zen_flynn_oobe mode=run` (or ask the agent to) and say yes to the push. An agent you approved at the end of onboarding in 2026.10 already holds it. Until then, dashboard buttons and your own Developer Tools calls to ZenOS tools are refused too. The push goes to `notify.admin_devices` until Postman has a profile; if no push can reach you, use the console override ([Install Guide](../getting_started/install.md#if-no-push-can-reach-you)).
@@ -170,6 +184,7 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **`run_repair` has one action, `acl_migrate`.** The 4.5.6 repair names are refused, and `maint_4_5_6.yaml` and `repair_fam_cab_volumeinfo.yaml` are gone. The cabinet factory no longer takes `family_guid`.
 - **`reset_all` wipes.** Cabinet admin's `reset_all` did nothing while answering success; it now wipes every cabinet. A wipe clears the console override and every cert along with everything else, so throw the override from the console and re-request certs afterwards.
 - **If `script.zen_admintools_kungfu_loader` shows unavailable,** delete its entity registry row. The loader was retired in this release.
+- **Inspect's `device_tree.parent_name` is now `via_device_name`.** It always held the hub's name, not a parent's. `parent_device_name` is the child-device parent now. Anything of your own that reads `parent_name` needs the new key.
 - **Your own copy of the scheduler loop** needs the same fix as the scheduler (see Fixed): sleep the gap since the previous subscriber, not each subscriber's whole delay.
 
 ---
@@ -193,6 +208,8 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **Approval first.** `zen_flynn_oobe mode=run` asks for the `zenos_agent_basic` bundle before the setup protocol; `complete` answers `admission_pending` while the pass is still missing; `status` reports `badge_held`. Flynn's Sentinel posts one "waiting for approval" notice for an onboarded agent without the pass, and clears it once the pass is granted.
 - **Views before approval.** Identity `whoami` shows an unapproved agent only itself (name, cabinet, onboarded, `has_basic: false`) and the next step. `zen_health_report` covers only the approval path; the full report names the house's areas and devices.
 - **Plain cert descriptions and approval prompts, dated grants, and the cert catalog cached in the vault.** See [Certs, Renamed and Readable](#certs-renamed-and-readable). `cert_list` gains `catalog_source` and `force_refresh`; the scheduler's script reloads and Flynn keep the cache fresh. It also answers with plain `notes` when grants are still under an old name or held above a cert's `max_level`, since that's the one place the agent learns its grant state.
+- **Name parts and child devices.** See [Names in Parts](#names-in-parts). Inspect adds `entity_name`, `device_name` and `area_name`, and its device tree adds `via_device_name`, `parent_device_id`, `parent_device_name` and `child_devices`. `device_info` adds `parent_device_id` and `child_devices`, and `device_list` adds `parent_device_id`. ZQ-1 adds `entity_name_regex` and `device_name_regex`.
+- **Radar moves a ticket between tags.** `ticket_untag` removes a tag. `ticket_retag` swaps one for another: it adds the new tag first and removes the old one only if the add worked, so a ticket never ends up with neither.
 - **The vault is a required system cabinet.** Flynn labels and initializes it on boot. `sensor.zen_vault_cabinet_resolved` resolves only when exactly one cabinet carries `zen_vault_cabinet`. Its read rule is the admin door: Cabinet Writer's new `get` mode is the one way to read it.
 
 ## Changed
@@ -210,6 +227,7 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **Cabinet labels are gated.** Labels needs `zenos.system.cabinet_admin` level 2 to tag or untag a cabinet, or to touch a `zen_*cabinet` label, so a second cabinet can't be tagged as the vault and knock the resolver offline.
 - **Inventory area modes take `homeassistant_area_id`,** as the field always was; the description and quickstart said `area=`. A call with no area is refused with what it needs.
 - **The agent, not a persona name,** in shipped help text, descriptions and cert text. Zammad's audit actor is the configured persona name, else `agent`.
+- **`friendly_name_regex` outlives `friendly_name`.** Once HA stops setting the attribute, it matches the device name + entity name. While HA sets it, matches are unchanged.
 - **Inspect fetches lens evidence only on request.** A drawer peek no longer calls lens providers on its own. Pass `+lenses` or `lenses=` to get evidence. Fetched evidence is merged by item across anchors and providers, and `providers` carries status and counts, not a second copy of the documents.
 
 ## Fixed
@@ -263,6 +281,7 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 - **Cabinet factory waits for the GUID** (up to 10 seconds) and answers an error instead of a false "initialized".
 - **Provisioner's deprovision removes every type label** as a list, where it crashed on joined label names, and keeps `zen_cabinet`, so a freed slot stays a slot.
 - **Taskmaster's almanac works on a busy calendar.** It copied the whole calendar response into one variable and went past Home Assistant's 262,144-character template limit on every call. It keeps four fields per event now.
+- **Calendar finds a calendar by its name.** A `calendar_name` given as a display name never resolved: the match was set inside a loop and never left it, so only entity ids worked. It matches the entity name, the device + entity name, or the legacy friendly_name.
 - **Calendar start and end take a space-separated datetime** (`2026-11-14 18:00:00`), not only a `T`.
 - **FileCabinet takes a list `volume_entity_id`.** An MCP client sends an array as a JSON list string, which crashed the wrapper on every call, help included. The wrapper and the engine now read a list or a JSON list string as its first entry, for `destination_volume_entity_id` too.
 - **The cert catalog has no gaps.** `cert_audit` fills short-form cert entries with their gates, description and `max_level`, so an approval prompt no longer reads "no description on file". A grant no longer logs two "Disallowed recursion" warnings.

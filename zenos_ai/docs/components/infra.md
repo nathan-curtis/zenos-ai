@@ -184,6 +184,7 @@ Gates `zwave_diag_enable` only (x-class, cert only — no live-ack tier). Grant 
 
 | Version | Change |
 |---|---|
+| 1.8.0 (2026.11.0) | HA naming: Z-Wave device lookup and device names use `device_name()`, so a name the user set wins. Name outputs carry `entity_name` and `device_name` next to the legacy `friendly_name`. |
 | 1.4.2 (2026-08-15) | d-class household-admin acknowledgment delegated to the shared `zen_dojotools_identity mode=request_live_ack` chokepoint, replacing a hand-rolled fire+poll block. Also fixed the underlying `notify_target` default — the acknowledgment path had been silently failing closed since it was first built (`mobile` was never a real dispatch target). |
 | 1.3.0 | Added `mode=log` (tail + restart/reload/error search peek) |
 | 1.2.0 | Added `mode=ha` (HA supervisor/addon/disk health); HA platform updates folded into `mode=updates` |

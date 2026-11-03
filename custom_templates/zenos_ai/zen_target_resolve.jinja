@@ -1,4 +1,7 @@
-{#- zen_target_resolve.jinja — Version: 1.0.0 -#}
+{#- zen_target_resolve.jinja — Version: 1.1.0 -#}
+{#- 1.1.0: HA naming parts (name_parts), version gate (ha_at_least), and
+    child-device expansion (device_children, device_entities_all).
+    discover_targets returns the name parts. -#}
 
 {#- <editor-fold desc="Docs" defaultstate="collapsed"> -#}
 {#- <editor-fold desc="API" defaultstate="collapsed"> -#}
@@ -53,10 +56,142 @@ entity_extended_notes(entity_id, exclude_labels)
   tool built on this macro surface it automatically, not just the tools
   that happened to be written with that specific case in mind.
   @returns JSON array of {label, description} objects, empty if none.
+
+ha_at_least(major, minor)
+  HA core version gate, read from update.home_assistant_core_update
+  (installed_version). @returns 'true', 'false', or 'unknown' (no
+  Supervisor, so no update entity). Callers decide what unknown means;
+  the macros below fall back to feature detection.
+
+name_parts(entity_id)
+  The HA naming parts for one entity, never one composed string: the
+  entity's own name, its device's effective name (the user-set name
+  when there is one), area, floor, and parent device (child devices,
+  HA 2026.9+). The consumer composes. entity_name is '' for a main
+  entity that takes its device's name. friendly_name is the legacy
+  attribute, present only while HA still sets it; nothing should
+  decide anything from it.
+  HA older than 2026.4 has no entity_name(): the entity part is the
+  friendly_name with the device name prefix taken off.
+  @returns JSON {entity_id, exists, entity_name, device_id, device_name,
+    parent_device_id, parent_device_name, area_id, area_name, floor_id,
+    floor_name, friendly_name}.
+
+device_children(device_id)
+  Child device ids of a parent device (HA 2026.9+; [] before that).
+  HA has no template function for this; a child shares its parent's
+  config entry, so the candidates are that entry's entities' devices.
+  @returns JSON array of device ids.
+
+device_entities_all(device_id)
+  device_entities() for the device plus every child device, the same
+  set HA's own action targeting reaches through a parent.
+  @returns JSON array of entity_ids, deduped.
 #}
 {#- </editor-fold> -#}
 {#- </editor-fold> -#}
 
+
+{#-
+@macro: ha_at_least
+@desc: HA core version gate. See API doc above.
+@param: major (int), minor (int) - e.g. 2026, 9.
+@returns: 'true' | 'false' | 'unknown'.
+@usage: {{ TARGET.ha_at_least(2026, 9) | trim == 'true' }}
+-#}
+{%- macro ha_at_least(major, minor) -%}
+  {%- set _v = state_attr('update.home_assistant_core_update', 'installed_version') | default('', true) | string | trim -%}
+  {%- if _v in ['', 'unknown', 'unavailable', 'None'] -%}
+    unknown
+  {%- else -%}
+    {%- set _p = _v.split('.') -%}
+    {%- set _maj = _p[0] | int(0) -%}
+    {%- set _min = _p[1] | int(0) if _p | length > 1 else 0 -%}
+    {{- 'true' if (_maj > major or (_maj == major and _min >= minor)) else 'false' -}}
+  {%- endif -%}
+{%- endmacro -%}
+
+{#-
+@macro: name_parts
+@desc: HA naming parts for one entity, not composed. See API doc above.
+@param: entity_id (string).
+@returns: JSON object.
+@usage: {%- set N = TARGET.name_parts('light.kitchen') | from_json -%}
+-#}
+{%- macro name_parts(entity_id) -%}
+  {%- set _e = entity_id | string | trim -%}
+  {%- set _exists = (states[_e] is not none) if ('.' in _e) else false -%}
+  {%- set _fn = state_attr(_e, 'friendly_name') if _exists else none -%}
+  {%- set _v = ha_at_least(2026, 4) | trim -%}
+  {%- set _has_en = _v == 'true' or (_v == 'unknown' and entity_name is defined) -%}
+  {%- set _dev = device_id(_e) if _exists else none -%}
+  {%- set _dn = device_name(_dev) if _dev else none -%}
+  {%- if _has_en -%}
+    {%- set _en = entity_name(_e) -%}
+  {%- elif _fn is string and _dn and _fn == _dn -%}
+    {%- set _en = '' -%}
+  {%- elif _fn is string and _dn and _fn.startswith(_dn ~ ' ') -%}
+    {%- set _en = _fn[(_dn | length) + 1:] -%}
+  {%- else -%}
+    {%- set _en = _fn -%}
+  {%- endif -%}
+  {%- set _vc = ha_at_least(2026, 9) | trim -%}
+  {%- set _par = device_attr(_dev, 'parent_device_id') if (_dev and _vc != 'false') else none -%}
+  {%- set _area = area_id(_e) if _exists else none -%}
+  {%- set _floor = floor_id(_area) if _area else none -%}
+  {{- {
+    'entity_id': _e,
+    'exists': _exists,
+    'entity_name': _en,
+    'device_id': _dev,
+    'device_name': _dn,
+    'parent_device_id': _par,
+    'parent_device_name': device_name(_par) if _par else none,
+    'area_id': _area,
+    'area_name': area_name(_area) if _area else none,
+    'floor_id': _floor,
+    'floor_name': floor_name(_floor) if _floor else none,
+    'friendly_name': _fn
+  } | to_json -}}
+{%- endmacro -%}
+
+{#-
+@macro: device_children
+@desc: Child device ids of a parent device. See API doc above.
+@param: dev (string) - device id.
+@returns: JSON Array of device ids.
+@usage: {{ TARGET.device_children(dev) | from_json }}
+-#}
+{%- macro device_children(dev) -%}
+  {%- set ns = namespace(kids=[]) -%}
+  {%- if dev and ha_at_least(2026, 9) | trim != 'false' -%}
+    {%- for _ce in (device_attr(dev, 'config_entries') or []) | list -%}
+      {%- set _title = config_entry_attr(_ce, 'title') -%}
+      {%- for _ent in (integration_entities(_title) if _title else []) -%}
+        {%- set _d = device_id(_ent) -%}
+        {%- if _d and _d != dev and _d not in ns.kids and device_attr(_d, 'parent_device_id') == dev -%}
+          {%- set ns.kids = ns.kids + [_d] -%}
+        {%- endif -%}
+      {%- endfor -%}
+    {%- endfor -%}
+  {%- endif -%}
+  {{- ns.kids | to_json -}}
+{%- endmacro -%}
+
+{#-
+@macro: device_entities_all
+@desc: A device's entities plus its child devices' entities.
+@param: dev (string) - device id.
+@returns: JSON Array of entity_ids.
+@usage: {{ TARGET.device_entities_all(dev) | from_json }}
+-#}
+{%- macro device_entities_all(dev) -%}
+  {%- set ns = namespace(e=(device_entities(dev) | list) if dev else []) -%}
+  {%- for _k in device_children(dev) | from_json -%}
+    {%- set ns.e = ns.e + (device_entities(_k) | list) -%}
+  {%- endfor -%}
+  {{- ns.e | unique | list | to_json -}}
+{%- endmacro -%}
 
 {#-
 @macro: resolve_room_entities
@@ -139,7 +274,8 @@ entity_extended_notes(entity_id, exclude_labels)
 @param: entity_id, room, label, domain_pattern - same as resolve_targets.
 @param: exclude_labels (list) - passed straight through to
   entity_extended_notes per entity (typically [room, <domain label>, 'dojotools']).
-@returns: JSON Array of {entity_id, friendly_name, state, extended_notes}.
+@returns: JSON Array of {entity_id, entity_name, device_name, area_name,
+  friendly_name (legacy, null once HA drops it), state, extended_notes}.
 @usage: {{ TARGET.discover_targets('', room, label, 'lock\\.', [room, 'ext_lock', 'dojotools']) | from_json }}
 -#}
 {%- macro discover_targets(entity_id='', room='', label='', domain_pattern='', exclude_labels=[]) -%}
@@ -149,9 +285,13 @@ entity_extended_notes(entity_id, exclude_labels)
   {%- for e in _list -%}
     {%- set _notes_raw = entity_extended_notes(e, exclude_labels) -%}
     {%- set _notes = (_notes_raw | from_json) if _notes_raw is string else _notes_raw -%}
+    {%- set _n = name_parts(e) | from_json -%}
     {%- set ns.items = ns.items + [{
       'entity_id': e,
-      'friendly_name': state_attr(e, 'friendly_name') | default(e, true),
+      'entity_name': _n.entity_name,
+      'device_name': _n.device_name,
+      'area_name': _n.area_name,
+      'friendly_name': _n.friendly_name,
       'state': states(e),
       'extended_notes': _notes
     }] -%}

@@ -1,6 +1,16 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Index Cluster
-# Version: 5.3.1
+# Version: 5.4.0
+# v5.4.0: HA naming and child devices (Query 5.2.0, Inspect 5.3.0, Index 5.2.0).
+#   Inspect: an entity exists when HA has a state for it (friendly_name is not
+#   an existence test); output adds entity_name, device_name and area_name,
+#   friendly_name stays as a legacy field (null once HA drops it); device names
+#   are the effective name (device_name()); device_tree keeps via (hub) and
+#   parent (child devices, HA 2026.9+) apart and lists child_devices, and
+#   parent_name (which held the via device) is now via_device_name. Query:
+#   entity_name_regex and device_name_regex; friendly_name_regex matches the
+#   device + entity name once friendly_name is gone. Index: a device selector
+#   includes its child devices' entities, the way HA targets a parent.
 # v5.3.1: says "the agent" in its help and descriptions, not a persona name.
 # v5.3.0: onboarding gate on Query 5.1.1, Inspect 5.2.1 and Index 5.1.4
 #   (zen_os_1 entry_gate): an agent without zenos.agent.basic gets help,
@@ -192,7 +202,7 @@ script:
                 tool='zen_dojotools_query',
                 display_name='Query — ZQ-1 Entity Selector',
                 tier='dojotools',
-                version='5.1.2',
+                version='5.2.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=[],
@@ -265,7 +275,13 @@ script:
         \"Regex on entity_id string. SEED: scans ALL states when pipe is empty. FILTER: narrows existing pipe. Example: master_bath|shower.\",
 
       \"friendly_name_regex\":
-        \"Regex on friendly_name attribute. SEED: iterates ALL states when pipe is empty — hostile-environment room discovery. FILTER: narrows existing pipe. Use (?i) for case-insensitive.\",
+        \"Regex on the display name: friendly_name while HA still sets it, else device name + entity name. SEED: iterates ALL states when pipe is empty — hostile-environment room discovery. FILTER: narrows existing pipe. Use (?i) for case-insensitive.\",
+
+      \"entity_name_regex\":
+        \"Regex on the entity's own name only (entity_name(), no device part). Same SEED/FILTER roles.\",
+
+      \"device_name_regex\":
+        \"Regex on the device name (device_name(), user-set name if any). Same SEED/FILTER roles.\",
 
       \"shortcuts\": {
         \"numeric\":
@@ -381,6 +397,8 @@ script:
             - regex
             - entity_id_regex
             - friendly_name_regex
+            - entity_name_regex
+            - device_name_regex
             - sort
             - shortcuts
           _zq1_unrecognized_keys: >-
@@ -525,7 +543,7 @@ script:
                 tool='zen_dojotools_inspect',
                 display_name='Inspect — Deep Entity Inspector',
                 tier='dojotools',
-                version='5.2.1',
+                version='5.3.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=[],
@@ -561,7 +579,7 @@ script:
                   "inputs": {
                     "entity_id": "Required for mode=inspect. Single entity_id or list. Not required for help/area_info/floor_info/device_info.",
                     "output_fields": "Field selector. Comma-separated string or list. Controls which blocks appear per entity. See output_fields_reference.",
-                    "extended": "Boolean (default false). Adds device_tree: via_device_id, parent_name, siblings, config_entries.",
+                    "extended": "Boolean (default false). Adds device_tree: via_device_id/via_device_name (hub), parent_device_id/parent_device_name (child devices, HA 2026.9+), child_devices, siblings, config_entries.",
                     "label_targets": "Label names — resolves drawer blurbs from Dojo cabinet. Injected by Index; usable in direct calls.",
                     "drawer_key": "Cabinet sensors only. Inspects a specific drawer key — value truncated to 64 chars.",
                     "lenses": "Optional. Lens providers to fetch evidence from, comma-separated registry keys (see domain_context.lens_options). Same effect as +lenses limited to those providers.",
@@ -608,7 +626,7 @@ script:
                     ]
                   },
                   "per_entity_output_structure": {
-                    "always": ["entity_id", "friendly_name", "domain", "state", "labels"],
+                    "always": ["entity_id", "entity_name", "device_name", "area_name", "friendly_name (legacy; null once HA drops it)", "domain", "state", "labels"],
                     "default_on": ["last_changed", "last_updated", "device (incl. floor_id, device_labels, area_labels)", "volume (cabinet only)"],
                     "opt_in": ["+attributes", "+statistics", "+history"],
                     "extended_only": ["device_tree"],
@@ -766,14 +784,19 @@ script:
             then:
             - variables:
                 _device_info_payload: >-
+                  {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
                   {%- set _ents = device_entities(_target_dev) | list -%}
+                  {%- set _parent = device_attr(_target_dev, 'parent_device_id') if TARGET.ha_at_least(2026, 9) | trim != 'false' else none -%}
+                  {%- set _kids = TARGET.device_children(_target_dev) | from_json -%}
                   {%- set _cfe = device_attr(_target_dev, 'config_entry_id') -%}
                   {%- set _cfg = [_cfe] if _cfe else (device_attr(_target_dev, 'config_entries') or []) | list -%}
-                  {%- set _area = device_attr(_target_dev, 'area_id') -%}
+                  {%- set _area = device_attr(_target_dev, 'area_id') or (device_attr(_parent, 'area_id') if _parent else none) -%}
                   {%- set _floor = floor_id(area_name(_area)) if _area is not none else none -%}
                   {{ {
                     'device_id': _target_dev,
-                    'name': device_attr(_target_dev, 'name') | default('', true),
+                    'name': device_name(_target_dev) | default('', true),
+                    'parent_device_id': _parent,
+                    'child_devices': _kids,
                     'manufacturer': device_attr(_target_dev, 'manufacturer') | default('', true),
                     'model': device_attr(_target_dev, 'model') | default('', true),
                     'area_id': _area,
@@ -894,12 +917,13 @@ script:
           sequence:
           - variables:
               _zone_list_payload: >-
+                {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
                 {%- set ns = namespace(list=[]) -%}
                 {%- for s in states.zone | list -%}
                   {%- set eid = s.entity_id -%}
                   {%- set ns.list = ns.list + [{
                     'entity_id': eid,
-                    'name': state_attr(eid, 'friendly_name') | default('', true),
+                    'name': (TARGET.name_parts(eid) | from_json).entity_name | default('', true),
                     'lat': state_attr(eid, 'latitude') | default(none, true),
                     'lon': state_attr(eid, 'longitude') | default(none, true),
                     'radius': state_attr(eid, 'radius') | default(none, true),
@@ -927,6 +951,7 @@ script:
           sequence:
           - variables:
               _person_list_payload: >-
+                {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
                 {%- set _user_cabs = label_entities('zen_user_cabinet') | list -%}
                 {%- set ns = namespace(list=[]) -%}
                 {%- for s in states.person | list -%}
@@ -966,7 +991,7 @@ script:
                   {%- endif -%}
                   {%- set ns.list = ns.list + [{
                     'entity_id': eid,
-                    'name': state_attr(eid, 'friendly_name') | default('', true),
+                    'name': (TARGET.name_parts(eid) | from_json).entity_name | default('', true),
                     'state': states(eid),
                     'user_id': state_attr(eid, 'user_id') | default(none, true),
                     'device_trackers': (state_attr(eid, 'device_trackers') or []) | list,
@@ -1007,7 +1032,8 @@ script:
                     {%- set _area = device_attr(_dev, 'area_id') -%}
                     {%- set ns.list = ns.list + [{
                       'device_id': _dev,
-                      'name': device_attr(_dev, 'name') | default('', true),
+                      'name': device_name(_dev) | default('', true),
+                      'parent_device_id': device_attr(_dev, 'parent_device_id'),
                       'manufacturer': device_attr(_dev, 'manufacturer') | default('', true),
                       'model': device_attr(_dev, 'model') | default('', true),
                       'area_id': _area,
@@ -1135,9 +1161,14 @@ script:
                 {%- else -%}
                   unknown
                 {%- endif -%}
-              friendly_name: "{{- state_attr(current_entity, 'friendly_name') | default(current_entity) -}}"
-              # @todo - not solid using friendly_name to check for attributes
-              has_attrs: "{{- state_attr(current_entity, 'friendly_name') is not none -}}"
+              # The entity exists when HA has a state object for it. A display
+              # attribute (friendly_name) is not an existence test: HA plans
+              # to drop it.
+              has_attrs: "{{- (states[current_entity] is not none) if '.' in current_entity else false -}}"
+              name_parts: >-
+                {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
+                {{- TARGET.name_parts(current_entity) | from_json -}}
+              friendly_name: "{{- name_parts.friendly_name if name_parts is mapping else none -}}"
               state_str: "{{- states(current_entity) if has_attrs else 'unknown' -}}"
               last_changed: >
                 {%- if has_attrs -%}
@@ -1289,7 +1320,7 @@ script:
                   {{-
                     {
                       'device_id': dev_id,
-                      'name': device_attr(dev_id, 'name'),
+                      'name': device_name(dev_id),
                       'manufacturer': device_attr(dev_id, 'manufacturer'),
                       'model': device_attr(dev_id, 'model'),
                       'area_id': _dev_area,
@@ -1307,14 +1338,26 @@ script:
                 {%- if extended_mode -%}
                   {%- set dev_id = device_id(current_entity) -%}
                   {%- if dev_id is not none -%}
+                    {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
+                    {#- via = how HA reaches the device (a hub). parent = the
+                        product this device is part of (child devices, HA
+                        2026.9+). Different relationships, kept apart. -#}
                     {%- set via = device_attr(dev_id, 'via_device_id') -%}
+                    {%- set _parent = device_attr(dev_id, 'parent_device_id') if TARGET.ha_at_least(2026, 9) | trim != 'false' else none -%}
                     {%- set siblings = device_entities(dev_id) | reject('equalto', current_entity) | list -%}
+                    {%- set _kids = namespace(l=[]) -%}
+                    {%- for _k in TARGET.device_children(dev_id) | from_json -%}
+                      {%- set _kids.l = _kids.l + [{'device_id': _k, 'device_name': device_name(_k), 'entities': device_entities(_k) | list}] -%}
+                    {%- endfor -%}
                     {%- set _cfe = device_attr(dev_id, 'config_entry_id') -%}
                     {%- set config_entries = [_cfe] if _cfe else (device_attr(dev_id, 'config_entries') or []) | list -%}
                     {{- 
                       {
                         'via_device_id': via,
-                        'parent_name': device_attr(via, 'name') if via is not none else none,
+                        'via_device_name': device_name(via) if via is not none else none,
+                        'parent_device_id': _parent,
+                        'parent_device_name': device_name(_parent) if _parent else none,
+                        'child_devices': _kids.l,
                         'siblings': siblings,
                         'config_entries': config_entries
                       } 
@@ -1479,6 +1522,9 @@ script:
                 {%- set ns = namespace(
                                 out={
                                   'entity_id': current_entity,
+                                  'entity_name': name_parts.entity_name if name_parts is mapping else none,
+                                  'device_name': name_parts.device_name if name_parts is mapping else none,
+                                  'area_name': name_parts.area_name if name_parts is mapping else none,
                                   'friendly_name': friendly_name,
                                   'domain': domain,
                                   'state': state_str,
@@ -1659,6 +1705,9 @@ script:
                 {%- set ns = namespace(
                   out = {
                     'entity_id': current_entity,
+                    'entity_name': name_parts.entity_name if name_parts is mapping else none,
+                    'device_name': name_parts.device_name if name_parts is mapping else none,
+                    'area_name': name_parts.area_name if name_parts is mapping else none,
                     'friendly_name': friendly_name,
                     'domain': domain,
                     'state': state_str,
@@ -2298,7 +2347,7 @@ script:
         default: false
         selector:
           boolean:
-        description: Adds device_tree (via_device_id, parent, siblings, config_entries).
+        description: Adds device_tree (via device, parent device, child devices, siblings, config_entries).
       output_fields:
         required: false
         default: []
@@ -2466,7 +2515,7 @@ script:
                 tool='zen_dojotools_index',
                 display_name='Index — ZenOS Hypergraph Reasoner',
                 tier='dojotools',
-                version='5.1.4',
+                version='5.2.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=[],
@@ -2813,7 +2862,7 @@ script:
               {%- if _ents | length == 0 and device_1 | default('') | trim -%}
                 {%- set _devs = [device_1] if device_1 is string else (device_1 | list) -%}
                 {%- set _ns = namespace(e=[]) -%}
-                {%- for d in _devs -%}{%- set _ns.e = _ns.e + (device_entities(d | trim) | list) -%}{%- endfor -%}
+                {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}{%- for d in _devs -%}{%- set _ns.e = _ns.e + (TARGET.device_entities_all(d | trim) | from_json) -%}{%- endfor -%}
                 {%- set _ents = _ns.e | unique | list -%}
               {%- endif -%}
               {%- if _ents | length == 0 and integration_1 | default('') | trim -%}{%- set _ents = integration_entities(integration_1 | trim) | list -%}{%- endif -%}
@@ -2839,7 +2888,7 @@ script:
               {%- if _ents | length == 0 and device_2 | default('') | trim -%}
                 {%- set _devs = [device_2] if device_2 is string else (device_2 | list) -%}
                 {%- set _ns = namespace(e=[]) -%}
-                {%- for d in _devs -%}{%- set _ns.e = _ns.e + (device_entities(d | trim) | list) -%}{%- endfor -%}
+                {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}{%- for d in _devs -%}{%- set _ns.e = _ns.e + (TARGET.device_entities_all(d | trim) | from_json) -%}{%- endfor -%}
                 {%- set _ents = _ns.e | unique | list -%}
               {%- endif -%}
               {%- if _ents | length == 0 and integration_2 | default('') | trim -%}{%- set _ents = integration_entities(integration_2 | trim) | list -%}{%- endif -%}

@@ -37,7 +37,7 @@ Supports HA-native calendars (Google, Local, ICS), Microsoft 365, and any provid
 | Field | Required For | Description |
 |-------|-------------|-------------|
 | `action_type` | — | Operation. Default: `read`. |
-| `calendar_name` | `read`, `create`, `update`, `delete` | Calendar entity_id, friendly name, or `*` / blank for all. |
+| `calendar_name` | `read`, `create`, `update`, `delete` | Calendar entity_id, display name, or `*` / blank for all. A display name matches the calendar's entity name, its device + entity name, or the legacy friendly_name. |
 | `start` | `read` | Start of date range. ISO string (`2026-06-01T09:00:00`) or date string (`2026-06-01`). Default: today 00:00 local. |
 | `end` | `read` | End of date range. Default: tomorrow 00:00 local. |
 | `summary` | `create`, `update` | Event title. |
@@ -126,5 +126,6 @@ zen_dojotools_calendar:
 
 | Version | Change |
 |---------|--------|
+| 5.4.0 (2026.11.0) | A `calendar_name` given as a display name resolves. The match was never carried out of its loop, so only entity ids worked. It matches the entity name, device + entity name, or the legacy friendly_name. The calendar list adds `entity_name`. |
 | 2026.10.0 | `delete` gated on the new `calendar_control` certification (level 2). Response wrapped in the standard OS envelope. The update path's internal delete step unwraps its own enveloped response. |
 | v1.11.0 | Split from `dojotools_office.yaml`. No behavior changes — file relocation only. |

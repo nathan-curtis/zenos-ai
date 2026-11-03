@@ -1,4 +1,4 @@
-# Zen DojoTools Inspect — v5.2.1
+# Zen DojoTools Inspect — v5.3.0
 **File:** `zen_dojotools_inspect_readme.md`  
 **Type:** Technical Documentation  
 
@@ -56,7 +56,8 @@ That is why Inspect is the COMPOSE stage behind Index/HyperIndex. It turns "this
 For each entity inspected, the module returns:
 
 - entity_id
-- friendly_name
+- entity_name, device_name, area_name (the HA naming parts)
+- friendly_name (legacy)
 - state
 - domain
 - timestamps (suppressible via `-timestamps`)
@@ -72,6 +73,18 @@ Unsafe or unserializable values (objects, unsupported types, HA stringified dict
 are automatically normalized into JSON-compatible equivalents.
 
 This guarantees *all* Inspect results are future-safe for LLM consumption.
+
+### 🏷 Names Come in Parts (2026.11.0)
+Home Assistant builds a display name from parts and plans to deprecate the `friendly_name` attribute. Inspect returns the parts and never one composed string:
+
+- `entity_name`: the entity's own name (`entity_name()`). Empty for a main entity that takes its device's name.
+- `device_name`: the device's effective name (`device_name()`), which is the user-set name when there is one.
+- `area_name`: the entity's area.
+- `friendly_name`: legacy. Present while HA still sets it, null once HA drops it. Nothing in ZenOS decides anything from it.
+
+The caller composes a display name from the parts. On HA older than 2026.4, which has no `entity_name()`, `entity_name` is the friendly_name with the device name taken off the front.
+
+An entity exists when HA has a state object for it. A missing entity reads `unknown`, and an entity with no `friendly_name` still returns its state and attributes.
 
 ---
 
@@ -172,6 +185,8 @@ When an entity has an associated device, Inspect always includes a `device` bloc
 }
 ```
 
+`name` is the device's effective name (`device_name()`), so a name the user set wins over the integration's.
+
 Suppress with `-device` in `output_fields`. When no device is associated, the field is omitted.
 
 ### 🌲 Device Tree (Extended Mode)
@@ -180,15 +195,25 @@ When `extended: true`, entities with a device also include a `device_tree` block
 ```
 {
   "via_device_id": "..." | null,
-  "parent_name": "..." | null,
+  "via_device_name": "..." | null,
+  "parent_device_id": "..." | null,
+  "parent_device_name": "..." | null,
+  "child_devices": [{"device_id": "...", "device_name": "...", "entities": [...]}],
   "siblings": [...],
   "config_entries": [...]
 }
 ```
 
+HA keeps two device relationships apart, and so does the tree:
+
+- **via** is how HA reaches the device, usually a hub (`via_device_id`).
+- **parent** is the product a child device is part of (`parent_device_id`, HA 2026.9+). `child_devices` lists the other direction. On older HA both are null and the list is empty.
+
+> **Changed in 2026.11.0:** `parent_name` is gone. It held the *via* device's name, so it is now `via_device_name`.
+
 This is useful for:
 
-- mapping parent/child device relationships
+- mapping hub, parent and child device relationships
 - resolving integration config entries
 - discovering sibling entities on the same device
 
@@ -239,7 +264,7 @@ When `mode` is set to a registry mode, Inspect bypasses the entity loop entirely
 |---|---|---|
 | `area_info` | `area_id` (required) | name, floor_id, labels, entity_ids, entity_count, device_ids, device_count |
 | `floor_info` | `floor_id` (required) | name, area_ids, area_count |
-| `device_info` | `device_id` (required) | name, manufacturer, model, area_id, floor_id, labels, area_labels, config_entries, entity_ids, entity_count |
+| `device_info` | `device_id` (required) | name (effective), parent_device_id, child_devices, manufacturer, model, area_id (the parent's when the device has none), floor_id, labels, area_labels, config_entries, entity_ids, entity_count |
 | `area_list` | — | All areas: count, areas[]{area_id, name, floor_id, labels} |
 | `floor_list` | — | All floors: count, floors[]{floor_id, name, area_ids, area_count} |
 | `label_list` | — | All labels: count, labels[]{label_id, entity_count, area_count} |
@@ -300,7 +325,10 @@ Inspect outputs a unified, LLM-safe envelope:
   "results": [
     {
       "entity_id": "...",
-      "friendly_name": "...",
+      "entity_name": "...",          # HA naming parts; compose at the call site
+      "device_name": "..." | null,
+      "area_name": "..." | null,
+      "friendly_name": "..." | null, # legacy; null once HA drops it
       "domain": "...",
       "state": "...",
       "last_changed": "ISO-8601",    # present unless -timestamps
@@ -325,7 +353,10 @@ Inspect outputs a unified, LLM-safe envelope:
       },
       "device_tree": {               # extended=true only
         "via_device_id": "..." | null,
-        "parent_name": "..." | null,
+        "via_device_name": "..." | null,
+        "parent_device_id": "..." | null,
+        "parent_device_name": "..." | null,
+        "child_devices": [...],
         "siblings": [...],
         "config_entries": [...]
       },

@@ -2,7 +2,7 @@
 
 ### *Universal HyperGraph Index for Labels, Entities, Drawers & Metadata*
 
-**Version:** 5.1.0 (`zen_dojotools_index`)
+**Version:** 5.2.0 (`zen_dojotools_index`)
 **Category:** DojoTools / Indexing
 **Icon:** `mdi:graphql`
 
@@ -144,6 +144,7 @@ Everything returns as a single stable dictionary.
 | `label_1`         | string                           | First label                                                |
 | `entities_2`      | list                             | Second entity set                                          |
 | `label_2`         | string                           | Second label                                               |
+| `device_1` / `device_2` | string or list             | Device ids. Each resolves to its entities plus the entities of its child devices (HA 2026.9+), the same set HA's own action targeting reaches through a parent. |
 | `operator`        | AND/OR/NOT/XOR/*                 | Set operation                                              |
 | `expand_entities` | bool                             | Whether to fetch deep metadata                             |
 | `filter_json`     | dict                             | ZenQuery-style filter                                      |
@@ -435,6 +436,10 @@ numeric_above:        # number — float(state) > value
 numeric_below:        # number — float(state) < value
 
 regex:                # string — applied to STATE STRING
+entity_id_regex:      # string — regex on entity_id; SEED or FILTER
+friendly_name_regex:  # string — regex on the display name (friendly_name while HA sets it, else device + entity name)
+entity_name_regex:    # string — regex on the entity's own name (2026.11.0)
+device_name_regex:    # string — regex on the device's effective name (2026.11.0)
 
 shortcuts:            # object of booleans (logical AND across all)
   numeric:            # true — only entities with valid numeric state

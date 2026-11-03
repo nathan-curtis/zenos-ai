@@ -72,7 +72,7 @@ The underlying mechanism took three wrong turns before landing right, worth know
 
 ## Dependencies
 
-- `custom_templates/zenos_ai/zen_target_resolve.jinja` — shared targeting core (`resolve_targets`, `resolve_room_entities`, `entity_extended_notes`, `discover_targets`)
+- `custom_templates/zenos_ai/zen_target_resolve.jinja` — shared targeting core (`resolve_targets`, `resolve_room_entities`, `entity_extended_notes`, `discover_targets`, and since 1.1.0 `name_parts`, `device_children`, `device_entities_all` and `ha_at_least`). `discover` entries carry `entity_name`, `device_name` and `area_name`; `friendly_name` is legacy
 - `custom_templates/zenos_ai/zen_os_1.jinja` — `envelope()` macro (response shape)
 - `zen_dojotools_identity` — `resolve_caller_identity` (set gate), `request_live_ack` (escalation + every exterior unlock)
 - `zen_dojotools_persona_editor` — `zenos.actuation.lock_control` certification grant/revoke

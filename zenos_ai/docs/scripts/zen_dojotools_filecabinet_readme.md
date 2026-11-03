@@ -1,4 +1,4 @@
-# Zen DojoTools FileCabinet — v6.36.2
+# Zen DojoTools FileCabinet — v6.36.3
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 **ZenOS Release:** 2026.11.0 'This Is Spinal Tap'

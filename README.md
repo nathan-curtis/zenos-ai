@@ -34,6 +34,8 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 
 **FileCabinet, rebuilt to be lockable.** One exit per action, honest writes (an unconfirmed write says so instead of claiming success), every write a stated merge or replace, a drawer envelope with room for its own rules, and an admin door (`zen_admintools_cabinet_writer`) as the one writer for structural, system and vault cabinet writes.
 
+**Names in parts.** Home Assistant is moving from one `friendly_name` to names built from parts, and has added child devices. ZenOS reads the parts (`entity_name`, `device_name`, area), keeps `friendly_name` only as legacy, never decides anything from it, and follows child devices the way HA targets a parent.
+
 **Upgrading?** Approve your agent if it never got its pass: run `zen_flynn_oobe mode=run` and say yes to the push. Certs are renamed under `zenos.*`; old grants keep working until 2026.12. The ACL migration is mandatory. Flynn runs it on its own; you can dry-run it first with `zen_dojotools_identity mode=acl_migrate` and review the plan. Expect audit lines in the log; they're the preview of enforcement, not errors. See [Read this before upgrading](zenos_ai/docs/releases/spinal_tap.md#read-this-before-upgrading).
 
 **Also in the beta:** semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, Cortex 45, every cert under `zenos.*` with a plain-words approval prompt, and the vault as a required cabinet that holds the cert catalog.

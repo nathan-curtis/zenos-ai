@@ -146,9 +146,9 @@ This stage extracts truth from Home Assistant and turns each entity into a layer
 
 | Overlay | What It Contributes |
 |---|---|
-| Base entity | Entity ID, domain, state, friendly name, timestamps |
+| Base entity | Entity ID, domain, state, name parts (entity name, device name, area name; `friendly_name` as legacy), timestamps |
 | Label overlay | Semantic labels and label descriptions |
-| Device/area overlay | Device ID, area, integration, optional device tree |
+| Device/area overlay | Device ID, effective device name, area, integration, optional device tree (via hub, parent device, child devices) |
 | Cabinet overlay | Header-only cabinet identity for cabinet sensor entities |
 | Person overlay | ZenOS identity/presence block for `person.*` entities |
 | Drawer blurbs | Label-targeted FileCabinet context snippets |

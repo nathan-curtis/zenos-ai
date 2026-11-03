@@ -79,7 +79,7 @@ All labels use the `spa_` prefix. Apply these to your ESPHome entities via `mode
 | `spa_audio` | `media_player` / `switch` | Audio control entity. |
 | `spa_cover` | `cover` | Motorized cover entity. Domain-validated (rejects `update.*`). |
 
-Discovery cascade: spa_climate anchor → device entity fallback → area scan → `hot_tub` area label search.
+Discovery cascade: spa_climate anchor → device entity fallback → area scan → `hot_tub` area label search. The anchor device's entities include its child devices (HA 2026.9+, Spa Manager 5.5.0).
 
 ---
 

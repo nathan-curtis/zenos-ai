@@ -331,4 +331,6 @@ feed is the missing third leg.
 | `exclude_integration` | string or list | Drop all entities from an integration. Stage 8e. Uses `integration_entities()`. |
 | `exclude_device` | string or list | Drop all entities on specific device_ids. Stage 8f. |
 | `entity_id_regex` | string | `regex_search()` against entity_id. If pipe is empty acts as SEED (iterates all states). If pipe has content, acts as FILTER. |
-| `friendly_name_regex` | string | `regex_search()` against `friendly_name` attribute. SEED or FILTER, same as `entity_id_regex`. Use `(?i)` prefix for case-insensitive: `"(?i)living room"`. |
+| `friendly_name_regex` | string | `regex_search()` against the display name: `friendly_name` while HA sets it, else device name + entity name. SEED or FILTER, same as `entity_id_regex`. Use `(?i)` prefix for case-insensitive: `"(?i)living room"`. |
+| `entity_name_regex` | string | `regex_search()` against the entity's own name only (`entity_name()`). SEED or FILTER. |
+| `device_name_regex` | string | `regex_search()` against the device's effective name (`device_name()`). No device, no match. SEED or FILTER. |

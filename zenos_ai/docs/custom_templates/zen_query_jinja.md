@@ -1,5 +1,5 @@
 ZenOS-AI Template Engine: Zen Query Engine (ZQ-1) Technical Specification  
-Version: 4.9.0 "Fry's Grandpa"  
+Version: 4.10.0  
 Status: Stable and required for all Zen DojoTools Query flows  
 
 ---
@@ -99,7 +99,7 @@ ZQ-1 is strictly sequential and deterministic.
    * State filters: `state_equals`, `include_states`, `exclude_states`
    * Exclusion suite (ZQ-1 ACL filters): `exclude_entity_ids`, `exclude_domain`, `exclude_label`, `exclude_integration`, `exclude_device`
    * Numeric filters: `numeric_above`, `numeric_below`
-   * Regex filters: `regex` (state match), `entity_id_regex` (entity ID match), `friendly_name_regex` (friendly name match), `label_regex` (label match)
+   * Regex filters: `regex` (state match), `entity_id_regex` (entity ID match), `friendly_name_regex` (display name match), `entity_name_regex` and `device_name_regex` (one name part), `label_regex` (label match)
    * Sort configuration: `sort` (mapping)
    * Shortcuts pack: `shortcuts` (mapping, default `{}`)
    * Paging: `limit`, `offset`
@@ -146,7 +146,8 @@ ZQ-1 is strictly sequential and deterministic.
    9. Numeric filters
    10. `regex` — state string match
    10b. `entity_id_regex` — entity ID string match
-   10c. `friendly_name_regex` — friendly name match
+   10c. `friendly_name_regex` — display name match
+   10c2. `entity_name_regex` / `device_name_regex` — one name part
    10d. `stats_eligible` — recorder-eligibility filter
 
    Each step builds a new list and replaces `pipe.ids`. If any step produces an empty list, later steps still run but have no effect. Exclusion stages (8b–8f) run after all inclusion filters — they cannot bring entities back in, making them safe for ACL injection.
@@ -411,9 +412,9 @@ Example — all Zigbee motion sensors by naming convention:
 
 ---
 
-### `friendly_name_regex` (string) — v4.9.0
+### `friendly_name_regex` (string) — v4.9.0, updated v4.10.0
 
-* Filters entities by applying `regex_search()` to the `friendly_name` attribute.
+* Filters entities by applying `regex_search()` to the entity's display name: the `friendly_name` attribute while HA still sets it, else the device name + entity name HA composes it from. HA plans to deprecate `friendly_name`; this keeps existing filters matching after it does.
 * Applied after `entity_id_regex`.
 * When the entity list is empty and no `domain`, `label`, or `areas` is set, `friendly_name_regex` can seed the pipeline by scanning all states.
 
@@ -421,13 +422,25 @@ Useful when entities are named consistently in the UI but have inconsistent `ent
 
 Rules:
 
-* Entities with no `friendly_name` attribute are skipped (treated as non-match).
-* Pattern is matched against the full `friendly_name` string.
+* An entity with no name surface at all is a non-match.
+* Pattern is matched against the full display name string.
+* On HA older than 2026.4, which has no `entity_name()`, the entity part is the friendly_name with the device name taken off the front.
 
 Example — all sensors whose friendly name contains "Temperature":
 
 ```json
 {"domain": "sensor", "friendly_name_regex": "Temperature"}
+```
+
+### `entity_name_regex` / `device_name_regex` (string) — v4.10.0
+
+* Same SEED and FILTER roles as `friendly_name_regex`, each on one name part.
+* `entity_name_regex` matches the entity's own name (`entity_name()`), with no device part. A main entity that takes its device's name has an empty entity name.
+* `device_name_regex` matches the device's effective name (`device_name()`, the user-set name when there is one). An entity without a device never matches.
+* Set both and an entity must match both.
+
+```json
+{"device_name_regex": "(?i)^sun$", "entity_name_regex": "(?i)dawn"}
 ```
 
 ---

@@ -261,13 +261,14 @@ states.sensor.<room>_state
 |---|---|
 | `state` | The resolved tier — see cascade order below |
 | `engaged_active` / `occupied_active` / `asleep_active` / `checking_active` | Always true/false, never null |
-| `*_last_trigger` | `{entity_id, friendly_name, last_changed}` or a timer-decay reason — why this tier is (or isn't) true |
+| `*_last_trigger` | `{entity_id, friendly_name, entity_name, device_name, last_changed}` (`friendly_name` is legacy) or a timer-decay reason — why this tier is (or isn't) true |
 | `emergency_active` / `paused_active` / `automation_active` / `cleaning_active` | `null` if this room has no `room_control_manager`/`emergency_latch` at all — distinct from `false` |
 | `room_control_entity` / `room_control_state` | The override select and its current value |
 | `room_timer_entity` / `room_timer_state` / `room_timer_class` | The shared clock's current status |
 | `zone_presence` | Sub-zone dict (e.g. Aqara FP2 desk/bench zones), `null` if unused |
 | `child_rooms` / `child_occupied` / `child_emergency` / `child_paused` | Present only when this room has children configured. `child_engaged` was retired 2026-08-23 — the child-Engaged→parent-Engaged cascade tier was collapsed into `child_occupied` (see cascade order below); `child_emergency`/`child_paused` are new, cascade all the way up regardless of the ensuite-cascade toggle. |
 | `last_trigger` | Top-level "why is `state` what it is right now" |
+| `room_state_room` | The room this sensor resolves (2026.11.0). The blueprint finds its own sensor by this attribute, not by its display name; the name is only used on the first render, before the attribute exists. |
 
 ### Cascade order (highest wins)
 
