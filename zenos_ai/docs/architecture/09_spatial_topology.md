@@ -55,6 +55,8 @@ Here is the topology answering a question a floor plan would:
 
 `mode=home_overview` rolls every room up into one whole-house snapshot, which is what the prompt uses for Friday's sense of the house as a whole (Chapter 17).
 
+These modes are also how Friday finds her way in. Room Manager is the root for "where" (Chapter 12), and a bare call answers with its own question words: `where` is `home_overview`, `where_room` is `get`, `route` is `pathfind`, and `emergency` is the crisis snapshot. When the question is about a geofenced zone instead of a room, the root points on to Zones.
+
 ## 9.3 Rooms find their things by shared labels
 
 Room Manager does not require every to-do list or calendar to be assigned to a room. A list or calendar that carries any label the area also carries is surfaced in that room's `+tasks` or `+calendar` slice automatically. Sharing a label is the assignment. This is the hypergraph from Chapter 7 doing work: two hyperedges that meet on a room make the room's world larger without anyone wiring it.
