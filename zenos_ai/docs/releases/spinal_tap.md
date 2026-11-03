@@ -50,7 +50,7 @@ Don't touch it. Don't look at it. Don't EVEN point at it. Once cabinet enforceme
 - Every tool guards its inputs (the contract sweep begun in 2026.10.1).
 - One configure contract across plugin setup.
 - Identity and Labels event-ordering hardening.
-- Display stays beta in 11.0; what ships doesn't change. Finishing it moves to 2026.12.0: the shared dashboard, interruption awareness on the remaining Media Manager watch paths, and expiry and dismissal tested against the real scheduler cadence.
+- Display stays beta in 11.0; what ships doesn't change. It gave up its place on the 11 board to Home Assistant's naming model (see [Names in Parts](#names-in-parts)). Finishing it moves to 2026.12.0: the shared dashboard, interruption awareness on the remaining Media Manager watch paths, and expiry and dismissal tested against the real scheduler cadence.
 
 **Later phase:** binding to the conversation or session. It needs its own design and acceptance criteria before it joins scope. The admission-token contract follows the OIDC plugin.
 
@@ -157,7 +157,7 @@ A gate is only as good as the engine behind it, so FileCabinet was rebuilt first
 
 Home Assistant now builds a name from parts: the entity's own name, its device's name and its area. It plans to deprecate the `friendly_name` attribute and later remove it; it is still set today, and no removal date is announced. HA 2026.9 also added child devices: a device that is part of another (`parent_device_id`), separate from the hub HA reaches a device through (`via_device_id`).
 
-ZenOS speaks that model in 11.0.
+ZenOS speaks that model in 11.0, and it took Display's place to do it. Display builds on what the agent can name; the names come first. Every entity's ID badge has to tell the truth: which entity it is, which device it belongs to, and where that device sits.
 
 - **Nothing decides anything from `friendly_name`.** Inspect decides that an entity exists from its state object, so an entity without the attribute still returns its state and attributes. Room sensors find themselves by their room, and Room Manager finds a person's zone sensor by the person, not by a display name.
 - **Names come in parts.** Outputs carry `entity_name` and `device_name` (Inspect adds `area_name`) next to the name key they already had, never one composed string. Text composes from the parts where HA has `entity_name()` (2026.4 and later), else from the legacy `friendly_name`, else the entity id.
@@ -281,6 +281,9 @@ ZenOS speaks that model in 11.0.
 - **Cabinet factory waits for the GUID** (up to 10 seconds) and answers an error instead of a false "initialized".
 - **Provisioner's deprovision removes every type label** as a list, where it crashed on joined label names, and keeps `zen_cabinet`, so a freed slot stays a slot.
 - **Taskmaster's almanac works on a busy calendar.** It copied the whole calendar response into one variable and went past Home Assistant's 262,144-character template limit on every call. It keeps four fields per event now.
+- **An entity without a `friendly_name` still exists.** Inspect used the attribute as its existence test, so an entity HA had stopped naming that way read `unknown` and lost its attributes. Existence comes from the state object now.
+- **Device names are the ones you set.** Every tool read a device's name with `device_attr(..., 'name')`, which is the integration's name, so a device you renamed still showed the old one. They read `device_name()` now.
+- **Inspect no longer calls a hub a parent.** The device tree's `parent_name` held the name of the hub HA reaches the device through. That is `via_device_name` now, and a real parent device is reported separately.
 - **Calendar finds a calendar by its name.** A `calendar_name` given as a display name never resolved: the match was set inside a loop and never left it, so only entity ids worked. It matches the entity name, the device + entity name, or the legacy friendly_name.
 - **Calendar start and end take a space-separated datetime** (`2026-11-14 18:00:00`), not only a `T`.
 - **FileCabinet takes a list `volume_entity_id`.** An MCP client sends an array as a JSON list string, which crashed the wrapper on every call, help included. The wrapper and the engine now read a list or a JSON list string as its first entry, for `destination_volume_entity_id` too.

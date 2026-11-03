@@ -40,7 +40,7 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 
 **Also in the beta:** semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, Cortex 45, every cert under `zenos.*` with a plain-words approval prompt, and the vault as a required cabinet that holds the cert catalog.
 
-**Still to come this cycle:** enforcement, hiding unreadable drawers from listings, and the operator permission report. Display stays beta; its dashboard moves to 2026.12.0.
+**Still to come this cycle:** enforcement, hiding unreadable drawers from listings, and the operator permission report. Display stays beta and gave its 11 slot to the naming work; its dashboard moves to 2026.12.0.
 
 → [Release Notes — This Is Spinal Tap](zenos_ai/docs/releases/spinal_tap.md)
 
