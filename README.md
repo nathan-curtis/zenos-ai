@@ -38,7 +38,7 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 
 **Also in the beta:** semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, Cortex 45, every cert under `zenos.*` with a plain-words approval prompt, and the vault as a required cabinet that holds the cert catalog.
 
-**Still to come this cycle:** enforcement, hiding unreadable drawers from listings, the operator permission report, and the Display dashboard.
+**Still to come this cycle:** enforcement, hiding unreadable drawers from listings, and the operator permission report. Display stays beta; its dashboard moves to 2026.12.0.
 
 → [Release Notes — This Is Spinal Tap](zenos_ai/docs/releases/spinal_tap.md)
 
@@ -273,7 +273,7 @@ packages/zenos_ai/
     dojotools_covers.yaml         — ZenShade — cover management, tilt, ZenLux sync
     dojotools_lights.yaml         — ZenLux — lighting scenes, bleed-aware control, shade sync
     dojotools_locks.yaml          — Lock Manager — lock inventory and control
-    dojotools_display.yaml        — Display Surface (beta; finishes in 2026.11.0) — cast a Lovelace view to Cast/Fire TV/webOS displays
+    dojotools_display.yaml        — Display Surface (beta; finishes in 2026.12.0) — cast a Lovelace view to Cast/Fire TV/webOS displays
     dojotools_music_assistant.yaml — Music Assistant bridge (internal)
     dojotools_spa_manager.yaml    — SpaMaster — hot tub management, ESPHome discovery
     dojotools_autovac.yaml        — AutoVac — autonomous vacuum scheduling, consumables ERP, wear monitoring

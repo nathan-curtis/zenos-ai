@@ -25,7 +25,7 @@ Backstage isn't the stage. The pass gets the agent in to see the band; every ins
 
 Don't touch it. Don't look at it. Don't EVEN point at it. Once cabinet enforcement is on, a cabinet your agent has no pass for won't just refuse the read. It won't show up in the listing.
 
-**Backstage passes for agents, locks on the cabinets, and a working screen for the show.**
+**Backstage passes for agents and locks on the cabinets.**
 
 ---
 
@@ -49,7 +49,7 @@ Don't touch it. Don't look at it. Don't EVEN point at it. Once cabinet enforceme
 - Every tool guards its inputs (the contract sweep begun in 2026.10.1).
 - One configure contract across plugin setup.
 - Identity and Labels event-ordering hardening.
-- Display, finished: the shared dashboard ships, interruption awareness covers the remaining Media Manager watch paths, and expiry and dismissal are tested against the real scheduler cadence.
+- Display stays beta in 11.0; what ships doesn't change. Finishing it moves to 2026.12.0: the shared dashboard, interruption awareness on the remaining Media Manager watch paths, and expiry and dismissal tested against the real scheduler cadence.
 
 **Later phase:** binding to the conversation or session. It needs its own design and acceptance criteria before it joins scope. The admission-token contract follows the OIDC plugin.
 
