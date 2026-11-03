@@ -141,12 +141,12 @@ Every "Not yet built" box in the book, in one place.
 | 19 | Signed certificates issued by a certificate authority | Design direction; the entry is already shaped for it |
 | 19 | Secure enclave cabinet for certifications, accessed only through a representative token derived from the conversation ID (salted and hashed), expiring at session start plus 5:30 | In progress |
 | 19 | A gate that reads `waives_live_ack` | Recorded by CertAdmin, read by no tool |
-| 20 | Admission enforcement: tools refuse an agent without `zenos.agent.basic` | 2026.11.0 |
-| 20 | A check after onboarding that the admission grant landed, and a log-only mode recording what the gate would deny | Planned |
-| 20 | Console-admin path for bundle grants | Planned |
+| 20 | Telling one agent or one session from another; the admission token bound to `zen_root_authentik` | Later phase; the token waits on an OIDC plugin |
 | 20 | Administrative competency certification | Design direction for this release line |
-| 21 | Certifying a corpus (a cabinet) as an object, with hard links between cabinets enforced through cabinet ACLs | Direction; ACL structure exists, unenforced |
-| 21 | Filtering at the source: FileCabinet resolves security before returning any drawer, so each principal reads its own subgraph | In progress |
+| 21 | Certifying a corpus (a cabinet) as an object | Direction |
+| 21 | Cabinet ACLs enforced by default | Gate built in 2026.11.0; audit by default, enforce is opt-in |
+| 21 | Filtering at the source: unreadable drawers hidden from listings and search, caches keyed by caller, derived data inheriting its sources' rules | In progress |
+| 21 | A LiveDrawer's tool call bounded by its reader's authority | Not settled; the read itself is gated |
 | 21 | Per-principal traversal | Arrives with session binding |
 | 21 | Membership edges that gate actions | Design direction |
 | 21 | Claims computed from a fold over the label graph | Design direction |

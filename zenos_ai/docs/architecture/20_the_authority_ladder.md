@@ -18,8 +18,9 @@ Each rung is necessary, and none substitutes for another.
 flowchart TD
   C["tool call"] --> I{"identity policy"}
   I -- blocked --> X["denied"]
-  I -- allowed --> AD{"admission<br/>(minted, not yet enforced)"}
-  AD --> DC{"domain cert<br/>and level"}
+  I -- allowed --> AD{"admission<br/>(the backstage pass)"}
+  AD -- "not held" --> HO["help and onboarding only"]
+  AD -- held --> DC{"domain cert<br/>and level"}
   DC -- short --> X
   DC -- held --> S{"scope"}
   S -- deny --> X
@@ -36,7 +37,7 @@ The administrative plane sits beside this path, not on it: it changes the policy
 | Rung | What it decides | Where it is enforced | Status |
 |---|---|---|---|
 | Identity policy | Is this caller's identity acceptable at all? | `resolve_caller_identity`, `sim_mode_allowed` | Built |
-| Admission | Is this agent a recognized participant in ZenOS? | Base agent certification | Minted at onboarding in 2026.10.0; enforced in 2026.11.0 |
+| Admission | Is this agent a recognized participant in ZenOS? | `OS.entry_gate`, first thing in every agent-facing tool | Built; enforced since 2026.11.0 |
 | Domain certification | May this agent attempt this class of action? | `required_cert` checks in each tool | Built |
 | Scope | Which specific targets does that grant cover or exclude? | `cert_scope_check()` in each tool | Built |
 | Live acknowledgement | Does a human approve this specific action, right now? | `request_live_ack` | Built |
@@ -50,19 +51,19 @@ The bottom rung is the whole-install policy on simulated identity (Chapter 18). 
 
 ## 20.3 Admission
 
-> **Built in two phases. Not yet enforced.** Admission is a mandatory base certification an agent must hold just to read the ZenOS tool surface. It authorizes participation only: no domain authority, no actuation, no configuration. The certificate is `zenos.agent.basic`. Flynn requests it at the successful end of onboarding, and like every grant it is issued only after a person approves a live acknowledgement. The approval is the gate, not which tool asked.
->
-> **Phase 1, 2026.10.0:** the certificate exists in its final dotted shape. Onboarding requests the `zenos_agent_basic` starter bundle, which includes it, so one approval covers both. If the bundle is declined or does not grant it, onboarding asks for the certificate on its own, so a household can admit the agent and still decline the starter capabilities. Agents that already exist recertify through the same live-ack grant instead of a rebuild. Nothing is refused for lacking it yet.
->
-> **Not yet built:** a check after onboarding that the grant actually landed, and a log-only mode that records what the gate would have denied.
->
-> **Phase 2, 2026.11.0 'This Is Spinal Tap' (planned):** hook it up and make it meaningful. Once FileCabinet security lands, tools check it, and an agent without it cannot read the tool surface.
->
-> This section will be rewritten against the code as each phase lands.
+Admission is the backstage pass: the base certification `zenos.agent.basic`. It authorizes participation only: no domain authority, no actuation, no configuration. In 2026.10.0 it was a badge an agent was given and nothing checked. Since 2026.11.0 it is the ticket in.
+
+Every agent-facing tool calls one gate before anything else, `OS.entry_gate` in `zen_os_1.jinja`. An agent without the pass can still call any tool's `help`, `tool_manifest` and `kfc_manifest`, which are the discovery modes of Chapter 12. It can also take the few steps it needs to ask for the pass and get that ask in front of a person: onboarding, `whoami`, the cert request, the live-ack, alert, push and display hops the request travels, and a health report. Anything else answers `guarded: onboarding_required`, names `zen_flynn_oobe mode=run` as the next step, and writes one warning to the system log. This gate ships on, not in audit mode. An unapproved agent that can do nothing can break nothing, and it still has enough to walk a person through fixing whatever stops the approval from reaching them.
+
+Flynn hands the pass out first. `zen_flynn_oobe mode=run` asks for the `zenos_agent_basic` bundle, which includes the pass, before it hands out a single setup step, because the setup steps use tools the gate opens only to an approved agent. Like every grant, the pass is issued only after a person approves a live acknowledgement. The approval is the gate, not which tool asked.
+
+The gate checks calls a user started. A call no user started (boot, Flynn, an automation, the scheduler) passes, so an automation that calls a ZenOS tool is trusted as far as whatever can trigger it. And Home Assistant cannot tell a logged-in person from the agent: a dashboard button or a call from Developer Tools runs as a user, the same way the agent does, so until the agent is approved those calls are refused too.
+
+> **Not yet built.** Telling one agent or one session from another is a later phase (Chapter 21). So is the admission token bound to `zen_root_authentik`, which waits on an OIDC plugin.
 
 ## 20.4 Domain certification
 
-This is the rung Chapter 19 covers in full: the tool declares `required_cert` and a level, `resolve_caller_identity` checks it against the resolved identity, and a shortfall returns a `cert_denial()` response. There are 83 of these checks across the tool surface.
+This is the rung Chapter 19 covers in full: the tool declares `required_cert` and a level, `resolve_caller_identity` checks it against the resolved identity, and a shortfall returns a `cert_denial()` response. There are 85 of these checks across the tool surface.
 
 The certification boundary is drawn around consequence, not around how dangerous a tool sounds. The cert-gate audit in 2026.10.0 asked "can this action actually hurt something?" of every tool, and gated things that do not sound dangerous but are: sending mail or a Teams message (disclosure of anything the agent has read), deleting a calendar event or to-do item (irreversible loss), setting Teams presence (misrepresenting a person to their organization), editing the mail whitelist (loosening the disclosure policy itself).
 
@@ -96,6 +97,9 @@ Tools with a per-call acknowledgement tier today:
 | `zen_dojotools_infra` | Stopping or removing a container |
 | `zen_dojotools_labels` | `reset` (no scope waiver available) |
 | `zen_admintools_certadmin` | Every grant, revoke, and bundle change |
+| `zen_admintools_cabinetadmin` | `hammer`, `reset` and `reset_all`, which wipe a cabinet's drawers |
+| `zen_dojotools_identity` | `take_ownership` of a cabinet |
+| `zen_dojotools_filecabinet` | An operation whose cabinet rule asks for one, in enforce mode only (Chapter 21) |
 
 A scope `allow` entry covers the ask for the named target only (Chapter 19). A `deny` entry refuses the target without asking.
 
@@ -116,16 +120,18 @@ The agent-facing `zen_dojotools_persona_editor` has `cert_req_grant`, `cert_req_
 A grant must pass, in order:
 
 1. **Catalog check.** The certification must be declared by some tool (`cert_audit`). This catches typos and dead names.
-2. **Human in the loop.** Either a live acknowledgement from the household admin, or the console-admin path below.
+2. **Human in the loop.** A live acknowledgement from the household admin, or the console override below.
 3. **Write.** The grant is written to the target persona's `zen_ai_certs` drawer.
 
 Revokes and bundle changes also require a live acknowledgement.
 
-### The console-admin path
+### The console override
 
-If the call's own Home Assistant context carries a real logged-in user (`context.user_id` is non-empty), CertAdmin treats that as a human physically at the console and skips the push round-trip for a single-certification grant. Automation-triggered and agent-triggered calls carry no `user_id`, so they cannot take this path. It exists so an install with no working notification target can still grant certifications, from Developer Tools, by a person.
+A logged-in session does not prove a person is at the console. Home Assistant gives a template no way to tell a human from any other account with a user, and the agent's own MCP account carries a `context.user_id` too. So a console session alone bypasses nothing.
 
-> **Not yet built.** The console-admin path covers single-certification grants only. Bundle grants, revokes, and bundle definition changes still require a live acknowledgement. Extending the console path to bundle grants is planned, since provisioning an agent's full posture is many certifications and a bundle is how that should be done.
+The override is a switch instead: the `cert_admin_console_bypass` drawer on the system cabinet. Only `zen_admintools_prompt_loader mode=cert_bypass` writes it, from a console session, and no agent can reach that tool. It ships off, and a missing drawer means off. When it is on, `request_live_ack` approves every live acknowledgement without a push: grants, bundles, revokes, cabinet wipes and `take_ownership` alike. It is honored in that one chokepoint, so no tool can drift from it. Every use is audited with a `live_ack_console_bypass` event and a system log warning.
+
+Whoever throws it takes the responsibility a live acknowledgement would. It exists so an install with no working push path can still approve anything, and on an install with no notification target at all, it is the only approval there is.
 
 AdminTools generally follow the same rule: they are the configuration and recovery plane, not an agent capability, and they are not exposed to conversation agents unless a human deliberately exposes them.
 
@@ -135,7 +141,7 @@ AdminTools generally follow the same rule: they are the configuration and recove
 
 Domain tools allow narrow, scoped exceptions to the per-call acknowledgement where a controlled exception makes practical sense. The administrative plane allows none. There is no way to tell CertAdmin "this agent does this all the time, stop asking." If unattended administrative behavior is ever genuinely needed, it will get its own narrower, bounded capability, not a propped-open door.
 
-Identity policy, certification, scope, acknowledgement, and the administrative plane, with admission minted but not yet enforced, read like separate mechanisms. The next chapter shows they are one.
+Identity policy, admission, certification, scope, acknowledgement, and the administrative plane read like separate mechanisms. The next chapter shows they are one.
 
 <!-- where -->
 ## 20.8 Where to look
@@ -143,7 +149,8 @@ Identity policy, certification, scope, acknowledgement, and the administrative p
 Every claim in this chapter can be checked in the code. These are the places to start.
 
 * The identity policy rung: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`sim_mode_allowed`, `policy_status`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
-* Live acknowledgement through AlertManager and Postman: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`request_live_ack`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
+* Admission, checked first in every agent-facing tool: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro entry_gate`). Flynn asks for the pass before setup: [`flynn_oobe.yaml`](../../../packages/zenos_ai/flynn_oobe.yaml). Docs: [zen_os1_jinja.md](../custom_templates/zen_os1_jinja.md), [security_certification_manual.md](../getting_started/security_certification_manual.md#25-the-backstage-pass-zenosagentbasic).
+* Live acknowledgement through AlertManager and Postman, and the console override it honors: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`request_live_ack`, `live_ack_console_bypass`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
 * The pause asymmetry: setting Paused is open, clearing it is gated: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`zenos.room.control_override`). Docs: [room_manager.md](../components/room_manager.md).
 <!-- /where -->
 

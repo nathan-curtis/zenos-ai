@@ -32,6 +32,8 @@ graph LR
 
 An action happens only if every edge on its path is traversable. An agent certified for `zenos.actuation.lock_control` at level 1, whose scope denies `lock.back_door`, has a capability edge into the lock domain and a fenced-off target edge to one door. The front door, tagged `ext_lock` as an exterior lock, is reachable for locking. Unlocking it crosses an approval edge, so it needs a human unless that target is explicitly covered. The back door is not reachable at all.
 
+Admission (Chapter 20) sits in front of all four. An agent without the backstage pass reaches help, discovery and its own onboarding, and nothing else, so it has no edges to walk until a person approves it.
+
 ## 21.3 Why this is identity
 
 In most systems identity is a label attached to a caller, and authorization is a lookup keyed by that label. That model breaks down for agents. An agent's name tells you nothing about what it will do, and a persona prompt is advice the model may or may not take.
@@ -60,7 +62,7 @@ Between those objects there are two kinds of connection, and the difference betw
 
 A **soft link** is a mount: a drawer in one cabinet that points at another (Chapter 8). It connects without conferring anything. It is cheap, it can be made and dropped as context demands, and following one tells an agent where something is, not what it is allowed to do there.
 
-A **hard link** is made through the security layer, and its home is the cabinet's own access control list. Every cabinet header already carries an `acls` block naming its owner and partners (Chapter 18); certifications, scope, and acknowledgement are the hard links that are enforced today. Hard links are the ones that decide what an agent may actually do.
+A **hard link** is made through the security layer, and its home is the cabinet's own access control list. Every cabinet header carries an `acls` record: an owner, the prime agent, partners, and a rule for each of read, write, delete and admin, with defaults by cabinet class (Chapter 18). Since 2026.11.0, FileCabinet's gate reads that record on every call. It ships in audit mode: it logs what it would refuse and lets the call through, and one admin-door drawer, `fc_acl_mode`, switches it to enforce. Certifications, scope, and acknowledgement are the hard links enforced by default today. Hard links are the ones that decide what an agent may actually do.
 
 ```mermaid
 graph LR
@@ -71,6 +73,8 @@ graph LR
 ```
 
 Two rules keep soft links soft. There is no bypass traverse checking: following a mount into another cabinet grants nothing, so reaching a target through a chain of soft links still requires the right to reach that target, the same as reaching it directly. And security is resolved before a LiveDrawer's target runs: a LiveDrawer is a mount whose target is a tool call, so reading one must never run that tool with authority the reader does not hold.
+
+The first rule is built. FileCabinet resolves a mount chain before its gate runs and checks every hop: read on each pointer the chain passes, and the action's own rule on the drawer it ends on. A caller that cannot read a pointer does not get past it, and an expansion answers with its host cabinet's rules. The second rule is half built. The gate decides the read of a LiveDrawer before its target runs, so in enforce mode a refused read never runs the tool. What the tool call itself carries is not settled: FileCabinet makes that call, not the reader.
 
 Seen this way, the four kinds of edge in 21.2 are all hard links of different kinds, and soft links are the fabric that lets context move without letting authority move with it. An agent's identity is the set of hard links it can realize. Soft links carry context. Hard links carry authority.
 
@@ -88,13 +92,13 @@ Four rules make it hold:
 * **The system sees everything; people can see what was hidden.** Flynn, health, and boot run as the system and default agent, with the whole graph in view. A human at the console is already recognized as present by the certification layer (Chapter 20), and that same console-admin path is how an administrator sees what an agent's view leaves out.
 
 
-> **Not yet built. In progress.** Filtering at the source is planned and in progress, as part of FileCabinet's certification work. Certifying a corpus as an object is the direction, not the code. Today certifications name a capability and live in the agent's own cabinet; nothing yet issues a certification whose subject is another cabinet, and cabinets themselves have no certification gate until FileCabinet's arrives in 2026.11.0, 'This Is Spinal Tap'. Soft links exist today as mounts, and so does the gap the two rules above close: FileCabinet performs no identity check today, so a mount or LiveDrawer is followed with no traversal check and a LiveDrawer's tool call carries no security resolution of its own. Both rules are part of FileCabinet's certification work in 2026.11.0, 'This Is Spinal Tap', the release where security, fittingly, goes to 11. Cabinet ACLs exist as structure, with owner and partner entries in every cabinet header, but no tool enforces them yet; the hard links enforced today are certifications, scope, and acknowledgement. Household and family membership is resolved but does not gate anything either (21.6).
+> **Not yet built. In progress.** Filtering at the source is the next step, and 2026.11.0, 'This Is Spinal Tap', built the gate it needs. Security went to 11 in that release, with the volume at ten: the gate checks every FileCabinet call, but it decides by refusing, only in enforce mode, and enforce ships off. A drawer the caller cannot read still appears in listings and search; hiding it is still to come. Caches do not yet know who they are for: a LiveDrawer keeps one cached result per drawer, not per caller. Katas and summaries do not yet carry their sources' rules. Certifying a corpus as an object is the direction, not the code: certifications name a capability and live in the agent's own cabinet, and nothing issues one whose subject is another cabinet. Household and family membership is resolved but does not gate anything either (21.6).
 
 ## 21.6 Where this is not yet true
 
-> **Not yet built.** Every call currently resolves to the install's default agent (Chapter 18), so today there is one reachable graph per install, shaped by the default agent's certifications. Per-principal traversal, where different sessions resolve to different personas and therefore different reachable graphs, arrives with real session binding. The chokepoint is already in place, so no tool changes when it does.
+> **Not yet built.** FileCabinet's gate tells an agent's call from an internal tool's, and calls no user started (boot, Flynn, automations) count as internal. Nothing yet tells one agent or one session from another: every agent call still resolves to the install's default agent (Chapter 18), so today there is one reachable graph per install, shaped by the default agent's certifications. Per-principal traversal, where different sessions resolve to different personas and therefore different reachable graphs, arrives with real session binding. The chokepoint is already in place, so no tool changes when it does.
 
-> **Not yet built.** Membership edges are resolved (to depth 2) but do not yet gate any action on their own. Today a caller's household or family membership does not change what it may traverse. Only certification, scope, and acknowledgement do.
+> **Not yet built.** Membership edges are resolved (to depth 2) but do not yet gate any action on their own. Today a caller's household or family membership does not change what it may traverse. A cabinet rule can name an owner, partners, the prime agent or a specific tool, but not a household or a family.
 
 > **Not yet built.** The graph fold that produces an agent's context (Chapter 7) and the traversal rules that decide what it may act on are separate code paths. Computing an agent's claims directly from a fold over the label graph, so the same traversal that builds its world also bounds it, is design direction.
 
@@ -106,6 +110,7 @@ That is the argument of this book, assembled. What remains is how the machine th
 Every claim in this chapter can be checked in the code. These are the places to start.
 
 * Scope decisions returned with every identity answer: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`scope_decision`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
+* The cabinet gate, every hop of a mount chain, and the enforce switch: [`dojotools_filecabinet.yaml`](../../../packages/zenos_ai/dojotools/dojotools_filecabinet.yaml) (`acl_audit`, `fc_acl_mode`) and [`zenos_cabinets.jinja`](../../../custom_templates/zenos_ai/zenos_cabinets.jinja) (`macro acl_check`). Docs: [zen_dojotools_filecabinet_readme.md](../scripts/zen_dojotools_filecabinet_readme.md#access-control-acl-v2).
 * A capability edge with an approval edge: unlocking an exterior lock: [`dojotools_locks.yaml`](../../../packages/zenos_ai/dojotools/dojotools_locks.yaml) (`ext_lock`). Docs: [zen_dojotools_locks_readme.md](../scripts/zen_dojotools_locks_readme.md).
 <!-- /where -->
 
