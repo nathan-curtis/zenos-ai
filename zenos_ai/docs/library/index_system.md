@@ -313,7 +313,7 @@ script receives → returns merged JSON
 
 🦣 **Stuffing Elephants in Drawers**
 Metaphor for symbolic vs. literal storage in AI systems.
-[Community Thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/120?u=nathancu)
+[Community Thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/120)
 
 ---
 

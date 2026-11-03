@@ -356,6 +356,6 @@ This document is meant to complement — not replace — these.
 
 **“Stuffing Elephants in Drawers — Representing Concepts Without Shoving the Whole Elephant Into Storage”**
 Friday's Party post on abstraction in Home Assistant:
-[https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/120?u=nathancu](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/120?u=nathancu)
+[https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/120](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/120)
 
 A perfect metaphor for the hypergraph model.
