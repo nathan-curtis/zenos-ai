@@ -66,12 +66,34 @@ Certifications are stored on the AI persona that holds them: the persona's cabin
 | `tool` | The tool the grant was issued against. |
 | `scope` | Optional per-target scope entries (19.5). |
 | `constraints` | Optional additional restrictions, interpreted by the consuming tool. |
+| `st` | The pipeline stages the grant covers, one letter each (below). Absent means interactive only. Since 2026.11.0. |
 
 > **Not yet built. In progress.** Certifications move out of the persona's cabinet into a secure enclave cabinet built only to hold them. Nothing outside the enclave reads a certification directly. A caller gets controlled access through a representative token instead. A session is one Home Assistant conversation, identified by its conversation ID, and the token is derived from that ID, salted and hashed. Sessions are short on purpose: they dissolve hard five minutes after they start, by the clock. The token's expiry is fixed at the session's start plus five minutes and thirty seconds, a grace window and never longer. The certification never leaves the enclave; the token stands in for it while the session lasts. It is also the missing half of session binding (Chapter 18): a token bound to a session is what lets the session, rather than a default, decide whose certifications apply.
 >
 > 2026.11.0 laid two pieces of the ground. The vault is now a required system cabinet that takes writes only from Identity and is read only through the admin door, and it holds the cert catalog cache. And a persona's `zen_ai_certs` drawer takes writes only from tools, a lock no cabinet rule can loosen. The grants themselves still live in the persona's cabinet, and the token is not built.
 
 `zen_dojotools_identity mode=cert_list` answers two questions in one call: what certifications exist (the live catalog) and what the resolved caller actually holds.
+
+### Where a grant may be used
+
+A certification used to answer one question: may the agent do this when someone asks? Some of the agent's work happens with no one asking. The summarizer reads the house and, at the end of a run, may decide to act. Until 2026.11.0 that work answered to two lists in the system cabinet, one for the tools a run could read from and one for the acts it could take. Neither list said which agent was acting, and neither went through a person.
+
+Since 2026.11.0 a grant names the stages it covers:
+
+| Letter | Stage |
+|---|---|
+| `i` | interactive: someone asked |
+| `l` | live drawer |
+| `s` | Ninja seed: what a summary run reads first |
+| `e` | Ninja emit: the act at the end of a run |
+| `m` | SuperSummary |
+| `c` | scheduler |
+
+A grant without `st` is interactive only, so every grant made before then means exactly what it meant. Each tool declares which stages its certifications allow (`st_ok`), and a grant can't name a stage its tool doesn't. Outside interactive use, only an exact grant counts. The parent rule from 19.2, where `zenos.media` covers `zenos.media.playback_control`, never reaches into the background. Adding a stage is a grant like any other: it goes to a phone, and the prompt says what it means in plain words, "in the background, with no one asking".
+
+The seed side is declared rather than granted. A tool lists the read modes a run may start from, and the summarizer refuses any other before the model sees anything. The act side is a certification: the target tool names the one cert whose stages include `e`, and the agent responsible for the household (Chapter 20) must hold it with stage `e`. Today that is Postman's `zenos.comms.dispatch`. A refused act is written onto the component's summary with what to grant, so the refusal is visible where the decision was made.
+
+> **Not yet built.** The two old lists still work through 2026.11.0 as a bridge, stamped legacy each time they are used, and are removed in 2026.12. All six stages are defined, and a tool can allow any of them, but in 2026.11.0 only the summarizer's emit step checks one. Seeds are declared by the tool, not granted, and live drawers, SuperSummary and the scheduler still run as they did.
 
 > **Not yet built.** Certifications do not expire at use. Every new grant records `not_after`, one year out, but no check reads it, and nothing consults a revocation list. A grant stays in force until it is revoked explicitly. Enforcing expiry, and the rest of the lifecycle, is design direction.
 
@@ -101,7 +123,7 @@ A bundle is a named set of certifications granted together, at one level, with o
 
 A bundle grant is deliberately simple: uniform level, no per-member scope, no per-member constraints. Anything finer than that is a set of single grants.
 
-Three declared bundles ship. `zenos_agent_basic` is the routine, reversible set (fourteen certifications and the badge) that Flynn requests with one live acknowledgement when onboarding completes. `zenos_agent_steward` (granted at level 1) covers running the house model: Room Manager topology and behavior, label create and update, registry cosmetics, Grocy schema, house settings, profiles, zones and alert policy. `zenos_agent_advanced` covers physical security: locks, the security system, clearing a room out of Paused, and camera alert policy. Nothing requests the second two automatically; a person grants them. Admin certifications are never bundled. Anything else is a custom household definition.
+Three declared bundles ship. `zenos_agent_basic` is the routine, reversible set (fourteen certifications and the badge) that Flynn requests with one live acknowledgement when onboarding completes. `zenos_agent_steward` (granted at level 1) covers running the house model: Room Manager topology and behavior, label create and update, registry cosmetics, Grocy schema, house settings, profiles, zones and alert policy. `zenos_agent_advanced` covers physical security: locks, the security system, clearing a room out of Paused, and camera alert policy. Nothing requests the second two automatically; a person grants them. A fourth bundle, `zenos_agent_autonomous`, is derived rather than declared: `cert_audit` builds it from every certification whose tool allows the Ninja emit stage, so a tool that later allows it joins on its own. Granting it adds that stage along with interactive use, and it never lowers a level the agent already holds. It is the only bundle that adds a stage by default. Admin certifications are never bundled. Anything else is a custom household definition.
 
 ## 19.7 What a denial looks like
 
@@ -127,6 +149,7 @@ Every claim in this chapter can be checked in the code. These are the places to 
 * Certificates declared by each tool, the catalog built from them: [`dojotools_locks.yaml`](../../../packages/zenos_ai/dojotools/dojotools_locks.yaml) (`'cert': 'zenos.actuation.lock_control'`). Docs: [zen_dojotools_locks_readme.md](../scripts/zen_dojotools_locks_readme.md).
 * Scope resolution and the shared denial shape: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro cert_scope_check`, `macro cert_denial`). Docs: [zen_os1_jinja.md](../custom_templates/zen_os1_jinja.md).
 * Granting and revoking: not agent-exposed, and every write needs a live acknowledgement or the console: [`dojotools_certadmin.yaml`](../../../packages/zenos_ai/dojotools/dojotools_certadmin.yaml) (`cert_req_grant`, `mcp_exposed`). Docs: [zen_admintools_certadmin_readme.md](../scripts/zen_admintools_certadmin_readme.md).
+* Stages on a grant, and the caller check that reads them: [`zen_identity.jinja`](../../../custom_templates/zenos_ai/zen_identity.jinja) (`macro cert_stages`, `macro caller`). The summarizer's seed and emit checks: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`seed_tool_not_authorized`, `emit_stage_not_granted`). Docs: [Security & Certification manual](../getting_started/security_certification_manual.md#64-stages).
 * Where a persona's certificates live: [`dojotools_certadmin.yaml`](../../../packages/zenos_ai/dojotools/dojotools_certadmin.yaml) (`zen_ai_certs`). Docs: [zen_admintools_certadmin_readme.md](../scripts/zen_admintools_certadmin_readme.md).
 <!-- /where -->
 

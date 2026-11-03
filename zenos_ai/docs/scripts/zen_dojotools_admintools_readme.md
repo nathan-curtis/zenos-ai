@@ -27,7 +27,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 | `zen_admintools_cabinetadmin` | 4.7.0 | No | Inspect, restore, reset, hammer, init, repair_volumeinfo, or reset_all Ring-0 cabinets |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
-| `zen_admintools_prompt_loader` | 45.1 | No | Load versioned Cortex, Directives, and Purpose (v45 = Open Door (default/latest), v44 = Open Door, v43 = Rule Zero). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`. |
+| `zen_admintools_prompt_loader` | 45.2 | No | Load versioned Cortex, Directives, and Purpose (v45 = Open Door (default/latest), v44 = Open Door, v43 = Rule Zero). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`. |
 | `zen_admintools_run_repair` | 5.2.0 | **No** | Human-confirmed passthrough to identity `acl_migrate` (the one repair action) |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
@@ -309,7 +309,9 @@ The response carries a `write_report`, one entry per key (`purpose`, `directives
 | `seed` | `zen_summarizer_seed_whitelist` | `allowed_scripts` | Script name |
 | `fc` | `fc_mount_callout_whitelist` | `allowed_tools` | `tool` (deprecated) \| `tool:*` (preferred) \| `tool:mode` (KF5 mode-scoped) |
 
-`seed` and `act` replace the deleted `zen_admintools_summarizer_act` and `zen_admintools_summarizer_seed` standalone scripts. `fc` is the FileCabinet live-drawer callout whitelist used by KF5 self-registering tools — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools).
+`seed` and `act` replace the deleted `zen_admintools_summarizer_act` and `zen_admintools_summarizer_seed` standalone scripts.
+
+> **Deprecated in 2026.11.0, removed in 2026.12.** The seed and act lists are a bridge. A seed is now a mode the tool declares in its `tool_manifest` `seed_modes`, and an act needs the target tool's emit cert granted with the Ninja emit stage (`cert_req_grant cert_stages=ie`, or the `zenos_agent_autonomous` bundle). `mode=whitelist type=seed|act` still works through 11 and answers with a `deprecated` note naming the replacement. See [Stages](../getting_started/security_certification_manual.md#64-stages). `fc` is the FileCabinet live-drawer callout whitelist used by KF5 self-registering tools — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools).
 
 ```yaml
 # Add Room Manager as a seed source

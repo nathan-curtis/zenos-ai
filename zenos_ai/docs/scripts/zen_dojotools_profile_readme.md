@@ -1,4 +1,4 @@
-# Zen DojoTools Profile Editor — v5.4.1 · Persona Editor v1.4.0
+# Zen DojoTools Profile Editor — v5.4.1 · Persona Editor v1.5.0
 
 *Read, write, sign, restore, and certify ZenOS identity profiles*
 
@@ -312,6 +312,15 @@ entry, a real data-loss risk for a "just add one more" call. To remove
 a single entry without touching the rest, submit that entity with
 `"acl": "remove"` — this deletes it from the merged scope rather than
 adding a third ACL state.
+
+**`cert_stages` (Persona Editor 1.5.0, 2026.11.0):** the request and
+revoke modes forward `cert_stages` to certadmin, so an agent can ask to
+use a cert from a pipeline stage: letters (`i` interactive, `l` live
+drawer, `s` Ninja seed, `e` Ninja emit, `m` SuperSummary, `c` scheduler)
+or names, e.g. `ie`. On a grant it is the whole stage set, and each stage
+must be allowed by the cert's tool; omit it to keep the stages held. On a
+revoke it drops only those stages. A human approves every change on the
+phone. See [Stages](../getting_started/security_certification_manual.md#64-stages).
 
 ---
 

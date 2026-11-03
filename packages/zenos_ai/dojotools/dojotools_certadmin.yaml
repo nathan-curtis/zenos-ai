@@ -1,6 +1,17 @@
 ###############################################################################
-# ZENOS-AI ADMINTOOL: CERTADMIN (v1.4.0)
+# ZENOS-AI ADMINTOOL: CERTADMIN (v1.6.0)
 #
+# v1.6.0: bundle grants take cert_stages (#10549), added to each member whose
+#   tool allows them, never lowering a level already held. zenos_agent_autonomous
+#   (every cert whose tool allows the Ninja emit stage) adds ie by default, so
+#   one phone ack lets the agent act from the background summarizer.
+# v1.5.0: pipeline stages on grants (#10549). cert_stages names where a grant
+#   may be used (letters ilsemc or stage names; see zen_identity cert_stages):
+#   stored as st on the grant, omitted when interactive only. A grant asks for
+#   stages its tool allows (catalog st_ok) or is refused, and the phone prompt
+#   names each background stage in plain words. A re-grant without
+#   cert_stages keeps the stages already held; a bundle grant keeps each
+#   member's. cert_req_revoke with cert_stages drops just those stages.
 # v1.4.0: the phone approval prompts read in plain words, led by the agent's
 #   name: "<agent> asks to: <what the cert allows> (<cert name>, level N).
 #   Approve?" Same for bundle grants (each member by its description),
@@ -184,6 +195,19 @@ script:
           text:
             multiline: true
 
+      cert_stages:
+        name: Cert Stages
+        description: >-
+          Where the grant may be used: stage letters (i interactive, l live
+          drawer, s Ninja seed, e Ninja emit, m SuperSummary, c scheduler) or
+          names, e.g. "ie" or "interactive, ninja_emit". cert_req_grant: the
+          grant's whole stage set, each allowed by the cert's tool; omit to
+          keep the stages already held (interactive for a new grant).
+          cert_req_revoke: drop only these stages.
+        default: ""
+        selector:
+          text:
+
       waives_live_ack:
         name: "Waives Live-Ack (cert_req_grant only)"
         description: >-
@@ -246,7 +270,7 @@ script:
                   tool='zen_admintools_certadmin',
                   display_name='CertAdmin — KFC Cert Issuance',
                   tier='admintools',
-                  version='1.4.0',
+                  version='1.6.0',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['admintools'],
                   optional_labels=[],
@@ -275,8 +299,8 @@ script:
                 mode: help
                 tool: zen_admintools_certadmin
                 modes:
-                  cert_req_grant: "Grant/update a KFC certification on target= (default AI user cabinet if omitted). Requires cert_component + live-ack approval. waives_live_ack=true additionally requires confirm_action=true + exact ack_phrase."
-                  cert_req_revoke: "Revoke a certification. Requires cert_component + live-ack approval."
+                  cert_req_grant: "Grant/update a KFC certification on target= (default AI user cabinet if omitted). Requires cert_component + live-ack approval. cert_stages sets where it may be used (letters ilsemc or names; omit to keep the stages held). waives_live_ack=true additionally requires confirm_action=true + exact ack_phrase."
+                  cert_req_revoke: "Revoke a certification. Requires cert_component + live-ack approval. cert_stages drops only those stages."
                   cert_list: "List all certifications + stats on target=."
                   tool_manifest: "UMP self-description."
                 waives_live_ack_phrase: "I UNDERSTAND THIS CERT BYPASSES ACKNOWLEDGEMENT"
@@ -598,6 +622,41 @@ script:
                   - variables:
                       _bg_is_new: "{{ _bg_existing_members | length == 0 and _bndl_mem_requested | length > 0 }}"
                       _bg_members: "{{ (_bndl_mem_requested | unique | list) if (_bg_existing_members | length == 0 and _bndl_mem_requested | length > 0) else _bg_existing_members }}"
+                  # ── Stages on a bundle grant (#10549). cert_stages adds those
+                  # stages to each member whose tool allows them (catalog
+                  # st_ok); members keep the stages they hold. The derived
+                  # zenos_agent_autonomous bundle adds ie when none is given. ──
+                  - variables:
+                      _bg_st: >-
+                        {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                        {%- set _raw = cert_stages | default('', true) | string | trim -%}
+                        {%- set _raw = _raw if _raw != '' else ('ie' if _bundle == 'zenos_agent_autonomous' else '') -%}
+                        {%- set _req = (ID.stage_letters(_raw) | from_json) if _raw != '' else {'st': '', 'bad': []} -%}
+                        {%- set _cr = _cab_vars.get('zen_ai_certs', {}) -%}
+                        {%- set _cv = _cr.get('value', _cr) if _cr is mapping else {} -%}
+                        {%- set _cv = (_cv | from_json({})) if _cv is string else _cv -%}
+                        {%- set _held = (_cv.get('kfc_certifications', {}) if _cv is mapping else {}) or {} -%}
+                        {%- set _names = ID.cert_stages() | from_json -%}
+                        {%- set ns = namespace(per={}, lvl={}, bg=[]) -%}
+                        {%- for _m in _bg_members -%}
+                          {%- set _h = _held.get(_m) if _held.get(_m) is mapping else {} -%}
+                          {%- set _have = ((_h.get('st') or 'i') if _h else 'i') | string -%}
+                          {%- set _ok = (ID.stage_letters(_bg_catalog.get(_m, {}).get('st_ok') or 'i') | from_json).st -%}
+                          {%- set _add = _req.st | list | select('in', _ok | list) | join('') -%}
+                          {%- set ns.per = ns.per | combine({_m: (ID.stage_letters(_have ~ _add) | from_json).st}) -%}
+                          {%- set ns.lvl = ns.lvl | combine({_m: (_h.get('level', 0) | int(0)) if _h else 0}) -%}
+                          {%- for _l in _add | list if _l != 'i' and _names.get(_l, _l) not in ns.bg -%}{%- set ns.bg = ns.bg + [_names.get(_l, _l)] -%}{%- endfor -%}
+                        {%- endfor -%}
+                        {{ {'given': _raw != '', 'bad': _req.bad, 'per': ns.per, 'held_level': ns.lvl, 'background': ns.bg} }}
+                  - if: "{{ _bg_members | length > 0 and _bg_st.bad | count > 0 }}"
+                    then:
+                      - variables:
+                          final_response:
+                            status: error
+                            mode: cert_req_grant
+                            cert_bundle: "{{ _bundle }}"
+                            message: "guarded: cert_stages has unknown stages {{ _bg_st.bad | join(', ') }}. Stages: i interactive, l live drawer, s Ninja seed, e Ninja emit, m SuperSummary, c scheduler."
+                            caller_token: "{{ caller_token }}"
                   - if: "{{ _bg_members | length == 0 }}"
                     then:
                       - variables:
@@ -606,7 +665,7 @@ script:
                             mode: cert_req_grant
                             message: "cert_bundle '{{ _bundle }}' has no member certs (unknown bundle name, or no cert tags itself with bundle: ['{{ _bundle }}']). Available bundles: {{ _bg_audit.get('bundles', {}).keys() | list }}. To define '{{ _bundle }}' as a new bundle and grant it in one ask, pass cert_bundle_members as a JSON array of cert names."
                             caller_token: "{{ caller_token }}"
-                  - if: "{{ _bg_members | length > 0 }}"
+                  - if: "{{ final_response is not defined and _bg_members | length > 0 }}"
                     then:
                       - variables:
                           _bg_persona_name: >-
@@ -632,6 +691,7 @@ script:
                             {{ _who }} asks for the '{{ _bundle }}' set ({{ _bg_members | length }} permissions, level {{ _lvl }}):
                             {%- endif %}
                             {%- for _m in _bg_members %} {{ _bg_catalog.get(_m, {}).get('description') or _bg_catalog.get(_m, {}).get('display_name', _m) }};{% endfor %}
+                            {%- if _bg_st.background | count > 0 %} It may do these from: {{ _bg_st.background | join(', ') }}, in the background with no one asking.{% endif %}
                             Approve?
                           caller_token: "{{ caller_token }}"
                       - variables:
@@ -721,7 +781,13 @@ script:
                                   {%- set _nb = utcnow().replace(microsecond=0).isoformat() -%}
                                   {%- set _na = (utcnow().replace(microsecond=0) + timedelta(days=365)).isoformat() -%}
                                   {%- for _m in _bg_members -%}
-                                    {%- set _entry = {'level': _lvl, 'certified': now().strftime('%Y-%m-%d'), 'not_before': _nb, 'not_after': _na, 'tool': _ctool, 'granted_via_bundle': _bundle} -%}
+                                    {#- #10549: a bundle grant keeps the stages a member already holds
+                                        and adds the requested ones its tool allows. A stage grant never
+                                        lowers a level already held. -#}
+                                    {%- set _mlvl = ([_lvl | int(0), _bg_st.held_level.get(_m, 0) | int(0)] | max) if _bg_st.given else _lvl -%}
+                                    {%- set _entry = {'level': _mlvl, 'certified': now().strftime('%Y-%m-%d'), 'not_before': _nb, 'not_after': _na, 'tool': _ctool, 'granted_via_bundle': _bundle} -%}
+                                    {%- set _pst = _bg_st.per.get(_m, '') | string -%}
+                                    {%- set _entry = _entry | combine({'st': _pst}) if _pst not in ['', 'i'] else _entry -%}
                                     {%- set ns.certs = ns.certs | combine({_m: _entry}) -%}
                                   {%- endfor -%}
                                   {{ ns.certs }}
@@ -754,6 +820,7 @@ script:
                                   bundle_created: "{{ _bg_is_new }}"
                                   level: "{{ _lvl }}"
                                   members_granted: "{{ _bg_members }}"
+                                  stages: "{{ _bg_st.per }}"
                                   jacket_id: "{{ _bg_jacket_id }}"
                                   message: >-
                                     {{ ('New cert bundle ' ~ _bundle ~ ' created (' ~ (_bg_members | length | string) ~ ' certs) and granted level ' ~ (_lvl | string) ~ '.')
@@ -807,6 +874,45 @@ script:
                         {{ _cscope_raw if _cscope_raw is sequence and _cscope_raw is not string
                            else ((_cscope_raw | from_json(default=[])) if (_cscope_raw is string and _cscope_raw != '' and _cscope_raw[:1] == '[') else []) }}
                       _cg_catalog_entry: "{{ _cert_catalog.get(_comp, {}) }}"
+                  # ── Stages (#10549): the requested set, or the stages already
+                  # held (i for a new grant). Every letter must be one the
+                  # cert's tool allows (catalog st_ok). ──
+                  - variables:
+                      _cg_st: >-
+                        {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                        {%- set _raw = cert_stages | default('', true) -%}
+                        {%- set _given = (_raw | string | trim) != '' -%}
+                        {%- set _req = (ID.stage_letters(_raw) | from_json) if _given else {'st': '', 'bad': []} -%}
+                        {%- set _cr = _cab_vars.get('zen_ai_certs', {}) -%}
+                        {%- set _cv = _cr.get('value', _cr) if _cr is mapping else {} -%}
+                        {%- set _cv = (_cv | from_json({})) if _cv is string else _cv -%}
+                        {%- set _held = ((_cv.get('kfc_certifications', {}) if _cv is mapping else {}) or {}).get(_comp, {}) -%}
+                        {%- set _have = ((_held.get('st') if _held is mapping else '') or 'i') | string -%}
+                        {%- set _ok = (ID.stage_letters(_cg_catalog_entry.get('st_ok') or 'i') | from_json).st -%}
+                        {%- set _new = _req.st if _given else _have -%}
+                        {%- set _names = ID.cert_stages() | from_json -%}
+                        {%- set nm = namespace(add=[], drop=[]) -%}
+                        {%- for _l in _new | list if _l not in (((_have if _held else 'i') ~ 'i') | list) -%}{%- set nm.add = nm.add + [_names.get(_l, _l)] -%}{%- endfor -%}
+                        {%- for _l in (_have if (_held and _given) else '') | list if _l not in (_new | list) -%}{%- set nm.drop = nm.drop + [_names.get(_l, _l)] -%}{%- endfor -%}
+                        {{ {'given': _given, 'new': _new, 'have': _have if _held else '', 'ok': _ok, 'bad': _req.bad,
+                            'not_allowed': (_new | list | reject('in', _ok | list) | list),
+                            'added_names': nm.add, 'dropped_names': nm.drop} }}
+                  - if: "{{ _cg_st.bad | count > 0 or _cg_st.new == '' or _cg_st.not_allowed | count > 0 }}"
+                    then:
+                      - variables:
+                          final_response:
+                            status: error
+                            mode: cert_req_grant
+                            component: "{{ _comp }}"
+                            message: >-
+                              guarded: cert_stages
+                              {%- if _cg_st.bad | count > 0 %} has unknown stages {{ _cg_st.bad | join(', ') }}
+                              {%- elif _cg_st.new == '' %} names no stage
+                              {%- else %} asks for {{ _cg_st.not_allowed | join('') }}, which {{ _comp }} does not allow (it allows {{ _cg_st.ok }})
+                              {%- endif %}. Stages: i interactive, l live drawer, s Ninja seed, e Ninja emit, m SuperSummary, c scheduler.
+                            caller_token: "{{ caller_token }}"
+                - if: "{{ final_response is not defined }}"
+                  then:
                   - variables:
                       _cg_persona_name: >-
                         {%- set raw = _cab_vars.get('zenai_essence', {}) -%}
@@ -867,7 +973,9 @@ script:
                             ({{ _cg_catalog_entry.get('display_name') or _comp }}, level {{ _lvl }}).
                             {%- if _cscope | length > 0 %} Only for: {{ (_cscope | map(attribute='entity') | list) | join(', ') if (_cscope[0] is mapping) else _cscope | join(', ') }}.{% endif -%}
                             {%- if _ccons | length > 0 %} Still asks you each time for: {{ _ccons | join(', ') }}.{% endif -%}
-                            {%- if _wla_granted %} ⚠ Also asks to stop asking you each time for those.{% endif %} Approve?
+                            {%- if _wla_granted %} ⚠ Also asks to stop asking you each time for those.{% endif %}
+                            {%- if _cg_st.added_names | count > 0 %} Also lets it use this from: {{ _cg_st.added_names | join(', ') }}, in the background with no one asking.{% endif -%}
+                            {%- if _cg_st.dropped_names | count > 0 %} Stops using it from: {{ _cg_st.dropped_names | join(', ') }}.{% endif %} Approve?
                           caller_token: "{{ caller_token }}"
                       - variables:
                           _cg_approved: "{{ _cg_ack_result_raw.get('approved', false) if _cg_ack_result_raw is mapping else false }}"
@@ -951,6 +1059,9 @@ script:
                           {%- if _cg_merged_scope is sequence and _cg_merged_scope | length > 0 -%}
                             {%- set e = e | combine({'scope': _cg_merged_scope}) -%}
                           {%- endif -%}
+                          {%- if _cg_st.new not in ['', 'i'] -%}
+                            {%- set e = e | combine({'st': _cg_st.new}) -%}
+                          {%- endif -%}
                           {{ e }}
                         _updated_certs: >-
                           {%- set _al = (_cg_alias | default('', true) | string) if (_comp | string).startswith('zenos.') else '' -%}
@@ -994,6 +1105,7 @@ script:
                           waives_live_ack_granted: "{{ _wla_granted }}"
                           waives_live_ack_note: >-
                             {{ '' if not _wla_requested else ('Granted -- ' ~ (_cscope | length) ~ ' scoped entit(y/ies) now skip live-ack.' if _wla_granted else 'Requested but NOT granted -- confirm_action and/or exact ack_phrase missing. Grant proceeded as a normal (non-waiving) cert_req_grant.') }}
+                          stages: "{{ _cg_st.new }}"
                           message: "Cert granted: {{ _comp }} level {{ _lvl }}."
                           cert: "{{ _new_cert_entry }}"
                           caller_token: "{{ caller_token }}"
@@ -1028,6 +1140,35 @@ script:
                               status: warning
                               message: "cert_req_revoke: '{{ _comp }}' not found in certifications. No change."
                               caller_token: "{{ caller_token }}"
+                # ── Stages (#10549): with cert_stages, drop only those stages;
+                # the cert goes entirely only when no stage would be left. ──
+                - variables:
+                    _cr_st: >-
+                      {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                      {%- set _raw = cert_stages | default('', true) -%}
+                      {%- set _given = (_raw | string | trim) != '' -%}
+                      {%- set _req = (ID.stage_letters(_raw) | from_json) if _given else {'st': '', 'bad': []} -%}
+                      {%- set _e = _existing_certs.get(_comp, {}) -%}
+                      {%- set _have = ((_e.get('st') if _e is mapping else '') or 'i') | string -%}
+                      {%- set _left = (_have | list | reject('in', _req.st | list) | join('')) if _given else '' -%}
+                      {%- set _names = ID.cert_stages() | from_json -%}
+                      {%- set nm = namespace(drop=[]) -%}
+                      {%- for _l in _have | list if _l in (_req.st | list) -%}{%- set nm.drop = nm.drop + [_names.get(_l, _l)] -%}{%- endfor -%}
+                      {{ {'given': _given, 'bad': _req.bad, 'have': _have, 'left': _left, 'partial': _given and _left != '',
+                          'drop_names': nm.drop} }}
+                - if: "{{ final_response is not defined and _cr_st.given and (_cr_st.bad | count > 0 or _cr_st.drop_names | count == 0) }}"
+                  then:
+                    - variables:
+                        final_response:
+                          status: error
+                          mode: cert_req_revoke
+                          component: "{{ _comp }}"
+                          message: >-
+                            guarded: cert_stages
+                            {%- if _cr_st.bad | count > 0 %} has unknown stages {{ _cr_st.bad | join(', ') }}
+                            {%- else %} names no stage {{ _comp }} holds (it holds {{ _cr_st.have }})
+                            {%- endif %}.
+                          caller_token: "{{ caller_token }}"
                 - if: "{{ final_response is not defined }}"
                   then:
                   - action: script.zen_dojotools_identity
@@ -1040,7 +1181,11 @@ script:
                         {%- set _ev = _ev.get('value', {}) if _ev is mapping else {} -%}
                         {%- set _ev = _ev if _ev is mapping else (_ev | from_json({}) if _ev is string else {}) -%}
                         {%- set _nm = ((_ev.get('jacket', {}) if _ev.get('jacket') is mapping else {}).get('name', '')) or 'Your assistant' -%}
+                        {%- if _cr_st.partial -%}
+                        {{ _nm }} asks to stop using {{ _comp }} from: {{ _cr_st.drop_names | join(', ') }}. It keeps the rest. Approve?
+                        {%- else -%}
                         {{ _nm }} asks to give up a permission: {{ _comp }}. Approve?
+                        {%- endif -%}
                       caller_token: "{{ caller_token }}"
                   - variables:
                       _cr_approved: "{{ _cr_ack_result_raw.get('approved', false) if _cr_ack_result_raw is mapping else false }}"
@@ -1063,6 +1208,11 @@ script:
                           {%- for k, v in _existing_certs.items() if k != _comp -%}
                             {%- set ns.d = ns.d | combine({k: v}) -%}
                           {%- endfor -%}
+                          {%- if _cr_st.partial -%}
+                            {%- set _e = _existing_certs.get(_comp, {}) -%}
+                            {%- set _e = (_e if _e is mapping else {}) | combine({'st': _cr_st.left}) -%}
+                            {%- set ns.d = ns.d | combine({_comp: _e}) -%}
+                          {%- endif -%}
                           {{ ns.d }}
                         _updated_doc: >-
                           {{ (_cev if _cev is mapping else {})
@@ -1084,7 +1234,10 @@ script:
                           mode: cert_req_revoke
                           target: "{{ _target }}"
                           component: "{{ _comp }}"
-                          message: "Cert revoked: {{ _comp }} removed from {{ _target }}."
+                          stages_left: "{{ _cr_st.left if _cr_st.partial else '' }}"
+                          message: >-
+                            {{ ('Cert stages revoked: ' ~ _comp ~ ' keeps ' ~ _cr_st.left ~ ' on ' ~ _target ~ '.') if _cr_st.partial
+                               else ('Cert revoked: ' ~ _comp ~ ' removed from ' ~ _target ~ '.') }}
                           caller_token: "{{ caller_token }}"
 
       - if: "{{ final_response is not defined }}"

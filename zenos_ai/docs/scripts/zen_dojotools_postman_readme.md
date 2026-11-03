@@ -1,4 +1,4 @@
-# Zen DojoTools Postman — v5.2.2
+# Zen DojoTools Postman — v5.3.0
 
 **File:** `packages/zenos_ai/dojotools/dojotools_postman.yaml`
 **Script:** `zen_dojotools_postman`
@@ -440,6 +440,8 @@ When the ninja summarizer pipeline emits a component, it can call Postman direct
     notification_data:
       channel: ZenOS
 ```
+
+**The emit stage (2026.11.0).** When the Ninja sends through Postman on its own, the household's responsible agent must hold `zenos.comms.dispatch` with the Ninja emit stage (`e`). Postman's catalog entry allows `ie` (interactive and Ninja emit), so the cert is a member of `zenos_agent_autonomous`; granting that bundle is the one-step way to turn routine background sends on. A life-safety send skips the stage check. See [Stages](../getting_started/security_certification_manual.md#64-stages).
 
 ---
 

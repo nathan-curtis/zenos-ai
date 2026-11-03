@@ -80,7 +80,7 @@ Boot guard, initializer, OOBE driver, and prompt fallback. Gates 0–4 drive the
 
 ---
 
-## 3. Zen DojoTools Profile Editor — v5.4.1 · Persona Editor v1.4.0
+## 3. Zen DojoTools Profile Editor — v5.4.1 · Persona Editor v1.5.0
 **File:** [`zen_dojotools_profile_readme.md`](zen_dojotools_profile_readme.md)
 
 Interactive profile surface for ZenOS-AI identity profiles. Reads and writes AI persona, household, user, and family profile drawers; signs/restores AI essence; and manages AI KFC certifications. Expose to your conversation agent so Friday can configure household details conversationally.
@@ -115,10 +115,10 @@ Guide: fire a component summarizer run from a real-world trigger and act on the 
 
 ---
 
-## 7. Zen DojoTools Summarizers — Ninja v4.6.0 · SuperSummary v4.6.1
+## 7. Zen DojoTools Summarizers — Ninja v4.7.0 · SuperSummary v4.7.0
 **File:** [`zen_dojotools_summarizers_readme.md`](zen_dojotools_summarizers_readme.md)
 
-The KF4 action pipeline — Ninja Summarizer (per-component kata writer) and SuperSummary (whole-home synthesizer). Both MCP-exposed. Pipeline tier split: `direct` (keeper), `ambient` (Trapper Keeper pre-digest + breadcrumb), `system` (background). Trapper Keeper pre-digests ambient-tier katas into a navigation index. SuperSummary run governor (default 600s burnout). Context size guard (>200K abort, 28K max_context_tokens). Three kill switches — default off; enable only after pointing at a local inference model.
+The KF4 action pipeline — Ninja Summarizer (per-component kata writer) and SuperSummary (whole-home synthesizer). Both MCP-exposed. Pipeline tier split: `direct` (keeper), `ambient` (Trapper Keeper pre-digest + breadcrumb), `system` (background). Trapper Keeper pre-digests ambient-tier katas into a navigation index. SuperSummary run governor (default 600s burnout). Context size guard (>200K abort, 28K max_context_tokens). Three kill switches — default off; enable only after pointing at a local inference model. Both act as the household's responsible agent (2026.11.0): seeds are modes the tool declares, and acts need the emit cert held with the Ninja emit stage.
 
 ---
 
@@ -185,14 +185,14 @@ Authoritative, health-aware read/write controller for all Cabinet Volumes. Suppo
 
 ---
 
-## 17. Zen DojoTools Manifest — v6.6.2
+## 17. Zen DojoTools Manifest — v6.8.0
 **File:** [`zen_dojotools_manifest_readme.md`](zen_dojotools_manifest_readme.md)
 
 System manifest broker. Entity namespace scanning (`zen_dojotools_*`, `zen_stack_*`, `zen_sutra_*`). Modes: `cabinets` (zero-persistence cabinet health scanner), `tools`, `identity`, `labels`, `automations`, `audit`, `audit_help`, `health`, `health_refresh`, `autotag`, `publish`, `mcp_sync`, `bootstrap_stacks`, `bootstrap_kfc`, `domains`, `all`. `bootstrap_stacks` auto-registers Lens Bus providers including `script.zen_dojotools_library`. `bootstrap_kfc` auto-registers KF5 self-declaring tools — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools). Domain routing table maps domains to authoritative scripts (now built dynamically from `label_entities('zen_domain_*')`, not hardcoded). UMP `tool_manifest` contract supported.
 
 ---
 
-## 18. Zen DojoTools Index — v5.4.0
+## 18. Zen DojoTools Index — v5.4.1
 **File:** [`zen_dojotools_index_readme.md`](zen_dojotools_index_readme.md)
 
 Entity-and-label correlation engine. Full topology seed chain per operand (`entities > label > device > integration > area > floor`), four set operators, ZQ-1 post-filter, pagination, and Inspect expansion. A device operand includes its child devices' entities (HA 2026.9+). Index Command now accepts compound/recursive dict DSL (`{operator, index_1, index_2}`) with automatic timeout scaling for nested round-trips. Camera entities return `{analysis, cached_at, cache_age_minutes, snapshot_path, found}` inline and in `domain_context.camera`. Friday's graph engine.
@@ -220,7 +220,7 @@ Friday's visual surface. Wraps HA camera entities with LLM vision analysis, hous
 
 ---
 
-## 22. Zen DojoTools Postman — v5.2.2
+## 22. Zen DojoTools Postman — v5.3.0
 **File:** [`zen_dojotools_postman_readme.md`](zen_dojotools_postman_readme.md)
 
 Unified household communications layer. Supersedes `zen_dojotools_notification_router` (script retired; the dispatcher's legacy-name compat arms for it were removed in 2026.7.1 — old callers now get a structured `unknown_tool` fault instead of referencing a nonexistent script). Resolves urgency + target against the authority stack (house ceiling → family floor → user preference) and dispatches to push/TTS/Teams. Supports image attachments, actionable response buttons with push-ack wait, phone TTS audio attachment, `kata_input` pipeline derivation, `breakthrough` gate bypass, full Android `notification_data` passthrough, and `open_dashboard` tap navigation. `zen_postman_response_router` automation bridges `mobile_app_notification_action` → `zen_event(kind: postman_response)` for ack correlation. `author_policy` seeds `postman_profile` drawers. Full `resolve` dry-run audit before sending. **`direct_dispatch`** (v5.1.0) — authority-stack bypass, straight to `notify.*`; requires `override: true` or the call is blocked and logged.
@@ -248,10 +248,10 @@ Agent-composable casting of a Lovelace dashboard/view to any display in the hous
 
 ---
 
-## 25. Zen AdminTools CertAdmin — v1.4.0
+## 25. Zen AdminTools CertAdmin — v1.6.0
 **File:** [`zen_admintools_certadmin_readme.md`](zen_admintools_certadmin_readme.md)
 
-Admin-only cert issuance/revocation authority for AI persona (`ai_user`) cabinets. Not agent-reachable (`mcp_exposed: false`) — every call is a household-admin action, not something an agent invokes on itself.
+Admin-only cert issuance/revocation authority for AI persona (`ai_user`) cabinets. Not agent-reachable (`mcp_exposed: false`) — every call is a household-admin action, not something an agent invokes on itself. Grants name the pipeline stages they cover (`cert_stages`), and `zenos_agent_autonomous` covers the summarizer's background sends.
 
 ---
 

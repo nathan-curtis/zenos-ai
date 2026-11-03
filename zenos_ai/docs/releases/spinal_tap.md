@@ -114,6 +114,33 @@ Before 11.0, `zenos.agent.basic` was a badge an agent was given at the end of on
 
 **The vault holds the catalog.** The vault cabinet is now a required system cabinet that Flynn provisions on boot, and only the admin door can read it. `cert_list` reads the cert catalog from a cache there, so it answers in a fraction of the time, and builds it live whenever the vault isn't there. Grants are always read live.
 
+## Certs in the Background
+
+A cert used to answer one question: may the agent do this when someone asks? The summarizer pipeline acts with no one asking, and it answered to two syscab lists instead, a seed whitelist and an act whitelist. In 11.0 those lists become certs, and a grant says where it may be used.
+
+**Grants name their stages.** A grant carries `st`, one letter per pipeline stage, stored the way the ACL ops are:
+
+| Letter | Stage |
+|---|---|
+| `i` | interactive |
+| `l` | live drawer |
+| `s` | Ninja seed |
+| `e` | Ninja emit (the act at the end of a run) |
+| `m` | SuperSummary |
+| `c` | scheduler |
+
+A grant without `st` is interactive only, so every existing grant behaves exactly as before. Outside `i`, only an exact grant counts, never a parent cert. Each tool declares the stages its certs allow (`st_ok`), and a grant can't ask for a stage its tool doesn't allow. Adding a stage is a phone approval like any other grant, and the prompt says it in plain words: "in the background, with no one asking". `cert_req_grant` and `cert_req_revoke` take `cert_stages`, and a revoke can drop one stage and keep the rest. In 11.0 the Ninja emit stage is the one a check reads; the others are defined for the pipeline steps that follow.
+
+**The pipeline acts as the agent responsible for the household.** That is the prime in the household's ACL, else the default agent, and it has to be onboarded. If it isn't, summaries pause with a notification instead of running as nobody. SuperSummary builds its capsule from that agent, not from the persona-name helper.
+
+**Seeds are declared by the tool.** A tool lists the read modes the Ninja may seed a run with in its `tool_manifest` (`seed_modes`, each `mode` or `mode:case`). An undeclared seed refuses the run before the summary model is called, naming the modes that are declared. Index, Room Manager, AutoVac, Taskmaster, Inventory and Finance declare theirs. Finance names four `run` cases, not every one.
+
+**Acts need the emit stage.** Before the Ninja sends anything, it finds the cert on the target tool whose stages include `e`, and the responsible agent must hold that cert with stage `e`. Today that's Postman's `zenos.comms.dispatch`. A refused act is written onto the component's summary as `act_blocked`, with what to grant. A life-safety act skips the cert check, as Postman's own gate does. The kill switch and the infrastructure deny still apply to it.
+
+**`zenos_agent_autonomous`** is the bundle for this: every cert whose tool allows the Ninja emit stage. It isn't a hand-kept list, so a tool that later allows `e` joins on its own. Granting it adds `ie` (interactive and Ninja emit) by default, so one phone approval covers it. A bundle grant never lowers a level the agent already holds.
+
+**The 11 bridge.** Through 11, the old seed list still passes a tool that declares no `seed_modes`, and the old act list still passes an act whose cert the agent holds for interactive use only. Both are stamped legacy, and the act side raises a notice saying what to grant. `prompt_loader mode=whitelist` still manages both lists, with a deprecation note. The lists and the bridge are removed in 12.
+
 ---
 
 ## The Locks, in Audit Mode
@@ -185,6 +212,10 @@ ZenOS speaks that model in 11.0, and it took Display's place to do it. Display b
 - **`reset_all` wipes.** Cabinet admin's `reset_all` did nothing while answering success; it now wipes every cabinet. A wipe clears the console override and every cert along with everything else, so throw the override from the console and re-request certs afterwards.
 - **If `script.zen_admintools_kungfu_loader` shows unavailable,** delete its entity registry row. The loader was retired in this release.
 - **Inspect's `device_tree.parent_name` is now `via_device_name`.** It always held the hub's name, not a parent's. `parent_device_name` is the child-device parent now. Anything of your own that reads `parent_name` needs the new key.
+- **Summaries pause until the household's agent is onboarded.** The summarizers act as the household's prime agent, else the default agent. If that agent isn't onboarded, both refuse with `agent_not_onboarded` and post "ZenOS: summaries are paused". Onboard it through Flynn.
+- **SuperSummary writes as that agent,** not as the persona named in `input_text.zenos_persona_name`.
+- **Grant `zenos_agent_autonomous` for background notifications.** The Ninja's routine Postman sends need `zenos.comms.dispatch` with the Ninja emit stage. The bridge only covers an agent that already holds that cert for interactive use, and many upgraded installs don't. Until you grant the bundle, routine sends are refused and written onto the component's summary as `act_blocked`. Life-safety sends aren't affected.
+- **A seed tool of your own needs `seed_modes`** in its `tool_manifest` before 2026.12. Until then the old seed list carries it, with a legacy stamp on each run.
 - **Your own copy of the scheduler loop** needs the same fix as the scheduler (see Fixed): sleep the gap since the previous subscriber, not each subscriber's whole delay.
 
 ---
@@ -210,6 +241,7 @@ ZenOS speaks that model in 11.0, and it took Display's place to do it. Display b
 - **Plain cert descriptions and approval prompts, dated grants, and the cert catalog cached in the vault.** See [Certs, Renamed and Readable](#certs-renamed-and-readable). `cert_list` gains `catalog_source` and `force_refresh`; the scheduler's script reloads and Flynn keep the cache fresh. It also answers with plain `notes` when grants are still under an old name or held above a cert's `max_level`, since that's the one place the agent learns its grant state.
 - **Name parts and child devices.** See [Names in Parts](#names-in-parts). Inspect adds `entity_name`, `device_name` and `area_name`, and its device tree adds `via_device_name`, `parent_device_id`, `parent_device_name` and `child_devices`. `device_info` adds `parent_device_id` and `child_devices`, and `device_list` adds `parent_device_id`. ZQ-1 adds `entity_name_regex` and `device_name_regex`.
 - **Radar moves a ticket between tags.** `ticket_untag` removes a tag. `ticket_retag` swaps one for another: it adds the new tag first and removes the old one only if the add worked, so a ticket never ends up with neither.
+- **Pipeline stages on cert grants, the responsible agent, and `zenos_agent_autonomous`.** See [Certs in the Background](#certs-in-the-background). Identity gains `cert_stages`, `stage_letters` and `responsible_agent`, and `ID.caller` takes a container and a stage. The cert catalog carries each cert's `st_ok`, and `my_certs` each grant's `st`. `tool_manifest` takes `seed_modes`.
 - **The vault is a required system cabinet.** Flynn labels and initializes it on boot. `sensor.zen_vault_cabinet_resolved` resolves only when exactly one cabinet carries `zen_vault_cabinet`. Its read rule is the admin door: Cabinet Writer's new `get` mode is the one way to read it.
 
 ## Changed
@@ -227,6 +259,7 @@ ZenOS speaks that model in 11.0, and it took Display's place to do it. Display b
 - **Cabinet labels are gated.** Labels needs `zenos.system.cabinet_admin` level 2 to tag or untag a cabinet, or to touch a `zen_*cabinet` label, so a second cabinet can't be tagged as the vault and knock the resolver offline.
 - **Inventory area modes take `homeassistant_area_id`,** as the field always was; the description and quickstart said `area=`. A call with no area is refused with what it needs.
 - **The agent, not a persona name,** in shipped help text, descriptions and cert text. Zammad's audit actor is the configured persona name, else `agent`.
+- **The summarizer's seed and act whitelists become certs.** A seed is a mode the tool declares, and an act needs the target tool's emit cert held with the Ninja emit stage. The lists keep working through 11 as a bridge. See [Certs in the Background](#certs-in-the-background).
 - **`friendly_name_regex` outlives `friendly_name`.** Once HA stops setting the attribute, it matches the device name + entity name. While HA sets it, matches are unchanged.
 - **Inspect fetches lens evidence only on request.** A drawer peek no longer calls lens providers on its own. Pass `+lenses` or `lenses=` to get evidence. Fetched evidence is merged by item across anchors and providers, and `providers` carries status and counts, not a second copy of the documents.
 
@@ -284,6 +317,8 @@ ZenOS speaks that model in 11.0, and it took Display's place to do it. Display b
 - **An entity without a `friendly_name` still exists.** Inspect used the attribute as its existence test, so an entity HA had stopped naming that way read `unknown` and lost its attributes. Existence comes from the state object now.
 - **Device names are the ones you set.** Every tool read a device's name with `device_attr(..., 'name')`, which is the integration's name, so a device you renamed still showed the old one. They read `device_name()` now.
 - **Inspect no longer calls a hub a parent.** The device tree's `parent_name` held the name of the hub HA reaches the device through. That is `via_device_name` now, and a real parent device is reported separately.
+- **The Ninja's empty-input guard keeps an earlier refusal.** It overwrote any refusal set before it with `no_input`.
+- **Battery health reads its inventory seed.** Its seed, Inventory's `battery_status`, wasn't on the seed list, so every run fell back to the index. Inventory declares the mode now.
 - **Calendar finds a calendar by its name.** A `calendar_name` given as a display name never resolved: the match was set inside a loop and never left it, so only entity ids worked. It matches the entity name, the device + entity name, or the legacy friendly_name.
 - **Calendar start and end take a space-separated datetime** (`2026-11-14 18:00:00`), not only a `T`.
 - **FileCabinet takes a list `volume_entity_id`.** An MCP client sends an array as a JSON list string, which crashed the wrapper on every call, help included. The wrapper and the engine now read a list or a JSON list string as its first entry, for `destination_volume_entity_id` too.

@@ -160,6 +160,14 @@ Real `ai_task.*` callers were swept 2026-08-18 and now correctly declare `infere
 |-----------|------|---------|-------------|
 | `caller_token` | string | `''` | Passed through from the calling script's `caller_token` variable. Used for tracing. |
 
+### Optional parameters — summarizer seeds (2026.11.0)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `seed_modes` | list | `None` | The read modes the Ninja summarizer may seed a run with, each `'mode'` or `'mode:case'` (Finance declares `run:budget_summary` rather than every `run` case). Reported only when declared. A tool that declares none can't be a seed, except through the old seed whitelist until 2026.12. |
+
+A cert in `certs_required` may also carry `st_ok`: the pipeline stage letters it allows (default `i`, interactive only). `cert_audit` merges them across declarers into the catalog. See [Stages](../getting_started/security_certification_manual.md#64-stages).
+
 ---
 
 ## Missing-Label Detection (always computed, 2026.9.0)

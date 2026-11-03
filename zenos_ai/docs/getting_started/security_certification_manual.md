@@ -156,7 +156,7 @@ flowchart TD
 
 A narrower grant held at the same or a lower level than the broader one it sits under restricts, it never widens — the explicit entry wins for its own node, the parent still covers everything else beneath it.
 
-**Certification bundles.** `cert_req_grant` accepts `cert_bundle=` as an alternative to `cert_component=`, granting every certification in the named bundle with one combined live ack instead of one per member. A bundle's membership comes from either a code-tagged declaration (a certification's own catalog entry can carry `bundle: ['name']`) or a runtime-editable set stored in the household cabinet, visible in `zen_dojotools_manifest mode=cert_audit`'s `bundles` view. One code-tagged bundle ships, `zenos_agent_basic`: a starter set of routine, reversible certifications, with the backstage pass (Section 2.5), that Flynn requests (one live ack) when onboarding starts. It includes no security, lock, infrastructure, PII-disclosure, or comms-dispatch certification. Editing an *existing* bundle's membership is not exposed through any agent-facing tool — only `zen_admintools_certadmin` (never agent-reachable, `mcp_exposed: false`) can change one via `cert_bundle_set`, requiring its own fresh live ack every time, since widening a bundle silently widens every future grant of it.
+**Certification bundles.** `cert_req_grant` accepts `cert_bundle=` as an alternative to `cert_component=`, granting every certification in the named bundle with one combined live ack instead of one per member. A bundle's membership comes from either a code-tagged declaration (a certification's own catalog entry can carry `bundle: ['name']`) or a runtime-editable set stored in the household cabinet, visible in `zen_dojotools_manifest mode=cert_audit`'s `bundles` view. One code-tagged bundle ships, `zenos_agent_basic`: a starter set of routine, reversible certifications, with the backstage pass (Section 2.5), that Flynn requests (one live ack) when onboarding starts. It includes no security, lock, infrastructure, PII-disclosure, or comms-dispatch certification. A third kind of bundle is derived: `cert_audit` builds `zenos_agent_autonomous` from every cert whose tool allows the Ninja emit stage. Editing an *existing* bundle's membership is not exposed through any agent-facing tool — only `zen_admintools_certadmin` (never agent-reachable, `mcp_exposed: false`) can change one via `cert_bundle_set`, requiring its own fresh live ack every time, since widening a bundle silently widens every future grant of it.
 
 `cert_req_grant` does expose one narrow path to *originate* a brand-new bundle: passing `cert_bundle` (a name that doesn't exist yet) with `cert_bundle_members` (a JSON array of cert names) registers that bundle. This is **define-only by default** — the bundle is created granted to nobody. Pass `also_grant=true` in the same call to also grant it to the target as part of the same live ack. `cert_bundle_members` has no effect if `cert_bundle` already names an existing bundle; changing an existing bundle's membership still requires an operator using `cert_bundle_set` directly.
 
@@ -165,6 +165,7 @@ A narrower grant held at the same or a lower level than the broader one it sits 
 - `zenos_agent_basic`: the backstage pass and everyday control (lights, scenes, covers, climate, water heater, displays, media playback, helper edits, timers, todo delete). Requested when Flynn's OOBE starts.
 - `zenos_agent_steward`: running the house model, granted at level 1. Room Manager topology and behavior (`zenos.spatial.room_topology_edit`, `zenos.room.behavior_control`), label create/update (`zenos.registry.label_lifecycle_control`), registry cosmetics and area assignment (`zenos.registry.lifecycle_control`), Grocy schema and locations (`zenos.knowledge.inventory_schema_edit`), house settings (`zenos.system.home_config_write`), profiles (`zenos.identity.profile_write`), zones (`zenos.helper.zones_edit`) and alert policy (`zenos.alerts.policy_edit`). At level 1 it cannot delete areas, labels, registry objects or Grocy structure.
 - `zenos_agent_advanced`: physical security. `zenos.actuation.lock_control`, `zenos.actuation.security_control`, `zenos.room.control_override` (clearing a room out of Paused) and `zenos.alerts.camera_policy_edit`. The bundle grants the ability only: every live acknowledgement these certifications require still goes to a phone.
+- `zenos_agent_autonomous` (2026.11.0): every cert whose tool allows the Ninja emit stage, which today is `zenos.comms.dispatch`. It is derived, not hand-kept, so a tool that later allows that stage joins on its own. Granting it adds the interactive and Ninja emit stages (`ie`), so the agent can send the summarizer's routine notifications in the background. See [Stages](#64-stages).
 - Admin certifications (cabinets, reload/restart, infrastructure, finance, registry purge, plant auto-shutoff, KFC publish, PII whitelist) are never bundled.
 
 ---
@@ -258,6 +259,38 @@ This still goes through both gates in Section 4 like any other grant — removin
 **Scope does not weaken Gate 1 or Gate 2 in Section 4.** Granting a scope, narrow or broad, allow or deny, is itself a certification grant and goes through the exact same live-ack requirement as any other. The system will accept a `cert_scope` covering every actuatable target in the household if you request it, with the same single real-time confirmation as any narrower request. It does not evaluate whether the scope you are requesting is a good idea. That evaluation is the human's, made once, at the moment of the ack. The system's only job past that point is to enforce whatever you approved.
 
 If you grant broad allow scope and later regret it, remove the specific entry as shown above, or revoke the entire certification (Section 5) — the same live-ack requirement applies either way.
+
+---
+
+## 6.4 STAGES
+
+*(2026.11.0)* A grant says where it may be used. Most use is interactive: someone asks, and the agent calls a tool. The summarizer pipeline acts with no one asking, so its use is a separate stage, and a grant has to name it.
+
+| Letter | Stage |
+|---|---|
+| `i` | interactive |
+| `l` | live drawer |
+| `s` | Ninja seed |
+| `e` | Ninja emit (the act at the end of a run) |
+| `m` | SuperSummary |
+| `c` | scheduler |
+
+- A grant stores its stages as `st`. A grant without one is interactive only, which is every grant made before 11.0.
+- Each tool declares the stages its certs allow (`st_ok` in its `certs_required`). A grant can't ask for a stage its tool doesn't allow.
+- Outside `i`, only an exact grant counts. A parent cert never covers a child in the background.
+- Adding a stage goes to your phone like any grant, and the prompt says it in plain words ("in the background, with no one asking"). Revoking with `cert_stages` drops just those stages.
+- In 2026.11.0 the Ninja emit stage (`e`) is the one a check reads. Seeds are declared by the tool (`seed_modes`), not granted.
+- The pipeline acts as the agent responsible for the household: the prime in its ACL, else the default agent. That agent must be onboarded, or summaries pause.
+
+```yaml
+# Let the agent send the summarizer's routine notifications
+action: script.zen_admintools_certadmin
+data:
+  mode: cert_req_grant
+  cert_bundle: zenos_agent_autonomous
+```
+
+The old seed and act whitelists still work through 11 as a bridge, and go away in 2026.12.
 
 ---
 

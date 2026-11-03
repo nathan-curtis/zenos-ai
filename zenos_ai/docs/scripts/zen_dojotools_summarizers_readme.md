@@ -1,4 +1,4 @@
-# Zen DojoTools Summarizers — Ninja Summarizer v4.6.0 · SuperSummary v4.6.1
+# Zen DojoTools Summarizers — Ninja Summarizer v4.7.0 · SuperSummary v4.7.0
 
 *Ninja Summarizer + SuperSummary — the KF4 action pipeline — MCP-exposed*
 
@@ -28,7 +28,7 @@ flowchart LR
   Scheduler["Scheduler / force event"]
   KFC["Dojo KFC drawer"]
   Seed{"seed or area_seed?"}
-  SeedTool["Whitelisted seed tool"]
+  SeedTool["Seed tool (declared seed mode)"]
   Index["Index / HyperIndex"]
   Monk["ai_task.generate_data"]
   FileCabinet["FileCabinet write"]
@@ -53,7 +53,7 @@ Three `input_boolean` entities control the pipeline. Fresh installs default the 
 | `input_boolean.zen_summarizers_enabled` | off on fresh install | Master gate — turns off both summarizers immediately |
 | `input_boolean.zen_ninja_summarizer_enabled` | on | Ninja Summarizer individual kill switch |
 | `input_boolean.zen_supersummarizer_enabled` | on | SuperSummary individual kill switch |
-| `input_boolean.zen_action_emission_enabled` | off | Allows Ninja to emit `suggested_act_event` kinds onto the event bus. Operator-only — AI cannot write this boolean. `zen_summarizer_act_whitelist` is a separate per-kind gate. |
+| `input_boolean.zen_action_emission_enabled` | off | Allows Ninja to emit `suggested_act_event` kinds onto the event bus. Operator-only — AI cannot write this boolean. Each act also needs the target tool's emit cert held with the Ninja emit stage (see [The responsible agent and its certs](#the-responsible-agent-and-its-certs)). |
 
 Master is checked first. If the master is off, both summarizers exit regardless of their individual switches. Turning any switch off is non-destructive — no schedules, automations, or cabinet data are touched.
 
@@ -89,14 +89,16 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
 1. **Kill switch check** — exits immediately if master or ninja switch is off
 2. **AI task guard** — exits with error if `input_text.zenos_ai_task_entity` is unset or unavailable
 3. **Resolve cabinets** — reads Dojo, Kata, and household cabinet entity IDs from resolver sensors
+3a. **Responsible agent (4.7.0)** — the run acts as the agent responsible for the household: the prime in its ACL, else the default agent. If that agent isn't onboarded, the run stops with `reason: agent_not_onboarded` and the notification "ZenOS: summaries are paused".
 4. **Read Dojo drawer** — loads the component's KFC metadata (friendly name, label, command, tool, kata_key)
 5. **`meta.enabled` check** — exits with `reason: meta_disabled` if the component's `meta.enabled` is `false`
 6. **Run governor** — dedup burnout window check (see below). Exits with `reason: dedup_window` if blocked.
 7. **Step 3c — Seed tool call (v4.3.0+)** — if the KFC defines `seed` or `area_seed`:
    - Resolves `_seed_tool`: `area_seed` takes priority when `area_id` input is set; falls back to `seed`.
-   - **Whitelist check**: reads `zen_summarizer_seed_whitelist` from syscab (`allowed_tools` list). Default if drawer missing: `['zen_dojotools_index']`.
-     - Whitelisted → fires `script.{{ _seed_tool }}`, sets `_seed_used: true`, step 8 skipped.
-     - Not whitelisted → emits `seed_tool_blocked` zen_event (warn), falls through to step 8 (HyperIndex runs normally).
+   - **Declared-mode check (4.7.0)**: only an existing `zen_dojotools_*` script is asked, for its `tool_manifest`. The seed's mode (or `mode:case` when the params carry a `case`) must be in its `seed_modes`.
+     - Declared → fires `script.{{ _seed_tool }}`, sets `_seed_used: true`, step 8 skipped.
+     - Not declared → the run stops before the monk with `reason: seed_tool_not_authorized`, naming the declared modes.
+     - 11 bridge, removed in 12: a tool on the old `zen_summarizer_seed_whitelist` that declares no `seed_modes` still seeds with any mode, stamped `legacy_seed_list`. A tool that declares `seed_modes` is checked strictly; the list can't widen it.
    - If neither `seed` nor `area_seed` is defined: step 3c is skipped, step 8 runs normally.
 7.5. **Step 3d — Resolve component_summary from label description (v4.6.0+)** — if `component_summary` is empty after reading the Dojo drawer (Scribe's `trim_description` path leaves it blank), the summarizer reads the base label description via `zen_dojotools_labels` and uses it as `component_summary`. This means the label description is the authoritative routing signal when the drawer field is trimmed — keep label descriptions accurate.
 8. **Run HyperIndex** — queries the index using the component's configured index call. Skipped if `_seed_used`. Routing:
@@ -108,6 +110,7 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
 11. **Call ai_task.generate_data** — sends prompt to the configured AI task entity (the local LLM monk)
 12. **Post to Kata cabinet** — if `post_to_kata_cabinet` is true and the monk's output **parsed into a real, non-empty JSON object**, writes it to `kata_cabinet[component_slug]`. The JSON is extracted by first-`{`/last-`}` (surviving code fences and trailing model prose) and validated with `from_json`; a malformed or fence-stripped response is logged as a parse failure and **not written** — a raw non-empty string is never enough, so a bad run can't stamp a fresh timestamp on an empty drawer. Every successful write also stamps `last_run_at` (unix timestamp) unconditionally — unlike `last_emission_at`, which only updates when urgency crosses `drift_threshold`, so an ambient/low-urgency component like Trapper Keeper still shows it actually ran.
 13. **Emit event** — fires `zen_dojotools_event_emitter` with kata/monk excerpt fields
+13a. **Act gate** — when the kata calls for action, `suggested_act_event` passes four checks in order: the infrastructure deny (never the dispatcher or tool router), the `zen_action_emission_enabled` kill switch, the emit cert, then the send. See [The responsible agent and its certs](#the-responsible-agent-and-its-certs).
 14. **Escalation (action_required components)** — before emitting a `dojotool_call` to `zen_dojotools_urgency_handler`, checks `zen_dojotools_alertmanager mode=check_ack` with `condition_key` = the component's `kata_key`. A live ack suppresses the escalation and fires `emission_suppressed` (`reason: acked`) instead. Coarse, whole-component suppression — see [AlertManager → Acknowledgements](../components/alertmanager.md#acknowledgements) for the key convention.
 
 ### Response
@@ -122,6 +125,21 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
   "caller_token": ""
 }
 ```
+
+---
+
+## The responsible agent and its certs
+
+*(2026.11.0)* The pipeline acts with no one asking, so it answers to certs used in a pipeline stage, not to the interactive grants an agent uses when someone asks.
+
+- **Who acts.** Both summarizers act as the agent responsible for the household: the prime in its ACL, else the default agent. That agent must be onboarded. There's no fall-through past a chosen agent that isn't.
+- **Seeds.** A seed tool lists the read modes it may be seeded with in its `tool_manifest` `seed_modes`. Index, Room Manager, AutoVac, Taskmaster, Inventory and Finance declare theirs.
+- **Acts.** The emit cert is the cert in the target tool's `certs_required` whose `st_ok` includes `e`. The agent must hold an exact grant of it with stage `e`; a parent cert never counts outside interactive use. Today that's Postman's `zenos.comms.dispatch`, the one member of `zenos_agent_autonomous`.
+- **Life safety.** An act at life-safety urgency skips the emit cert check, as Postman's own gate does. The infrastructure deny and the kill switch still apply, and the target must still be a real `zen_dojotools_*` script.
+- **Refusals.** A refused act fires `action_emission_blocked` (`not_a_tool`, `no_emit_cert_declared` or `emit_stage_not_granted`) and is written onto the component's kata as `act_blocked`: the tool, the reason, the cert, the agent, and what to grant.
+- **The 11 bridge.** An act on the old `zen_summarizer_act_whitelist` still goes through when the agent holds its emit cert for interactive use only. It fires `action_emission_legacy` and posts "ZenOS: grant the background stage". The bridge goes in 12.
+
+See [Stages](../getting_started/security_certification_manual.md#64-stages).
 
 ---
 
@@ -184,8 +202,9 @@ Synthesizes all active component kata drawers into a single `zen_summary` — th
 1. **Kill switch check** — exits immediately if master or supersummarizer switch is off
 2. **AI task guard** — exits with error if `input_text.zenos_ai_task_entity` is unset
 3. **Resolve cabinets** — reads Dojo and Kata cabinet entity IDs from resolver sensors
+3a. **Responsible agent (4.7.0)** — the same agent as the Ninja's; not onboarded stops the run with `agent_not_onboarded`
 4. **Load schema** — reads `zen_template.value.structure` from Kata cabinet (the output schema the monk must fill)
-5. **Build prompt context** — assembles identity card, manifest, capsule, home overview, and last `zen_summary`
+5. **Build prompt context** — assembles the responsible agent's identity card and capsule (not the persona-name helper), manifest, home overview, and last `zen_summary`
 6. **Collect active components** — iterates all Dojo drawers, selects those where `meta.enabled` is true (or absent) and whose `kata_key` exists in the Kata cabinet
 7. **Load per-component kata values** — reads each active component's kata drawer value
 8. **Build monk prompt** — assembles query, schema (zen_template structure), example, and review data (all component kata values + prompt context)
@@ -283,7 +302,9 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 | Kill switch `disabled` state | One of the three kill switches is off — intentional. Turn back on; pipeline auto-restarts. |
 | Empty or malformed output | Check inference server logs for context length errors. Models under ~4B parameters are not reliable as summarization backends. |
 | Component not included in SuperSummary | Check `meta.enabled` in its Dojo drawer. Also verify `kata_key` is set and a matching drawer exists in Kata cabinet. |
-| Seed always falls through to HyperIndex / `seed_tool_blocked` events | `zen_summarizer_seed_whitelist` drawer is missing from syscab, or the tool is not in `allowed_tools`. Run `zen_admintools_reset_template` to seed the default whitelist, then add tools via `zen_admintools_summarizer_seed action_type: add tool: <script_name>`. |
+| Run stops with `seed_tool_not_authorized` | The seed tool doesn't declare that mode in its `tool_manifest` `seed_modes`. Declare it in the tool (the old seed whitelist only carries a tool that declares none, until 2026.12). |
+| Summaries paused / `agent_not_onboarded` | The household's prime agent (else the default agent) isn't onboarded. Onboard it through Flynn. |
+| `act_blocked` on a component's kata, `emit_stage_not_granted` | The agent holds the target tool's emit cert for interactive use only, or not at all. Grant `zenos_agent_autonomous` (or the named cert with `cert_stages: ie`). |
 
 ---
 
@@ -322,6 +343,7 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| Ninja / SuperSummary v4.7.0 | Both act as the household's responsible agent, which must be onboarded. SuperSummary's capsule comes from that agent. Seeds must be declared in the tool's `seed_modes`; acts need the emit cert held with stage `e`; a refused act lands on the kata as `act_blocked`. The seed and act whitelists are an 11 bridge, removed in 12. The empty-input guard no longer overwrites an earlier refusal. |
 | SuperSummary v4.6.1 | The Trapper Keeper KFC says its input is only the ambient tier. It used to list the core managers it shouldn't summarize, and a model that didn't find them in its input reported them missing as a pipeline failure at urgency 5. `kfc_manifest` reports 4.6.1. |
 | v4.5.6 | Ninja never calls the model with nothing to read: an empty input writes an urgency-0 no-input kata and emits `ninja_no_input`. The one-hop index envelope is unwrapped before use, so the inspect supplement receives data. `trapper_keeper` is seeded with `{kata_tier: <tier>}`. (4.5.4: `kata_emit` is fired directly as a `zen_event`.) |
 | v4.5.2 | `pipeline_tier` canonical name changed from `direct` to `keeper` (Scheduler already defaulted to `keeper`; docs and `building_a_kfc.md` already used it). Default value, comment block, and prompt-instruction wording updated to match — filter behavior unchanged (`direct` and `keeper` land in the same bucket). Stripped stale incident-narration comments from step 5. |

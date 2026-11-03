@@ -67,6 +67,16 @@ This is the rung Chapter 19 covers in full: the tool declares `required_cert` an
 
 The certification boundary is drawn around consequence, not around how dangerous a tool sounds. The cert-gate audit in 2026.10.0 asked "can this action actually hurt something?" of every tool, and gated things that do not sound dangerous but are: sending mail or a Teams message (disclosure of anything the agent has read), deleting a calendar event or to-do item (irreversible loss), setting Teams presence (misrepresenting a person to their organization), editing the mail whitelist (loosening the disclosure policy itself).
 
+### When no one asked
+
+Every rung above assumes a caller: someone asked, and the agent called a tool. The summarizer pipeline has no caller. It runs on a schedule, reads the house, and at the end of a run may decide that something needs doing. Before 2026.11.0 it answered to two lists in the system cabinet, and nothing on the ladder said whose authority it was using.
+
+Since 2026.11.0 the pipeline acts as the **responsible agent**: the agent responsible for the household it summarizes. That is the household's prime agent, named in its ACL (Chapter 18), and the default agent when the household names none. This is what prime means: the agent responsible for a household, a family or a person. The responsible agent must be onboarded. When the chosen agent isn't, the run does not fall through to some other agent; it stops, and summaries pause with a notice saying why.
+
+Then the rungs apply to the responsible agent, with one change. An act at the end of a run needs a certification the agent holds for that stage, not just for interactive use (Chapter 19). Granting a stage is a live acknowledgement like any grant, so a person decides, once, that the agent may do this with no one asking. `zenos_agent_autonomous` is that decision as a bundle.
+
+> **Not yet built.** In 2026.11.0 only the summarizer's emit step is checked this way, and only against the household's responsible agent. The pipeline does not yet resolve a family's or a person's responsible agent, and live drawers, SuperSummary and the scheduler do not check a stage.
+
 ## 20.5 Live acknowledgement
 
 For the actions that deserve it, a certified agent still needs a human's approval, every time. `zen_dojotools_identity mode=request_live_ack` is the single chokepoint:
@@ -139,7 +149,7 @@ AdminTools generally follow the same rule: they are the configuration and recove
 
 ## 20.7 No ambient administrative authority
 
-Domain tools allow narrow, scoped exceptions to the per-call acknowledgement where a controlled exception makes practical sense. The administrative plane allows none. There is no way to tell CertAdmin "this agent does this all the time, stop asking." If unattended administrative behavior is ever genuinely needed, it will get its own narrower, bounded capability, not a propped-open door.
+Domain tools allow narrow, scoped exceptions to the per-call acknowledgement where a controlled exception makes practical sense. A background stage is one of them: it lets the agent act from the pipeline, but only with a domain certification a person granted for that stage. The administrative plane allows none. There is no way to tell CertAdmin "this agent does this all the time, stop asking." If unattended administrative behavior is ever genuinely needed, it will get its own narrower, bounded capability, not a propped-open door.
 
 Identity policy, admission, certification, scope, acknowledgement, and the administrative plane read like separate mechanisms. The next chapter shows they are one.
 
@@ -151,6 +161,7 @@ Every claim in this chapter can be checked in the code. These are the places to 
 * The identity policy rung: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`sim_mode_allowed`, `policy_status`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
 * Admission, checked first in every agent-facing tool: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro entry_gate`). Flynn asks for the pass before setup: [`flynn_oobe.yaml`](../../../packages/zenos_ai/flynn_oobe.yaml). Docs: [zen_os1_jinja.md](../custom_templates/zen_os1_jinja.md), [security_certification_manual.md](../getting_started/security_certification_manual.md#25-the-backstage-pass-zenosagentbasic).
 * Live acknowledgement through AlertManager and Postman, and the console override it honors: [`dojotools_identity.yaml`](../../../packages/zenos_ai/dojotools/dojotools_identity.yaml) (`request_live_ack`, `live_ack_console_bypass`). Docs: [zen_dojotools_identity_readme.md](../scripts/zen_dojotools_identity_readme.md).
+* The responsible agent and stage checks: [`zen_identity.jinja`](../../../custom_templates/zenos_ai/zen_identity.jinja) (`macro responsible_agent`, `macro caller`), used by [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`agent_not_onboarded`). Docs: [zen_dojotools_summarizers_readme.md](../scripts/zen_dojotools_summarizers_readme.md#the-responsible-agent-and-its-certs).
 * The pause asymmetry: setting Paused is open, clearing it is gated: [`dojotools_room_manager.yaml`](../../../packages/zenos_ai/dojotools/dojotools_room_manager.yaml) (`zenos.room.control_override`). Docs: [room_manager.md](../components/room_manager.md).
 <!-- /where -->
 

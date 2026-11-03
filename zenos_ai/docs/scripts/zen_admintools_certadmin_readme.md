@@ -1,4 +1,4 @@
-# Zen AdminTools CertAdmin — v1.4.0
+# Zen AdminTools CertAdmin — v1.6.0
 
 *Admin-only cert issuance/revocation authority for AI persona (ai_user) cabinets*
 
@@ -54,8 +54,8 @@ This is not a full admin-role check — HA has no built-in `is_admin()` template
 | Mode | Description |
 |------|-------------|
 | `help` (default) | Structured reference: all modes, field descriptions, the exact `ack_phrase` text. |
-| `cert_req_grant` | Grant/update a KFC certification on `target=` (default AI user cabinet if omitted). Requires `cert_component` + live-ack approval. `waives_live_ack=true` additionally requires `confirm_action=true` + exact `ack_phrase`. |
-| `cert_req_revoke` | Revoke a certification. Requires `cert_component` + live-ack approval. |
+| `cert_req_grant` | Grant/update a KFC certification on `target=` (default AI user cabinet if omitted). Requires `cert_component` + live-ack approval. `cert_stages` sets where it may be used. `waives_live_ack=true` additionally requires `confirm_action=true` + exact `ack_phrase`. |
+| `cert_req_revoke` | Revoke a certification. Requires `cert_component` + live-ack approval. With `cert_stages`, drops only those stages and keeps the grant. |
 | `cert_list` | List all certifications + stats on `target=`. Read-only, no live-ack. |
 | `tool_manifest` | UMP self-description (`zenos_manifest.jinja` contract). |
 
@@ -69,6 +69,7 @@ This is not a full admin-role check — HA has no built-in `is_admin()` template
 | `target` | text | `''` | Explicit target `ai_user` cabinet entity_id. Omit to resolve the default AI user. Refuses (does not fall back silently) if an explicit value is passed but doesn't resolve to a real entity. |
 | `cert_component` | text | `''` | `kata_key` of the KFC to certify. Required for `cert_req_grant`/`cert_req_revoke`. |
 | `cert_level` | number (1–4) | `2` | 1=Observer, 2=Advisor, 3=Operator, 4=Autonomous. |
+| `cert_stages` | text | `''` | Where the grant may be used: stage letters (`i` interactive, `l` live drawer, `s` Ninja seed, `e` Ninja emit, `m` SuperSummary, `c` scheduler) or stage names, e.g. `ie`. On `cert_req_grant` it is the grant's whole stage set, and each stage must be allowed by the cert's tool (catalog `st_ok`); omit it to keep the stages already held (interactive for a new grant). On `cert_req_revoke` it drops only these stages. Unknown stages are refused before any ack. |
 | `cert_tool` | text | `''` | Script or tool used by this persona for the KFC. Optional. |
 | `cert_constraints` | text (multiline, JSON array) | `''` | Actions requiring explicit per-action confirmation, even with this cert. |
 | `cert_scope` | text (multiline, JSON array) | `''` | Per-target exemptions from a cert's live-ack requirement. Each item is either a bare `entity_id` string (shorthand for allow) or a `{"entity": "...", "acl": "allow"\|"deny"\|"remove"}` object. **Merges** into any existing scope for this `cert_component` — does not replace it. `acl="remove"` deletes one entity from the merged scope without a full `cert_req_revoke`. |
@@ -85,6 +86,8 @@ This is not a full admin-role check — HA has no built-in `is_admin()` template
 - **Catalog check** (moved verbatim from persona_editor's `cert_req_grant`): `cert_component` must be declared by some tool's own `tool_manifest` `certs_required` — there is no separate hand-maintained catalog. `cert_req_grant` calls `zen_dojotools_manifest mode=cert_audit` to read the live catalog and refuses with the list of available components if `cert_component` isn't in it.
 - **Plain approval prompts.** The live ack reads "<agent> asks to: <description> (<cert>, level N). Approve?", using the cert's short `description` from the catalog (its cert name when the description is empty). A bundle grant lists each member by its description; revokes and bundle create, change and delete read the same way.
 - **Renamed certs (2026.11.0).** A grant under a renamed cert's new `zenos.*` name replaces a grant held under its old flat name and keeps its scope; a bundle grant drops its members' old-name grants. The alias map is `cert_aliases()` in `zen_identity.jinja`, removed in 2026.12.
+- **Stages (2026.11.0).** A grant stores its stages as `st`, in the fixed order `ilsemc`, and omits it when interactive only, so a grant without `st` behaves as it always did. Outside `i`, only an exact grant counts, never a parent cert. The phone prompt names each background stage in plain words. A re-grant without `cert_stages` keeps the stages already held, and a bundle grant keeps each member's.
+- **Bundle grants take `cert_stages`** (v1.6.0). The requested stages are added to each member whose tool allows them, and a level the agent already holds is never lowered. `zenos_agent_autonomous` (every cert whose tool allows the Ninja emit stage, derived by `cert_audit`) adds `ie` by default, so one approval lets the agent act from the background summarizer. The prompt says so: "It may do these from: Ninja emit, in the background with no one asking."
 - **Dates.** Every grant records `not_before` (issue time) and `not_after` (one year), UTC. Nothing enforces expiry yet.
 - **Console user.** The console-admin bypass reads the logged-in user from the call's own session (`context.user_id`), because `whoami` shows nothing about the console before the agent holds its pass.
 - **Live-ack is unconditional** for both `cert_req_grant` and `cert_req_revoke` — requesting `waives_live_ack` does not skip it; it's layer 1 of the 3 required for the waiver itself.
