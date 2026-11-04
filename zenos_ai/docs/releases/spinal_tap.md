@@ -1,6 +1,6 @@
 # Release Notes — 2026.11.0 'This Is Spinal Tap'
 
-**Status:** Public beta 4
+**Status:** Public beta 4.1 (patch on beta 4)
 **ETA:** Saturday, November 14, 2026
 **Branch:** `feat/2026.11.0`
 **Base:** 2026.10.1 (patch on 2026.10.0 'Tron')
