@@ -1,4 +1,4 @@
-# Zen DojoTools Summarizers — Ninja Summarizer v4.7.0 · SuperSummary v4.7.0
+# Zen DojoTools Summarizers — Ninja Summarizer v4.7.2 · SuperSummary v4.7.1
 
 *Ninja Summarizer + SuperSummary — the KF4 action pipeline — MCP-exposed*
 
@@ -106,7 +106,7 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
    - If the drawer has a `label` field: standard label-based index call in hypergraph mode.
    - If neither is present: HyperIndex step is skipped.
 9. **Run library command** — if the component has a `command` field, dispatches it through `command_interpreter.jinja`
-10. **Build monk prompt** — assembles query, kata template (structure), example, review data (index + library output + dojo drawer), and supplemental instructions
+10. **Build monk prompt** — assembles query, kata template (structure), example, review data (index + library output + dojo drawer), and supplemental instructions. Two guards run first; see [Ninja size and context guards](#ninja-size-and-context-guards).
 11. **Call ai_task.generate_data** — sends prompt to the configured AI task entity (the local LLM monk)
 12. **Post to Kata cabinet** — if `post_to_kata_cabinet` is true and the monk's output **parsed into a real, non-empty JSON object**, writes it to `kata_cabinet[component_slug]`. The JSON is extracted by first-`{`/last-`}` (surviving code fences and trailing model prose) and validated with `from_json`; a malformed or fence-stripped response is logged as a parse failure and **not written** — a raw non-empty string is never enough, so a bad run can't stamp a fresh timestamp on an empty drawer. Every successful write also stamps `last_run_at` (unix timestamp) unconditionally — unlike `last_emission_at`, which only updates when urgency crosses `drift_threshold`, so an ambient/low-urgency component like Trapper Keeper still shows it actually ran.
 13. **Emit event** — fires `zen_dojotools_event_emitter` with kata/monk excerpt fields
@@ -208,7 +208,7 @@ Synthesizes all active component kata drawers into a single `zen_summary` — th
 6. **Collect active components** — iterates all Dojo drawers, selects those where `meta.enabled` is true (or absent) and whose `kata_key` exists in the Kata cabinet
 7. **Load per-component kata values** — reads each active component's kata drawer value
 8. **Build monk prompt** — assembles query, schema (zen_template structure), example, and review data (all component kata values + prompt context)
-9. **Call ai_task.generate_data** — sends prompt to the AI task entity
+9. **Call ai_task.generate_data** — sends prompt to the AI task entity. A failed call (an error, an outage, or an empty reply) ends the run with `error: monk_failure` and a `zen_event` of the same kind, as the Ninja does (4.7.1). Nothing is written, so the last good `zen_summary` stays in place.
 10. **Write `zen_supersummary_status`** — records run status + component count to Kata cabinet
 11. **Post `zen_summary`** — if `post_to_kata_cabinet` is true and the monk's output parsed into a real, non-empty JSON object (same first-`{`/last-`}` extraction + `from_json` validation as the Ninja path), writes to Kata cabinet as `ZEN_SUMMARY`. A malformed response is logged and not written.
 12. **Emit event** — fires `zen_dojotools_event_emitter`
@@ -259,12 +259,14 @@ SuperSummary has its own cooldown window separate from the Ninja governor. Contr
 
 If SuperSummary ran less than `super_burnout_seconds` ago, the call returns immediately with `reason: dedup_window`. Set `force: true` to bypass.
 
-## Size Guard and Context Budget
+## Ninja size and context guards
 
-SuperSummary enforces two guards before the monk call:
+The Ninja checks two limits before it calls the model. Each one refuses the run, fires a `zen_event` of the same kind with a hint, and writes nothing.
 
-- **Size guard:** if the assembled prompt exceeds **200,000 bytes**, SuperSummary aborts with `status: error, reason: prompt_size_exceeded`. Reduce component count or trim kata drawer values.
-- **Context budget:** `max_context_tokens` (from `zen_ninja_config`, default **28,000**) caps the total token estimate. If the assembled prompt would exceed the budget, ambient/system-tier components are dropped before direct-tier components.
+- **Size guard:** if the domain context and index result together come to more than **200,000 characters**, the run stops with `error: summarizer_size_exceeded`. Narrow the component's KFC `index_call` with `domain_inspect_domains`, or lower its `domain_inspect_limit`.
+- **Context cap:** the prompt's size in characters, divided by 4, estimates its tokens. Over `max_context_tokens` (from `zen_ninja_config` in the household cabinet, default **28,000**), the run stops with `error: ninja_context_overflow`, reporting `prompt_tokens_est` and `max_context_tokens`. Raise `max_context_tokens` if your model's context window allows it, or lower `domain_inspect_limit` in the component's `index_call`. Before 4.7.2 this cap measured the prompt's keys, not its characters, so it never tripped.
+
+SuperSummary has neither guard. It keeps its prompt small by leaving out ambient- and system-tier components and reading the Trapper Keeper digest instead (see [Pipeline Tier Split](#pipeline-tier-split-v510)).
 
 ## Forcing Runs
 
@@ -304,6 +306,8 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 | Component not included in SuperSummary | Check `meta.enabled` in its Dojo drawer. Also verify `kata_key` is set and a matching drawer exists in Kata cabinet. |
 | Run stops with `seed_tool_not_authorized` | The seed tool doesn't declare that mode in its `tool_manifest` `seed_modes`. Declare it in the tool (the old seed whitelist only carries a tool that declares none, until 2026.12). |
 | Summaries paused / `agent_not_onboarded` | The household's prime agent (else the default agent) isn't onboarded. Onboard it through Flynn. |
+| SuperSummary `monk_failure` | The model call failed or came back empty; the last good summary is kept. Check `input_text.zenos_ai_task_entity` names a working AI task entity, and the inference server's logs. |
+| Ninja `ninja_context_overflow` | The component's prompt is over `max_context_tokens`. Raise `max_context_tokens` in `zen_ninja_config`, or lower `domain_inspect_limit` in its KFC `index_call`. |
 | `act_blocked` on a component's kata, `emit_stage_not_granted` | The agent holds the target tool's emit cert for interactive use only, or not at all. Grant `zenos_agent_autonomous` (or the named cert with `cert_stages: ie`). |
 
 ---
@@ -343,6 +347,8 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| Ninja v4.7.2 | The context cap measures the prompt in characters (it counted the prompt's keys, so it never tripped). A run over `max_context_tokens` stops with `ninja_context_overflow`. |
+| SuperSummary v4.7.1 / Ninja v4.7.1 | SuperSummary ends a failed model call with `monk_failure` and keeps the last good summary. `prompt_size_chars` counts characters on both. |
 | Ninja / SuperSummary v4.7.0 | Both act as the household's responsible agent, which must be onboarded. SuperSummary's capsule comes from that agent. Seeds must be declared in the tool's `seed_modes`; acts need the emit cert held with stage `e`; a refused act lands on the kata as `act_blocked`. The seed and act whitelists are an 11 bridge, removed in 12. The empty-input guard no longer overwrites an earlier refusal. |
 | SuperSummary v4.6.1 | The Trapper Keeper KFC says its input is only the ambient tier. It used to list the core managers it shouldn't summarize, and a model that didn't find them in its input reported them missing as a pipeline failure at urgency 5. `kfc_manifest` reports 4.6.1. |
 | v4.5.6 | Ninja never calls the model with nothing to read: an empty input writes an urgency-0 no-input kata and emits `ninja_no_input`. The one-hop index envelope is unwrapped before use, so the inspect supplement receives data. `trapper_keeper` is seeded with `{kata_tier: <tier>}`. (4.5.4: `kata_emit` is fired directly as a `zen_event`.) |

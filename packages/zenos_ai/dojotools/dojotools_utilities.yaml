@@ -2,7 +2,14 @@
 # ZenOS-AI DojoTools: Utilities Bundle
 # Phase 1 migration from scripts.yaml
 #
-# Version: 5.3.3
+# Version: 5.4.1
+# v5.4.1: help 3.2.1: mode=directory lists every script whose manifest
+#   answers. It dropped any whose modes did not name help (most stacks), though
+#   help is the default mode of every zen_* script.
+# v5.4.0: help 3.2.0: mode=directory pages (page=, page_size= up to 50,
+#   tier=) and slices the sorted script list before any manifest call, so a
+#   page costs page_size calls. Each entry carries summary (the tool_manifest
+#   summary, else display_name).
 # v5.3.3: HA naming (2026.11): name outputs carry entity_name and device_name
 #   next to the legacy friendly_name (kept while HA still sets it), and
 #   composed names are built from those parts, so they survive HA dropping
@@ -185,6 +192,7 @@ script:
             {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
             {{ MF.tool_manifest(
                 tool='zen_dojotools_calculator',
+                summary='Do math on two numbers',
                 display_name='Calculator',
                 tier='dojotools',
                 version='1.4.0',
@@ -359,6 +367,7 @@ script:
             {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
             {{ MF.tool_manifest(
                 tool='zen_dojotools_dice_roller',
+                summary='Roll dice, flip a coin, or pick a random number',
                 display_name='Dice Roller',
                 tier='dojotools',
                 version='1.1.0',
@@ -462,11 +471,11 @@ script:
   zen_dojotools_help:
     alias: Zen DojoTools Help
     description: >-
-      ZenOS-AI global help front door (3.1.3). mode=about: system overview +
+      ZenOS-AI global help front door (3.2.1). mode=about: system overview +
       live script inventory. mode=help tool=<script>: proxy to any tool's
-      canonical help (status=help schema). mode=directory: auto-discover all
-      tools that expose mode=help — tools fall in line with the canonical
-      schema and automagically appear. mode=troubleshooting: STATIC (no live
+      canonical help (status=help schema). mode=directory: every tool that
+      answers help, with a one-line summary each, a page at a time (page=,
+      page_size= up to 50, tier= to list one tier). mode=troubleshooting: STATIC (no live
       calls, no fan-out) system-level known platform quirks + pointers to
       every other diagnostic surface (manifest, health_report, repo). If
       you're an agent starting cold with an unexplained error, start here.
@@ -488,6 +497,27 @@ script:
               - tool_manifest
       tool:
         description: "For mode=help: script name to proxy (e.g. zen_dojotools_finance)."
+        required: false
+        selector:
+          text:
+      page:
+        description: "For mode=directory: page number, from 1. Default 1."
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 50
+            mode: box
+      page_size:
+        description: "For mode=directory: tools per page. Default 20, max 50."
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 50
+            mode: box
+      tier:
+        description: "For mode=directory: list one tier only (dojotools, stacks, sutras, codex). Empty = all."
         required: false
         selector:
           text:
@@ -515,9 +545,10 @@ script:
             {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
             {{ MF.tool_manifest(
                 tool='zen_dojotools_help',
+                summary='Start here: system overview and every tool help',
                 display_name='Help',
                 tier='dojotools',
-                version='3.1.4',
+                version='3.2.1',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=[],
@@ -691,18 +722,30 @@ script:
     # ── mode=directory: scan all zen_* scripts, return those with help ──────
     - if: "{{ result is not defined and _mode_norm == 'directory' }}"
       then:
+      # Page the sorted script list BEFORE any manifest call, so a page costs
+      # page_size calls, not one per tool in the house.
       - variables:
-          _dir_scripts: >-
+          _dir_tier: "{{ tier | default('', true) | string | trim | lower }}"
+          _dir_all: >-
+            {%- set _pre = {'dojotools': 'script.zen_dojotools_', 'stacks': 'script.zen_stack_',
+                            'sutras': 'script.zen_sutra_', 'codex': 'script.zen_codex_'} -%}
+            {%- set _want = [_pre[_dir_tier]] if _dir_tier in _pre else _pre.values() | list -%}
             {%- set ns = namespace(out=[]) -%}
-            {%- for e in states.script -%}
+            {%- for e in states.script if e.state in ('off', 'on') -%}
               {%- set eid = e.entity_id -%}
-              {%- if (eid.startswith('script.zen_dojotools_') or eid.startswith('script.zen_stack_')
-                     or eid.startswith('script.zen_sutra_') or eid.startswith('script.zen_codex_'))
-                  and e.state in ('off', 'on') -%}
+              {%- for p in _want if eid.startswith(p) -%}
                 {%- set ns.out = ns.out + [eid] -%}
-              {%- endif -%}
+              {%- endfor -%}
             {%- endfor -%}
-            {{ ns.out | list }}
+            {{ ns.out | sort | list }}
+          _dir_size: "{{ [[page_size | default(20, true) | int(20), 1] | max, 50] | min }}"
+      - variables:
+          _dir_total: "{{ _dir_all | count }}"
+          _dir_pages: "{{ [((_dir_all | count) / (_dir_size | int)) | round(0, 'ceil') | int, 1] | max }}"
+      - variables:
+          _dir_page: "{{ [[page | default(1, true) | int(1), 1] | max, _dir_pages | int] | min }}"
+      - variables:
+          _dir_scripts: "{{ _dir_all[(_dir_page | int - 1) * (_dir_size | int):(_dir_page | int) * (_dir_size | int)] }}"
           _dir_entries: []
       - repeat:
           for_each: "{{ _dir_scripts }}"
@@ -716,15 +759,14 @@ script:
               mode: tool_manifest
           # Most tools answer inside an envelope ({mode, result: <manifest>});
           # read the manifest from it. help is the default mode of every zen_*
-          # script, so a manifest that lists no modes still has help.
+          # script, so any script whose manifest answers is listed, whether or
+          # not its modes name help (most stacks list only their verbs).
           - variables:
               _dir_tm: >-
                 {%- set r = _dir_tm_raw if _dir_tm_raw is mapping else {} -%}
                 {%- set inner = r.get('result') -%}
                 {{ inner if inner is mapping and inner.get('tool') else r }}
-          - variables:
-              _dir_modes: "{{ _dir_tm.get('modes') or [] }}"
-          - if: "{{ (_dir_tm.get('tool') or '') != '' and (_dir_modes | count == 0 or 'help' in _dir_modes) }}"
+          - if: "{{ (_dir_tm.get('tool') or '') != '' }}"
             then:
             - variables:
                 _dir_entries: >-
@@ -732,6 +774,7 @@ script:
                     _dir_entries + [{
                       'script': _dir_script | replace('script.', ''),
                       'display_name': _dir_tm.get('display_name', _dir_script | replace('script.', '')),
+                      'summary': _dir_tm.get('summary') or _dir_tm.get('display_name', _dir_script | replace('script.', '')),
                       'tier': _dir_tm.get('tier', ''),
                       'returns': _dir_tm.get('returns') or [],
                       'version': _dir_tm.get('version', '')
@@ -742,8 +785,18 @@ script:
             status: ok
             mode: directory
             count: "{{ _dir_entries | length }}"
+            page: "{{ _dir_page | int }}"
+            page_size: "{{ _dir_size | int }}"
+            pages: "{{ _dir_pages | int }}"
+            total: "{{ _dir_total | int }}"
+            tier: "{{ _dir_tier if _dir_tier != '' else 'all' }}"
+            next: "{{ ('mode=directory page=' ~ (_dir_page | int + 1) ~ (' tier=' ~ _dir_tier if _dir_tier != '' else '')) if _dir_page | int < _dir_pages | int else none }}"
             tools: "{{ _dir_entries }}"
-            note: "Call mode=help tool=<script> to get any listed tool's full help."
+            note: >-
+              Summaries are short on purpose. For details call the tool itself with
+              mode=help (or mode=tool_manifest), or this tool with mode=help tool=<script>.
+              total counts every script in scope; a page can list fewer than page_size
+              when a script there does not answer.
 
     - variables:
         # os_version must never be hardcoded here independent of the
@@ -756,7 +809,7 @@ script:
         _ab_ovd: >-
           {%- import 'zenos_ai/zen_os_1.jinja' as zen1 -%}
           {{ zen1.os_version() | from_json }}
-        tool_version: "3.1.3"
+        tool_version: "3.2.1"
         os_version: >-
           {{ _ab_ovd.get('version', 'unknown') }}{{ ' ' ~ _ab_ovd.get('tag') ~ (_ab_ovd.get('tag_number') | string if _ab_ovd.get('tag_number') is not none else '') if _ab_ovd.get('tag', '') != '' else '' }}
         action: about
@@ -898,6 +951,7 @@ script:
             {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
             {{ MF.tool_manifest(
                 tool='zen_dojotools_wait',
+                summary='Pause for 1 to 120 seconds',
                 display_name='Wait',
                 tier='dojotools',
                 version='1.1.0',
@@ -981,7 +1035,7 @@ script:
       mode:
         description: >-
           This tool has only one real operation (wait N seconds via the
-          duration field) — there is no read/set distinction to select here.
+          duration field): there is no read/set distinction to select here.
           Pass mode: "tool_manifest" only if you want this tool's own
           self-description/schema dump instead of actually waiting.
         required: false
@@ -1007,7 +1061,7 @@ script:
         selector:
           text:
     alias: Zen DojoTools Wait
-    description: 'Use this tool to insert a timed delay of 1–120 seconds (default: 15)
+    description: 'Use this tool to insert a timed delay of 1-120 seconds (default: 15)
       between actions in a conversation or chained tool call. Useful for narrative pacing,
       suspense, or waiting on a timed task. After the delay, the conversation or sequence
       resumes automatically. Example: ''Wait 30 seconds, then speak'' or ''Pause 10
@@ -1175,12 +1229,12 @@ script:
 
       mode:
         description: >-
-          Optional explicit operation selector — "read" to force a read-only
+          Optional explicit operation selector: "read" to force a read-only
           reply (same as get=true), "set" to apply option (fails clearly with
           a missing_option error if option isn't also given, rather than
           silently falling back to a read), or "tool_manifest" for this tool's
           own self-description/schema dump instead of touching the entity.
-          You can also just omit mode entirely and use option/get directly —
+          You can also just omit mode entirely and use option/get directly: 
           both styles work identically.
         required: false
         selector:
@@ -1222,6 +1276,7 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{ MF.tool_manifest(
                     tool='zen_dojotools_select_control',
+                    summary='Read or set a select or input_select',
                     display_name='Select Control',
                     tier='dojotools',
                     version='1.3.1',
@@ -1518,13 +1573,13 @@ script:
 
       mode:
         description: >-
-          Optional explicit operation selector — "read" to force a
+          Optional explicit operation selector: "read" to force a
           read-only reply (same as get=true), "set" to apply state (fails
           clearly with a missing_state error if state isn't also given,
           rather than silently falling back to a read), or "tool_manifest"
           for this tool's own self-description/schema dump instead of
           touching the entity. You can also just omit mode entirely and
-          use state/get directly — both styles work identically.
+          use state/get directly: both styles work identically.
         required: false
         selector:
           select:
@@ -1566,6 +1621,7 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{ MF.tool_manifest(
                     tool='zen_dojotools_boolean',
+                    summary='Read or set a switch or input_boolean',
                     display_name='Boolean Control',
                     tier='dojotools',
                     version='1.3.1',
@@ -1893,14 +1949,14 @@ script:
 
       mode:
         description: >-
-          Optional explicit operation selector — "read" to return the current
+          Optional explicit operation selector: "read" to return the current
           value/min/max without changing anything (same as omitting value with
           operation=set), "set" to require operation=set with a real value
           (fails clearly with missing_value if value isn't also given, rather
           than a confusing out_of_range error), or "tool_manifest" for this
           tool's own self-description/schema dump instead of touching the
           entity. You can also just omit mode and use value/operation/amount
-          directly — both styles work identically.
+          directly: both styles work identically.
         required: false
         selector:
           select:
@@ -1942,6 +1998,7 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{ MF.tool_manifest(
                     tool='zen_dojotools_number',
+                    summary='Read, set, or adjust a number entity',
                     display_name='Number Control',
                     tier='dojotools',
                     version='1.3.1',
@@ -2203,16 +2260,16 @@ script:
       finish. Omit operation (or pass get=true) to read current state,
       remaining, and duration only.
 
-      mode: dashboard — house-wide rollup of every non-idle timer entity
+      mode: dashboard: house-wide rollup of every non-idle timer entity
       (label-cross-referenced for room/purpose) plus every schedule.* helper
       entity and its next_event. Pass include_idle=true to also list idle
       timers; pass include_schedules=false to omit the schedule section.
 
-      mode: worldclock — home local time + UTC, plus any caller-supplied
+      mode: worldclock: home local time + UTC, plus any caller-supplied
       named UTC offsets (utc_offsets="Tokyo:+9,London:+1").
 
-      mode: alarms — every device's next-set alarm (Alexa/Echo, phone,
-      watch — any sensor.*_next_alarm entity), soonest first.
+      mode: alarms: every device's next-set alarm (Alexa/Echo, phone,
+      watch: any sensor.*_next_alarm entity), soonest first.
 
       Examples:
         Read:          { "name": "sim_office_room_timer" }
@@ -2237,7 +2294,7 @@ script:
         description: >-
           start/pause/cancel/finish. Omit to read current state. start
           without duration resumes a paused timer from where it left off
-          (HA timer domain behavior) — pass duration to start fresh or
+          (HA timer domain behavior): pass duration to start fresh or
           restart an already-running timer with a new duration.
         required: false
         selector:
@@ -2281,7 +2338,7 @@ script:
         description: >-
           mode:worldclock only. Comma-separated Label:+/-N (whole or
           half-hour UTC offset), e.g. "Tokyo:+9,London:+1,New York:-4".
-          No built-in city table — HA's Jinja sandbox has no arbitrary
+          No built-in city table: HA's Jinja sandbox has no arbitrary
           IANA timezone conversion filter, so you supply the current
           offset (DST-aware if you know it) rather than risk a hardcoded
           table silently going wrong twice a year. Omit for just home
@@ -2292,7 +2349,7 @@ script:
 
       mode:
         description: >-
-          Optional explicit operation selector — "read" to force a
+          Optional explicit operation selector: "read" to force a
           read-only reply (same as get=true), "set" to require operation
           also be given (fails clearly with missing_operation if omitted,
           rather than silently falling back to a read), "dashboard" for a
@@ -2302,7 +2359,7 @@ script:
           soonest first, or "tool_manifest" for this tool's own
           self-description/schema dump instead of touching an entity. You
           can also just omit mode entirely and use operation/get directly
-          — both styles work identically for single-entity access.
+          - both styles work identically for single-entity access.
         required: false
         selector:
           select:
@@ -2378,6 +2435,7 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{ MF.tool_manifest(
                     tool='zen_dojotools_timekeeper',
+                    summary='Timers, schedules, world clock, and device alarms',
                     display_name='Timekeeper',
                     tier='dojotools',
                     version='1.5.1',
@@ -2805,13 +2863,13 @@ script:
 
       mode:
         description: >-
-          Optional explicit operation selector — "read" to return the current
+          Optional explicit operation selector: "read" to return the current
           value without changing anything (same as omitting value with
           operation=set), "set" to require a real value (fails clearly with
           missing_value if value isn't also given, rather than silently
           writing an empty string), or "tool_manifest" for this tool's own
           self-description/schema dump instead of touching the entity. You
-          can also just omit mode and use value/operation directly — both
+          can also just omit mode and use value/operation directly: both
           styles work identically.
         required: false
         selector:
@@ -2855,6 +2913,7 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{ MF.tool_manifest(
                     tool='zen_dojotools_text',
+                    summary='Read or set a text or input_text',
                     display_name='Text Control',
                     tier='dojotools',
                     version='1.3.1',
@@ -3123,7 +3182,7 @@ script:
     max: 10
     description: >-
       GET+SET for climate AND fan entities (domain auto-detected from the
-      resolved entity_id). Inspects supported_features before applying —
+      resolved entity_id). Inspects supported_features before applying: 
       fails closed on unsupported feature. Climate: temperature (single or
       range), HVAC mode, fan mode, preset mode, swing mode, humidity, aux
       heat, power. Fan: percentage, preset mode, oscillate, direction,
@@ -3131,7 +3190,7 @@ script:
       state + capabilities. GET response includes topology_context: open
       doors/windows, area temp/humidity sensors, adjacent HVAC bleed
       portals (via RM), and natural vent advisory (climate only).
-      Actuation (any setter) requires the zenos.actuation.climate_control cert — read
+      Actuation (any setter) requires the zenos.actuation.climate_control cert: read
       (GET) stays open.
 
       Examples:
@@ -3195,21 +3254,21 @@ script:
 
       hvac_mode:
         name: HVAC Mode
-        description: HVAC operating mode — use get first to see supported modes. Climate only.
+        description: HVAC operating mode - use get first to see supported modes. Climate only.
         required: false
         selector:
           text:
 
       fan_mode:
         name: Fan Mode (climate)
-        description: Climate entity's own internal fan mode (e.g. thermostat fan setting) — use get first to see supported modes. NOT the same as fan_percentage/fan_preset_mode below, which target a real fan.* entity.
+        description: Climate entity's own internal fan mode (e.g. thermostat fan setting) - use get first to see supported modes. NOT the same as fan_percentage/fan_preset_mode below, which target a real fan.* entity.
         required: false
         selector:
           text:
 
       swing_mode:
         name: Swing Mode
-        description: Swing mode — use get first to see supported modes. Climate only.
+        description: Swing mode - use get first to see supported modes. Climate only.
         required: false
         selector:
           text:
@@ -3241,7 +3300,7 @@ script:
 
       power:
         name: Power
-        description: "Power control — on or off. Climate: via hvac_mode. Fan: via fan.turn_on/turn_off. Shared field, domain-routed."
+        description: "Power control: on or off. Climate: via hvac_mode. Fan: via fan.turn_on/turn_off. Shared field, domain-routed."
         required: false
         selector:
           text:
@@ -3259,7 +3318,7 @@ script:
 
       fan_preset_mode:
         name: Fan Preset Mode
-        description: Named fan preset (e.g. auto, sleep, eco) — use get first to see supported presets. Fan only. Requires PRESET_MODE feature.
+        description: Named fan preset (e.g. auto, sleep, eco) - use get first to see supported presets. Fan only. Requires PRESET_MODE feature.
         required: false
         selector:
           text:
@@ -3290,13 +3349,13 @@ script:
 
       mode:
         description: >-
-          Optional explicit operation selector — "read" to force a read-only
+          Optional explicit operation selector: "read" to force a read-only
           reply regardless of any setter fields you also passed (same as
           get=true), "set" to require at least one real setter field
           (fails clearly with missing_setter if none are given, rather than
           silently reading), or "tool_manifest" for this tool's own self-
           description/schema dump instead of touching the entity. You can
-          also just omit mode and use the setter fields / get directly —
+          also just omit mode and use the setter fields / get directly: 
           both styles work identically.
         required: false
         selector:
@@ -3340,6 +3399,7 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {%- set _tm = MF.tool_manifest(
                     tool='zen_dojotools_climate',
+                    summary='Read or set thermostats and fans',
                     display_name='Climate Manager',
                     tier='dojotools',
                     version='2.2.1',
@@ -4035,7 +4095,7 @@ script:
     mode: parallel
     max: 10
     description: >-
-      GET+SET for water_heater entities. Inspects supported_features before applying —
+      GET+SET for water_heater entities. Inspects supported_features before applying: 
       fails closed on unsupported feature. Supports: temperature (clamped to min/max),
       operation mode, away mode, power. Multiple setters may be sent in one call.
       Omit all setters to read state and capabilities.
@@ -4069,21 +4129,21 @@ script:
 
       mode:
         name: Operation Mode / Manifest
-        description: "Operation mode (e.g. eco, heat_pump) — or tool_manifest for self-description, or help for this tool's case reference."
+        description: "Operation mode (e.g. eco, heat_pump): or tool_manifest for self-description, or help for this tool's case reference."
         required: false
         selector:
           text:
 
       away:
         name: Away Mode
-        description: Away mode state — on or off
+        description: Away mode state - on or off
         required: false
         selector:
           text:
 
       power:
         name: Power
-        description: Power control — on or off
+        description: Power control - on or off
         required: false
         selector:
           text:
@@ -4154,6 +4214,7 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{ MF.tool_manifest(
                     tool='zen_dojotools_water_heater',
+                    summary='Read or set a water heater',
                     display_name='Water Heater Control',
                     tier='dojotools',
                     version='1.3.1',
@@ -4518,13 +4579,13 @@ script:
 
       mode:
         description: >-
-          Optional explicit operation selector — "read" to return the current
+          Optional explicit operation selector: "read" to return the current
           value without changing anything (same as omitting value with
           get=true), "set" to require the value field (fails clearly with
           missing_value if value isn't also given, rather than crashing on an
           empty datetime parse), or "tool_manifest" for this tool's own
           self-description/schema dump instead of touching the entity. You can
-          also just omit mode and use value/get directly — both styles work
+          also just omit mode and use value/get directly: both styles work
           identically.
         required: false
         selector:
@@ -4566,6 +4627,7 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{ MF.tool_manifest(
                     tool='zen_dojotools_datetime',
+                    summary='Read or set an input_datetime',
                     display_name='DateTime Control',
                     tier='dojotools',
                     version='1.3.1',
@@ -4763,7 +4825,7 @@ script:
         List:    { "mode": "read" }
         Inspect: { "mode": "read", "entity_id": "zone.work" }
         Bearing: { "mode": "bearing", "entity_id": "zone.work" }
-        A→B:     { "mode": "bearing", "origin_entity_id": "zone.airport", "entity_id": "zone.work" }
+        A to B:     { "mode": "bearing", "origin_entity_id": "zone.airport", "entity_id": "zone.work" }
         Create:  { "mode": "create", "name": "School", "latitude": 29.52, "longitude": -98.47 }
         Update:  { "mode": "update", "entity_id": "zone.school", "radius": 200 }
         Delete:  { "mode": "delete", "entity_id": "zone.school", "confirm": true }
@@ -4787,7 +4849,7 @@ script:
 
       entity_id:
         name: Entity ID
-        description: Zone entity_id — required for update/delete, optional filter for read
+        description: Zone entity_id - required for update/delete, optional filter for read
         required: false
         selector:
           entity:
@@ -4795,21 +4857,21 @@ script:
 
       name:
         name: Name
-        description: Zone name — required for create, optional for update
+        description: Zone name - required for create, optional for update
         required: false
         selector:
           text:
 
       latitude:
         name: Latitude
-        description: Center latitude decimal degrees (e.g. 29.5221) — required for create, optional for update
+        description: Center latitude decimal degrees (e.g. 29.5221) - required for create, optional for update
         required: false
         selector:
           text:
 
       longitude:
         name: Longitude
-        description: Center longitude decimal degrees (e.g. -98.4695) — required for create, optional for update
+        description: Center longitude decimal degrees (e.g. -98.4695) - required for create, optional for update
         required: false
         selector:
           text:
@@ -4843,7 +4905,7 @@ script:
         name: Origin Entity ID
         description: >-
           Zone entity for bearing origin. Defaults to zone.home when omitted.
-          Use with entity_id/latitude+longitude to compute A→B between any two points.
+          Use with entity_id/latitude+longitude to compute A to B between any two points.
         required: false
         selector:
           entity:
@@ -4865,7 +4927,7 @@ script:
 
       confirm:
         name: Confirm
-        description: Required for delete — pass true to confirm permanent zone removal
+        description: Required for delete - pass true to confirm permanent zone removal
         required: false
         selector:
           boolean:
@@ -4908,6 +4970,7 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{ MF.tool_manifest(
                     tool='zen_dojotools_zones',
+                    summary='Create, change, and measure zones',
                     display_name='Zone Manager',
                     tier='dojotools',
                     version='1.3.1',

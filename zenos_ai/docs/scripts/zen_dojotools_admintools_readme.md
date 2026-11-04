@@ -1,6 +1,6 @@
 # Zen DojoTools AdminTools
 
-**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.1 · `reset_labels` 1.0.0 · `cabinetadmin` 4.8.1 · `cabinetadmin_factory` 1.1.0 · `prompt_loader` 45.1 · `run_repair` 5.2.0.
+**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.2 · `reset_labels` 1.0.0 · `cabinetadmin` 4.8.1 · `cabinetadmin_factory` 1.1.0 · `prompt_loader` 45.2 · `run_repair` 5.2.0.
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -22,7 +22,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 
 | Script | Version | MCP-Exposed | Purpose |
 |---|---|---|---|
-| `zen_admintools_reset_template` | 5.1.1 | **No** | Press zen_template and kfc_template into cabinets |
+| `zen_admintools_reset_template` | 5.1.2 | **No** | Press zen_template and kfc_template into cabinets |
 | `zen_admintools_reset_labels` | 4.5.0 | No | Nuclear: delete all zen_ labels and assignments, trigger Flynn rebuild |
 | `zen_admintools_cabinetadmin` | 4.7.0 | No | Inspect, restore, reset, hammer, init, repair_volumeinfo, or reset_all Ring-0 cabinets |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
@@ -45,8 +45,9 @@ Called automatically by **Flynn gate-3** if the templates are missing at boot. C
 ### Behavior
 
 - Reads the Kata cabinet and Dojo cabinet (resolved via labels `zen_summary,zen,summary` and `kfc,dojo,zen`)
-- If `zen_template` is absent from the Kata cabinet → writes seed template
+- If `zen_template` or `kata_template` is absent from the Kata cabinet, or carries an older schema version → writes its seed template
 - If `kfc_template` is absent from the Dojo cabinet → writes seed template
+- Each seed is written with `mode: upsert` and `write_mode: replace`, so it creates a drawer that doesn't exist yet (5.1.2; before that the write was an update, which does nothing on a missing drawer, so a fresh install never got its templates)
 - Uses `force_action: true` — will overwrite if explicitly needed
 
 ### When to Use
@@ -391,6 +392,7 @@ Run when a cabinet fails identity's ACL schema check (identity answers `acl_sche
 
 | Version | Change |
 |---------|--------|
+| v5.6.3 | reset_template 5.1.2 writes `zen_template`, `kata_template` and `kfc_template` with upsert, so it creates them on a fresh install. |
 | v5.6.0 | cabinetadmin `init` knows the Vault Cabinet type (class `vault`), so Flynn provisions the required vault on boot. cabinetadmin_factory 1.1.0 waits up to 10 seconds for the VolumeInfo GUID to land and answers an error instead of a false "initialized". |
 | v5.5.2 | prompt_loader 45.1: `cert_bypass` reads the console user from the session (`context.user_id`), not `whoami`, which shows nothing about the console before the agent holds its pass, so the console override can be switched on before approval. The person falls back to the HA person whose `user_id` matches. The loader's version follows the newest cortex slot. |
 | v5.5.1 | Plain cert descriptions for the approval prompt; real `max_level`. |

@@ -115,7 +115,7 @@ Guide: fire a component summarizer run from a real-world trigger and act on the 
 
 ---
 
-## 7. Zen DojoTools Summarizers — Ninja v4.7.0 · SuperSummary v4.7.0
+## 7. Zen DojoTools Summarizers — Ninja v4.7.2 · SuperSummary v4.7.1
 **File:** [`zen_dojotools_summarizers_readme.md`](zen_dojotools_summarizers_readme.md)
 
 The KF4 action pipeline — Ninja Summarizer (per-component kata writer) and SuperSummary (whole-home synthesizer). Both MCP-exposed. Pipeline tier split: `direct` (keeper), `ambient` (Trapper Keeper pre-digest + breadcrumb), `system` (background). Trapper Keeper pre-digests ambient-tier katas into a navigation index. SuperSummary run governor (default 600s burnout). Context size guard (>200K abort, 28K max_context_tokens). Three kill switches — default off; enable only after pointing at a local inference model. Both act as the household's responsible agent (2026.11.0): seeds are modes the tool declares, and acts need the emit cert held with the Ninja emit stage.
@@ -146,7 +146,7 @@ Recorder statistics query engine. Time-bucketed historical data (5min/hour/day/w
 ## 11. Zen DojoTools Utilities — per-script versions (see readme)
 **File:** [`zen_dojotools_utilities_readme.md`](zen_dojotools_utilities_readme.md)
 
-General-purpose collection: `calculator`, `dice_roller`, `announce` (TTS by area label), `music_search`, `wait`, `volume_auditor`, `help`. `notification_router` is deprecated — use `zen_dojotools_postman` instead.
+General-purpose collection: `calculator`, `dice_roller`, `announce` (TTS by area label), `music_search`, `wait`, `volume_auditor`, `help` (system overview, help proxy, and a paged tool directory with one-line summaries). `notification_router` is deprecated — use `zen_dojotools_postman` instead.
 
 ---
 
@@ -185,7 +185,7 @@ Authoritative, health-aware read/write controller for all Cabinet Volumes. Suppo
 
 ---
 
-## 17. Zen DojoTools Manifest — v6.8.0
+## 17. Zen DojoTools Manifest — v6.8.1
 **File:** [`zen_dojotools_manifest_readme.md`](zen_dojotools_manifest_readme.md)
 
 System manifest broker. Entity namespace scanning (`zen_dojotools_*`, `zen_stack_*`, `zen_sutra_*`). Modes: `cabinets` (zero-persistence cabinet health scanner), `tools`, `identity`, `labels`, `automations`, `audit`, `audit_help`, `health`, `health_refresh`, `autotag`, `publish`, `mcp_sync`, `bootstrap_stacks`, `bootstrap_kfc`, `domains`, `all`. `bootstrap_stacks` auto-registers Lens Bus providers including `script.zen_dojotools_library`. `bootstrap_kfc` auto-registers KF5 self-declaring tools — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools). Domain routing table maps domains to authoritative scripts (now built dynamically from `label_entities('zen_domain_*')`, not hardcoded). UMP `tool_manifest` contract supported.

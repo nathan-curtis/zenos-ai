@@ -85,6 +85,7 @@ Import once at the top of the script's variables step. Do not import inside loop
 |-----------|------|---------|-------------|
 | `health` | mapping | `{'configured': false, 'status': 'unknown', 'notes': ['health not reported']}` | Health block. Must be a mapping with at minimum `configured` (bool) and `status` (string). `notes` is an optional list of strings. |
 | `schema_version` | string | `'1.0.0'` | Manifest schema version. Do not change unless the schema itself is versioned. |
+| `summary` | string | `None` | What the tool is for, in one line (2026.11.0). Plain ASCII, at most 64 characters; anything longer is cut at a word with `...`. [`help mode=directory`](../scripts/zen_dojotools_utilities_readme.md#paging-the-directory) lists it next to each tool, falling back to `display_name`. A template can't read a script's YAML `description:`, so `summary` is the short form of it: change one, check the other. Reported only when set. Every tool the directory lists sets one. |
 
 ### Optional parameters — label contract (lens fields)
 

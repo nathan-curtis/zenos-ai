@@ -2,8 +2,16 @@
 # ZenOS-AI DojoTools: Summarizers Package
 #
 # Scripts:
-#   zen_dojotools_supersummary — SuperSummary - Whole-Home Synthesizer (v4.7.0)
-#   zen_dojotools_ninja_summarizer — Ninja Summarizer - Per-Component Kata Writer (v4.7.0)
+#   zen_dojotools_supersummary: SuperSummary - Whole-Home Synthesizer (v4.7.1)
+#   zen_dojotools_ninja_summarizer: Ninja Summarizer - Per-Component Kata Writer (v4.7.2)
+#
+# ninja 4.7.2: the context-overflow guard measures the prompt in characters.
+#   It counted the prompt's keys, so it could never trip.
+#
+# supersummary 4.7.1 / ninja 4.7.1: a failed model call (error, outage, empty reply) ends
+#   the run with monk_failure and a zen_event, as the Ninja does, and leaves
+#   the last good summary in place (it used to abort the script). Both report
+#   prompt_size_chars in characters (it counted the prompt's keys).
 #
 # supersummary 4.7.0 / ninja 4.7.0 (#10549): both act as the agent responsible
 #   for the household (the prime in its ACL, else the default agent), which
@@ -142,10 +150,10 @@ script:
     alias: Zen DojoTools SuperSummary
     description: >-
       SuperSummary (4.5.x). Whole-home synthesizer. Reads active component kata
-      drawers gated by Kung Fu System Switch state. Builds zen_summary — the
+      drawers gated by Kung Fu System Switch state. Builds zen_summary: the
       canonical home state that loads the agent's prompt context. (v4.5.x)
       Respects zen_summarizers_enabled (master) and zen_supersummarizer_enabled
-      kill switches — early-outs immediately if either is off.
+      kill switches: early-outs immediately if either is off.
     icon: mdi:home-circle
     mode: single
     fields:
@@ -228,9 +236,10 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{- MF.tool_manifest(
                   tool='zen_dojotools_supersummary',
+                  summary='Writes the whole-home summary for the agent',
                   display_name='SuperSummary - Whole-Home Synthesizer',
                   tier='dojotools',
-                  version='4.7.0',
+                  version='4.7.1',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['dojotools', 'zen_kfc_provider'],
                   optional_labels=['ai_summarizer'],
@@ -369,7 +378,7 @@ script:
               final_response:
                 status: ok
                 tool: zen_dojotools_supersummary
-                version: "4.7.0"
+                version: "4.7.1"
                 mode: kfc_manifest
                 kfc: "{{ _kfc_out }}"
                 count: "{{ _kfc_out | length }}"
@@ -749,149 +758,179 @@ script:
               # ── 8. Run monk ───────────────────────────────────────────────────────
               - alias: Monk Runner
                 action: ai_task.generate_data
+                continue_on_error: true
                 data:
                   task_name: SuperSummary Monk
                   instructions: "{{ prompt }}"
                   entity_id: "{{ states('input_text.zenos_ai_task_entity') }}"
                 response_variable: monk_response
 
-              - alias: Extract zen summary from monk response
-                variables:
-                  zen_summary: >-
-                    {%- set ns = namespace(raw=monk_response.data | default('') | string | trim) -%}
-                    {%- set _b_start = ns.raw.find('{') -%}
-                    {%- set _b_end = ns.raw.rfind('}') -%}
-                    {%- if _b_start != -1 and _b_end != -1 and _b_end > _b_start -%}
-                      {%- set ns.raw = ns.raw[_b_start:_b_end + 1] -%}
-                    {%- endif -%}
-                    {{ ns.raw }}
-
-              # Same concern as the kata extractor: the model can append
-              # trailing prose after the JSON block, which an exact-anchored
-              # fence regex doesn't survive (fences+prose left attached,
-              # from_json never attempted, downstream readers inherit a raw
-              # unparseable string). Validate explicitly here instead of
-              # trusting a non-empty string.
-              - alias: Validate zen_summary parses as real JSON
-                variables:
-                  _zen_summary_parsed: >-
-                    {{ (zen_summary | from_json(default={})) if zen_summary is string else (zen_summary if zen_summary is mapping else {}) }}
-
-              - alias: Log SuperSummary parse failure (visible failure signal)
+              # A failed model call (error, outage, empty reply) ends the run
+              # with monk_failure and leaves the last good summary in place.
+              - alias: "Surface monk failure: emit error event if ai_task did not return data"
                 if:
                   - condition: template
-                    value_template: "{{ zen_summary | trim != '' and _zen_summary_parsed == {} }}"
-                then:
-                  - action: logbook.log
-                    data:
-                      name: "Zen SuperSummary - parse failure"
-                      message: >-
-                        SuperSummary parse failed - from_json fell back to {}
-                        on a non-empty raw response (len={{ zen_summary | length }}).
-                        Excerpt: {{ zen_summary | truncate(200) }}
-
-              # ── 8a. Compute run duration ──────────────────────────────────────────
-              - alias: Compute run duration
-                variables:
-                  duration_seconds: "{{ ((now() - (started_at | as_datetime)).total_seconds()) | round(1) }}"
-
-              # ── 8b. Write supersummary status drawer ─────────────────────────────
-              - alias: Write supersummary status drawer
-                action: script.zen_sutra_filecabinet
-                data:
-                  action_type: update
-                  mode: replace
-                  set_timestamp: true
-                  force_action: true
-                  show_hidden_volumes: false
-                  volume_entity_id:
-                    - "{{ kata_cabinet }}"
-                  key: zen_supersummary_status
-                  value: >-
-                    {{
-                      {
-                        "status": "ok" if (_zen_summary_parsed is mapping and _zen_summary_parsed | length > 0) else "error",
-                        "components": active_component_ids | default([]) | length,
-                        "component_ids": active_component_ids | default([]),
-                        "duration_seconds": duration_seconds | default(0),
-                        "run_started_at": started_at | default('')
-                      } | tojson
-                    }}
-                  label_input: zen_summary
-
-              # ── 9. Post to kata cabinet ───────────────────────────────────────────
-              - alias: Post zen_summary to kata cabinet
-                if:
-                  - alias: If post set to true with valid parsed data
-                    condition: template
                     value_template: >-
-                      {{ (post_to_kata_cabinet | default(false) | bool)
-                         and _zen_summary_parsed is mapping and _zen_summary_parsed | length > 0 }}
+                      {{ monk_response is not defined
+                         or not (monk_response is mapping)
+                         or monk_response.get('data', none) is none }}
                 then:
-                  - delay:
-                      milliseconds: 250
-                  - action: script.zen_sutra_filecabinet
+                  - event: zen_event
+                    event_data:
+                      event:
+                        kind: monk_failure
+                        component: super_summary
+                        prompt_size_chars: "{{ prompt | string | length }}"
+                        monk_response: "{{ monk_response | default('undefined') | string | truncate(500) }}"
+                        severity: error
+                  - variables:
+                      final_response: >-
+                        {{ {"status": "error", "error": "monk_failure",
+                            "component": "super_summary",
+                            "prompt_size_chars": prompt | string | length,
+                            "monk_response_excerpt": monk_response | default({}) | string | truncate(500),
+                            "caller_token": caller_token | default(""),
+                            "run_started_at": started_at | default("")} }}
+
+              - if: "{{ final_response is not defined }}"
+                then:
+                  - alias: Extract zen summary from monk response
+                    variables:
+                      zen_summary: >-
+                        {%- set ns = namespace(raw=monk_response.data | default('') | string | trim) -%}
+                        {%- set _b_start = ns.raw.find('{') -%}
+                        {%- set _b_end = ns.raw.rfind('}') -%}
+                        {%- if _b_start != -1 and _b_end != -1 and _b_end > _b_start -%}
+                          {%- set ns.raw = ns.raw[_b_start:_b_end + 1] -%}
+                        {%- endif -%}
+                        {{ ns.raw }}
+
+                  # Same concern as the kata extractor: the model can append
+                  # trailing prose after the JSON block, which an exact-anchored
+                  # fence regex doesn't survive (fences+prose left attached,
+                  # from_json never attempted, downstream readers inherit a raw
+                  # unparseable string). Validate explicitly here instead of
+                  # trusting a non-empty string.
+                  - alias: Validate zen_summary parses as real JSON
+                    variables:
+                      _zen_summary_parsed: >-
+                        {{ (zen_summary | from_json(default={})) if zen_summary is string else (zen_summary if zen_summary is mapping else {}) }}
+
+                  - alias: Log SuperSummary parse failure (visible failure signal)
+                    if:
+                      - condition: template
+                        value_template: "{{ zen_summary | trim != '' and _zen_summary_parsed == {} }}"
+                    then:
+                      - action: logbook.log
+                        data:
+                          name: "Zen SuperSummary - parse failure"
+                          message: >-
+                            SuperSummary parse failed - from_json fell back to {}
+                            on a non-empty raw response (len={{ zen_summary | length }}).
+                            Excerpt: {{ zen_summary | truncate(200) }}
+
+                  # ── 8a. Compute run duration ──────────────────────────────────────────
+                  - alias: Compute run duration
+                    variables:
+                      duration_seconds: "{{ ((now() - (started_at | as_datetime)).total_seconds()) | round(1) }}"
+
+                  # ── 8b. Write supersummary status drawer ─────────────────────────────
+                  - alias: Write supersummary status drawer
+                    action: script.zen_sutra_filecabinet
                     data:
-                      action_type: upsert
+                      action_type: update
                       mode: replace
                       set_timestamp: true
+                      force_action: true
                       show_hidden_volumes: false
                       volume_entity_id:
                         - "{{ kata_cabinet }}"
-                      path: ZEN_SUMMARY
-                      value: "{{ zen_summary }}"
-                      tags: Zen Summary
-                    response_variable: filecabinet_response
+                      key: zen_supersummary_status
+                      value: >-
+                        {{
+                          {
+                            "status": "ok" if (_zen_summary_parsed is mapping and _zen_summary_parsed | length > 0) else "error",
+                            "components": active_component_ids | default([]) | length,
+                            "component_ids": active_component_ids | default([]),
+                            "duration_seconds": duration_seconds | default(0),
+                            "run_started_at": started_at | default('')
+                          } | tojson
+                        }}
+                      label_input: zen_summary
 
-              # ── 10. Build response + emit ─────────────────────────────────────────
-              - alias: Build final response
-                variables:
-                  component: super_summary
-                  final_response: >-
-                    {{
-                      {
-                        "active_component_ids": active_component_ids | default([]),
-                        "monk":                 monk_response | default({}),
-                        "post":                 post_to_kata_cabinet | default(false),
-                        "filecabinet_write":    filecabinet_response | default({}),
-                        "caller_token":         caller_token,
-                        "duration_seconds":     duration_seconds | default(0),
-                        "run_started_at":       started_at | default('')
-                      }
-                    }}
+                  # ── 9. Post to kata cabinet ───────────────────────────────────────────
+                  - alias: Post zen_summary to kata cabinet
+                    if:
+                      - alias: If post set to true with valid parsed data
+                        condition: template
+                        value_template: >-
+                          {{ (post_to_kata_cabinet | default(false) | bool)
+                             and _zen_summary_parsed is mapping and _zen_summary_parsed | length > 0 }}
+                    then:
+                      - delay:
+                          milliseconds: 250
+                      - action: script.zen_sutra_filecabinet
+                        data:
+                          action_type: upsert
+                          mode: replace
+                          set_timestamp: true
+                          show_hidden_volumes: false
+                          volume_entity_id:
+                            - "{{ kata_cabinet }}"
+                          path: ZEN_SUMMARY
+                          value: "{{ zen_summary }}"
+                          tags: Zen Summary
+                        response_variable: filecabinet_response
 
-              # Internal kinds are fired directly; the agent-facing emitter refuses them.
-              - variables:
-                  _ze_evt:
-                    timestamp: "{{ now().isoformat() }}"
-                    component: "{{ component }}"
-                    severity: >-
-                      {%- if final_response.filecabinet_write
-                          and final_response.filecabinet_write.status == 'error' -%}
-                        error
-                      {%- else -%}
-                        info
-                      {%- endif -%}
-                    kind: kata_emit
-                    summary: >-
-                      Script '{{ component }}' completed.
-                      Post-to-kata={{ final_response.post }},
-                      filecabinet={{ final_response.filecabinet_write.status | default('unknown') }}.
-                    metadata:
-                      active_components: "{{ final_response.active_component_ids }}"
-                      post_to_kata: "{{ final_response.post }}"
-                      filecabinet_status: "{{ final_response.filecabinet_write.status | default('unknown') }}"
-                      filecabinet_message: "{{ final_response.filecabinet_write.message | default('') }}"
-                      duration_seconds: "{{ final_response.duration_seconds | default(0) }}"
-                      run_started_at: "{{ final_response.run_started_at | default('') }}"
-              - event: zen_event
-                event_data:
-                  event: "{{ _ze_evt }}"
-              - action: system_log.write
-                continue_on_error: true
-                data:
-                  message: 'zen_event {{ _ze_evt.component }} | {{ _ze_evt.kind }} | {{ _ze_evt.severity }} | summary="{{ _ze_evt.summary }}" | meta={{ _ze_evt.metadata | default({}) | tojson }}'
-                  level: "{{ 'warning' if _ze_evt.severity == 'warn' else _ze_evt.severity }}"
+                  # ── 10. Build response + emit ─────────────────────────────────────────
+                  - alias: Build final response
+                    variables:
+                      component: super_summary
+                      final_response: >-
+                        {{
+                          {
+                            "active_component_ids": active_component_ids | default([]),
+                            "monk":                 monk_response | default({}),
+                            "post":                 post_to_kata_cabinet | default(false),
+                            "filecabinet_write":    filecabinet_response | default({}),
+                            "caller_token":         caller_token,
+                            "duration_seconds":     duration_seconds | default(0),
+                            "run_started_at":       started_at | default('')
+                          }
+                        }}
+
+                  # Internal kinds are fired directly; the agent-facing emitter refuses them.
+                  - variables:
+                      _ze_evt:
+                        timestamp: "{{ now().isoformat() }}"
+                        component: "{{ component }}"
+                        severity: >-
+                          {%- if final_response.filecabinet_write
+                              and final_response.filecabinet_write.status == 'error' -%}
+                            error
+                          {%- else -%}
+                            info
+                          {%- endif -%}
+                        kind: kata_emit
+                        summary: >-
+                          Script '{{ component }}' completed.
+                          Post-to-kata={{ final_response.post }},
+                          filecabinet={{ final_response.filecabinet_write.status | default('unknown') }}.
+                        metadata:
+                          active_components: "{{ final_response.active_component_ids }}"
+                          post_to_kata: "{{ final_response.post }}"
+                          filecabinet_status: "{{ final_response.filecabinet_write.status | default('unknown') }}"
+                          filecabinet_message: "{{ final_response.filecabinet_write.message | default('') }}"
+                          duration_seconds: "{{ final_response.duration_seconds | default(0) }}"
+                          run_started_at: "{{ final_response.run_started_at | default('') }}"
+                  - event: zen_event
+                    event_data:
+                      event: "{{ _ze_evt }}"
+                  - action: system_log.write
+                    continue_on_error: true
+                    data:
+                      message: 'zen_event {{ _ze_evt.component }} | {{ _ze_evt.kind }} | {{ _ze_evt.severity }} | summary="{{ _ze_evt.summary }}" | meta={{ _ze_evt.metadata | default({}) | tojson }}'
+                      level: "{{ 'warning' if _ze_evt.severity == 'warn' else _ze_evt.severity }}"
 
       - variables:
           final_response: >-
@@ -1031,9 +1070,10 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{- MF.tool_manifest(
                   tool='zen_dojotools_ninja_summarizer',
+                  summary='Writes one component summary for the agent',
                   display_name='Ninja Summarizer - Per-Component Kata Writer',
                   tier='dojotools',
-                  version='4.7.0',
+                  version='4.7.2',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['dojotools'],
                   optional_labels=['ninja_summarizer', 'ai_summarizer'],
@@ -1895,7 +1935,8 @@ script:
                 {%- set _cfg = _cfg_raw.get('value', _cfg_raw) if _cfg_raw is mapping else {} -%}
                 {{ _cfg if _cfg is mapping else {} }}
               _max_ctx_tokens: "{{ (_ctx_cfg.get('max_context_tokens', 28000) | int(28000)) if _ctx_cfg is mapping else 28000 }}"
-              _prompt_chars: "{{ prompt | length }}"
+              # The prompt renders back into a dict; length alone counts its keys.
+              _prompt_chars: "{{ prompt | string | length }}"
               _prompt_tokens_est: "{{ (_prompt_chars | int / 4) | round(0) | int }}"
               _ctx_overflow: "{{ _prompt_tokens_est | int > _max_ctx_tokens | int }}"
           - if:
@@ -1950,14 +1991,14 @@ script:
                   event:
                     kind: monk_failure
                     component: "{{ component_slug }}"
-                    prompt_size_chars: "{{ prompt | length }}"
+                    prompt_size_chars: "{{ prompt | string | length }}"
                     monk_response: "{{ monk_response | default('undefined') | string | truncate(500) }}"
                     severity: error
               - variables:
                   final_response: >-
                     {{ {"status": "error", "error": "monk_failure",
                         "component": component_slug,
-                        "prompt_size_chars": prompt | length,
+                        "prompt_size_chars": prompt | string | length,
                         "monk_response_excerpt": monk_response | default({}) | string | truncate(500),
                         "caller_token": caller_token | default(""),
                         "run_started_at": started_at | default("")} }}

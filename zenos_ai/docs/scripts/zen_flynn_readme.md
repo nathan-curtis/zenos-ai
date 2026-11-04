@@ -1,4 +1,4 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.3.1
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.3.2
 
 *ZenOS-AI's boot guard, initializer, and onboarding driver*
 
@@ -186,7 +186,7 @@ Regardless of monastery health state, Flynn checks whether:
 - Dojo cabinet has a `kfc_template` drawer
 - Kata cabinet has a `zen_template` drawer
 
-If either is missing, Flynn calls `zen_admintools_reset_template` to press both templates. This is infrastructure — it runs on every boot if needed and is fully idempotent.
+If either is missing, Flynn calls `zen_admintools_reset_template` with `mode: reset` to press the templates. This is infrastructure — it runs on every boot if needed and is fully idempotent. (Before 5.3.2 Flynn called it with no mode, and a bare call to any `zen_*` script answers help, so a fresh install never got its templates and Flynn retried every pass.)
 
 #### 3c — Content Bootstrap (critical or disabled)
 

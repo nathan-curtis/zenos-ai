@@ -666,6 +666,7 @@ At minimum, declare:
 
 - canonical tool name;
 - display name;
+- a `summary`: one line, plain ASCII, at most 64 characters (see [Summaries and descriptions](#summaries-and-descriptions));
 - tier/class;
 - version;
 - health;
@@ -683,6 +684,12 @@ The implementation currently contains both singular and plural tier values in ol
 ### Version canon
 
 A script's own `tool_manifest` version is its canonical version. Every other version mention for that script (file header, changelog line, readme row) follows the manifest, not the other way round. A file that holds several scripts carries one version per script. There is no bundle number that overrides them. An automation without a manifest takes its version from its file header.
+
+### Summaries and descriptions
+
+Every tool sets `summary=` on its `tool_manifest`: what the tool is for, in plain ASCII, at most 64 characters. `help mode=directory` lists it next to each tool, so it is often the first thing an agent reads about the tool. A template cannot read a script's YAML `description:`, so the summary is a hand-written short form of it. When you change one, check the other.
+
+A script's `description:` and every field `description:` are plain ASCII (2026.11.0). No special characters: use a colon or a spaced hyphen for an em-dash ("`: `" breaks an unquoted YAML value, so use the hyphen there), "to" for an arrow, a hyphen for an en-dash, straight quotes, `x` for a multiplication sign, and `deg` for a degree sign.
 
 ### Declared dependencies and inference
 
@@ -893,6 +900,7 @@ Before accepting a new component, reviewers should confirm:
 - [ ] Writes validate targets and enforce appropriate confirmation and authority.
 - [ ] Responses are structured, bounded, and free of secrets.
 - [ ] Manifest metadata accurately describes health, exposure, dependencies, risk, and evidence.
+- [ ] The manifest sets a plain-ASCII `summary` that matches the script's `description:`, and every description is plain ASCII.
 - [ ] The manifest version is the script's canonical version, and every other mention of it matches.
 - [ ] The tool returns through `envelope()` with a single exit, and any caller of another tool unwraps `.result`.
 - [ ] `mode=help` returns `{status: help, message}` and passes `audit_help`.

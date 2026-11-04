@@ -1,4 +1,4 @@
-# Zen DojoTools Manifest — v6.6.1 (ZenOS-AI 2026.11.0)
+# Zen DojoTools Manifest — v6.8.1 (ZenOS-AI 2026.11.0)
 **File:** `zen_dojotools_manifest_readme.md`
 **Type:** Technical Documentation
 
@@ -51,7 +51,7 @@ The `mode` field routes the broker to the appropriate subsystem. Default is `cab
 | `structure` | Lens registry topology. |
 | `audit` | Gap analysis: unlabeled, broken, and ghost tools. Optionally filtered by `tier`. Scans the full tool roster — `dojotools` + `admintools` + `stacks` + `sutra` (admintools re-included 2026-08-18, see below). |
 | `health` | Aggregate health roll-up across subsystems. |
-| `autotag` | Tag discovered tools. Optionally filtered by `tier`. |
+| `autotag` | Tags each discovered tool with its tier label, then reads the labels back: only a tool whose labels actually landed is listed in `tagged`. Any other goes in `failed` as `{entity_id, labels_missing, labels_undefined, error}` (`labels_undefined` names a label that does not exist in HA), and `status` is `partial`. Tools already correct are listed in `already_correct`. `tier=` limits the run to one tier (`sutra` and `sutras` both work); before 6.8.1 it tagged every tier whatever `tier=` said. |
 | `publish` | Writes three mini-manifests to the household cabinet: `zen_tool_manifest`, `zen_label_manifest`, `zen_automation_manifest`. Also writes the domain routing table — built dynamically from `label_entities('zen_domain_*')`, no hardcoded domain:entity_id list. Also writes the semantic `roots` (who, what, when, where, why, how, knowledge): the first candidate tool that exists wins for each question word, and the boot prompt renders them as one line. Publish runs on the events a reload itself fires (`service_registered` for scripts, `automation_reloaded`), writes only when content changed, and never listens to events its own actions emit. |
 | `mcp_sync` | Reconciles MCP-visible tools against the known tool roster. Requires `mcp_tool_list` (JSON array of entity_ids the agent can see). |
 | `bootstrap_stacks` | Auto-registers Lens Bus stack providers. Scans all `zen_stack_*` and `zen_sutra_*` scripts **plus** `script.zen_dojotools_library` (which has no `zen_stack_*` wrapper but is a Lens Bus owner). Calls `tool_manifest` on each, registers any that declare `register_mode` and are not already in `lens_registry`. Idempotent — safe to run repeatedly. See [Lens Bus Auto-Registration](../plugins/lens_bus_autoreg.md). |
