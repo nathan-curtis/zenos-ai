@@ -553,15 +553,11 @@ Event data: {"kind": "identity_manifest_rebuild", "component": "system"}
 
 ## Full Wipe and Restart
 
-For a complete teardown of the identity layer — all users, AI users, labels, and Ring-0 cabinets — follow the nuclear sequence in [Troubleshooting — Step 7](troubleshooting.md#step-7--nuclear-cabinet-reset-last-resort).
+For a complete teardown of the identity layer — all users, AI users, labels, and cabinets — run `script.zen_admintools_cabinetadmin` with `mode: reset_all` (see [Troubleshooting — Step 7](troubleshooting.md#step-7--nuclear-cabinet-reset-last-resort)). Run it with `dry_run: true` first to see what goes.
 
-**Order matters:**
-1. `script.zen_admintools_reset_labels` (confirm: true) — nukes all `zen_` labels
-2. `script.zen_admintools_cabinetadmin` (op: reset_all, confirm: true) — wipes all Ring-0 cabinets, reseeds schemas, fires Flynn bootstrap
+> **The default `scope: all` wipes user and AI user cabinets too,** along with every other cabinet and every `zen_` label. `scope: core` wipes only the Ring-0 cabinets (Dojo, Kata, System, Household, etc.) and keeps labels and user cabinets. To wipe one user or AI user cabinet, use `cabinetadmin mode: reset` against that cabinet.
 
-> **User cabinets are not touched** by the nuclear sequence. Only Ring-0 canonical cabinets (Dojo, Kata, System, Household, etc.) are reset. If you need to wipe a specific user or AI user cabinet, use `cabinetadmin mode: reset` against that cabinet directly before or after the nuclear sequence.
-
-After the nuclear sequence completes, re-provision each identity cabinet via the provisioner and re-write profiles via the profile editor. Flynn handles label rebuild and schema seeding automatically.
+After the wipe, re-provision each identity cabinet via the provisioner and re-write profiles via the profile editor. Flynn handles label rebuild and schema seeding automatically.
 
 ---
 

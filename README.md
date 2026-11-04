@@ -24,7 +24,7 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 
 **The backstage pass is checked at every door.** `zenos.agent.basic` is the agent's backstage pass: Flynn, the roadie, asks you to approve it when onboarding starts. Until you do, every ZenOS tool gives the agent help and onboarding, and nothing else. It gets in to see the band; touching the guitar still takes the guitar's own cert. This gate ships on.
 
-**The locks are built, and running in audit mode.** Every FileCabinet call, and every agent or console write through the admin door, is decided by a real access gate that logs what it would refuse or ask a human about, then lets the call through. Out of the box no cabinet call is refused; the logs show what enforcement will change before it changes anything. FileCabinet's gate can be switched to enforce with one admin-door drawer (`fc_acl_mode`), and removing it switches back.
+**The locks are built, and a fresh install turns them on.** Every FileCabinet call, and every agent or console write through the admin door, is decided by a real access gate. On a fresh install FileCabinet's gate enforces: Flynn arms it, and it locks once every cabinet carries the ACL record. An upgraded install stays in audit, logging what the gate would refuse or ask a human about and letting the call through, until you switch it from the console (`zen_admintools_prompt_loader mode=fc_acl_mode`). The admin door's gate audits on every install.
 
 **One ACL record.** Identity and FileCabinet share one record per cabinet: owner, prime agent, partners, and a rule for each of read, write, delete and admin, naming who may do it, the cert it needs, and whether a live human must say yes. One reading of the rules, not two.
 
@@ -36,17 +36,17 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 
 **Names in parts.** Home Assistant is moving from one `friendly_name` to names built from parts, and has added child devices. ZenOS reads the parts (`entity_name`, `device_name`, area), keeps `friendly_name` only as legacy, never decides anything from it, and follows child devices the way HA targets a parent. The Home Assistant team explains why in [Naming things in Home Assistant](https://community.home-assistant.io/t/naming-things-in-home-assistant-shaped-by-your-feedback/1032131).
 
-**Upgrading?** Approve your agent if it never got its pass: run `zen_flynn_oobe mode=run` and say yes to the push. Certs are renamed under `zenos.*`; old grants keep working until 2026.12. The ACL migration is mandatory. Flynn runs it on its own; you can dry-run it first with `zen_dojotools_identity mode=acl_migrate` and review the plan. Expect audit lines in the log; they're the preview of enforcement, not errors. Summaries pause until the household's agent is onboarded, and the summarizer's background notifications need `zenos_agent_autonomous`. See [Read this before upgrading](zenos_ai/docs/releases/spinal_tap.md#read-this-before-upgrading).
+**Upgrading?** Approve your agent if it never got its pass: run `zen_flynn_oobe mode=run` and say yes to the push. Certs are renamed under `zenos.*`; old grants keep working until 2026.12. The ACL migration is mandatory. Flynn runs it on its own; you can dry-run it first with `zen_dojotools_identity mode=acl_migrate` and review the plan. Expect audit lines in the log; they're the preview of enforcement, not errors. Your install stays in audit until you lock it from the console. Summaries pause until the household's agent is onboarded, and the summarizer's background notifications need `zenos_agent_autonomous`. See [Read this before upgrading](zenos_ai/docs/releases/spinal_tap.md#read-this-before-upgrading).
 
 **Also in the beta:** certs that say where they may be used (interactive, or a background pipeline stage), which replace the summarizer's seed and act whitelists, with `zenos_agent_autonomous` for the agent's background notifications; semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, Cortex 45, every cert under `zenos.*` with a plain-words approval prompt, and the vault as a required cabinet that holds the cert catalog.
 
-**Still to come this cycle:** enforcement, hiding unreadable drawers from listings, and the operator permission report. Display stays beta and gave its 11 slot to the naming work; its dashboard moves to 2026.12.0.
+**Still to come:** enforcement by default on upgraded installs, hiding unreadable drawers from listings, and the operator permission report. Display stays beta and gave its 11 slot to the naming work; its dashboard moves to 2026.12.0.
 
 → [Release Notes — This Is Spinal Tap](zenos_ai/docs/releases/spinal_tap.md)
 
 ---
 
-**Current stable: 2026.10.1 'Tron'** (patch on 2026.10.0) — *Shore up the Grid.* Admission certification (phase 1), a platform-wide audit closing roughly a dozen bypass routes, the Cadillac Pass (one exit, one envelope, cert-gating) across the platform, Display Surface in beta, Room Manager/Media/Lighting/Display convergence, quieter alerts, and The Book of Friday, Volume 2. **Breaking in Tron:** room state is opt-in.
+**Current stable: 2026.10.2 'Tron'** (security patch on 2026.10.0) — *Shore up the Grid.* Admission certification (phase 1), a platform-wide audit closing roughly a dozen bypass routes, the Cadillac Pass (one exit, one envelope, cert-gating) across the platform, Display Surface in beta, Room Manager/Media/Lighting/Display convergence, quieter alerts, and The Book of Friday, Volume 2. **Breaking in Tron:** room state is opt-in.
 
 → [Release Notes — Tron](zenos_ai/docs/releases/tron.md) ([10.1 patch notes](zenos_ai/docs/releases/tron.md#2026101--patch))
 

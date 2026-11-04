@@ -335,7 +335,8 @@ A `deny` scope entry (Section 6) short-circuits before the live-ack step ever ru
 | `zen_dojotools_climate` (also owns `fan.*`) | `zenos.actuation.climate_control` | All real setters on a `climate.*` or `fan.*` target | — |
 | `zen_dojotools_spa_manager` | `zenos.actuation.spa_control` | `scene`, `lights`, `jets`, `temperature`, `cover` | — |
 | `zen_dojotools_display` | `zenos.actuation.display_control` | `mode=show` — cast a Lovelace view to a house display | — (no live-ack tier; an info surface, not a physical-security action) |
-| `zen_admintools_cabinetadmin` | `zenos.system.cabinet_lifecycle_control` | Every moderate-to-nuclear write op (`restore`, `repair_volumeinfo`, `reset`, `hammer`, `init`, `repair_mount`, `repair_dismount`, `flip_schema_version`, `reset_all`, `expand_drawer`); `inspect`/`mount_status`/`help` stay ungated | — |
+| `zen_admintools_cabinetadmin` | `zenos.system.cabinet_lifecycle_control`; `reset_all` with `scope: all` also needs `zenos.registry.label_lifecycle_control` level 2 | Every moderate-to-nuclear write op (`restore`, `repair_volumeinfo`, `reset`, `hammer`, `init`, `repair_mount`, `repair_dismount`, `flip_schema_version`, `reset_all`, `expand_drawer`); `inspect`/`mount_status`/`help` stay ungated | `hammer`, `reset`, `reset_all` (a live household-admin yes every time) |
+| `zen_admintools_reset_labels` | `zenos.registry.label_lifecycle_control` (level 2) | Every call | Every call (deletes every `zen_` label) |
 | `zen_dojotools_provisioner` | `zenos.system.cabinet_lifecycle_control` (reused) | `provision`, `deprovision`, `replace` | — |
 | `zen_dojotools_camera` | `zenos.alerts.camera_policy_edit` | `set_alert_policy` | — |
 | `zen_dojotools_plant` | `zenos.plant.auto_shutoff_config_edit` | `leak_auto_shutoff_enable` | — |

@@ -181,7 +181,7 @@ When something isn't right. Covers:
   4. Label reset (soft — `reset` mode)
   5. Cabinet repair (`cabinetadmin`)
   6. Nuclear label reset (`zen_admintools_reset_labels`)
-  7. `reset_all` cabinet sequence
+  7. `reset_all`: every cabinet and every `zen_` label (`dry_run` first)
 
 ---
 

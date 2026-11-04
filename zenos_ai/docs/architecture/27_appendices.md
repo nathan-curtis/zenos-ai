@@ -134,7 +134,7 @@ Every "Not yet built" box in the book, in one place.
 | 10 | Tool search: send core tools and discover the rest on demand | Depends on Home Assistant's agent integration |
 | 14 | Search and vector backends behind the index, seamless to the agent | Under investigation |
 | 17 | A real `session_token` in the prompt frame | Arrives with session binding |
-| 18 | Partner-aware authorization beyond the cabinets | Design direction; the cabinet gate reads partners, in audit mode |
+| 18 | Partner-aware authorization beyond the cabinets | Design direction; the cabinet gate reads partners (enforced on a fresh install, audited on an upgrade) |
 | 18 | Cryptographic binding of an MCP session to a persona | Design direction. Every call resolves to the default agent |
 | 19 | A registered OID space, so dotted certification names become real object identifiers | Being pursued |
 | 19 | Certification expiry and revocation checks at use time | Design direction; grants record `not_after` since 2026.11.0 |
@@ -146,7 +146,7 @@ Every "Not yet built" box in the book, in one place.
 | 20 | A responsible agent for a family or a person, not only the household | Built for the household's pipeline since 2026.11.0 |
 | 20 | Administrative competency certification | Design direction for this release line |
 | 21 | Certifying a corpus (a cabinet) as an object | Direction |
-| 21 | Cabinet ACLs enforced by default | Gate built in 2026.11.0; audit by default, enforce is opt-in |
+| 21 | Cabinet ACLs enforced by default | Built in 2026.11.0 for a fresh install; an upgraded install audits until its administrator switches it |
 | 21 | Filtering at the source: unreadable drawers hidden from listings and search, caches keyed by caller, derived data inheriting its sources' rules | In progress |
 | 21 | A LiveDrawer's tool call bounded by its reader's authority | Not settled; the read itself is gated |
 | 21 | Per-principal traversal | Arrives with session binding |

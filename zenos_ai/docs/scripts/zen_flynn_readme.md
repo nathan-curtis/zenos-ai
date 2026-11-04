@@ -1,4 +1,4 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.3.2
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.3.4
 
 *ZenOS-AI's boot guard, initializer, and onboarding driver*
 
@@ -141,6 +141,10 @@ default_user, default_ai_user, history, index
 **Trigger:** One or more cabinets in `init` state, post-warmup, not `ha_start`
 
 Detects cabinets that are present but genuinely uninitialized — `state=init` with no VolumeInfo. These are virgin cabinets: the sensor has evaluated at least once and found nothing. Flynn calls `script.flynn_initialize_cabinets` to bootstrap them.
+
+**Through the factory (5.3.4).** `flynn_initialize_cabinets` stamps each cabinet with `zen_admintools_cabinetadmin_factory` directly, after the same virgin test cabinet admin's `init` uses; a cabinet with leftover data still raises the manual-init notice. Flynn never calls a gated tool: `init` is gated through identity, and on a fresh install the identity policy it reads isn't written yet, so before 5.3.4 every init was refused. Each cabinet's answer is logged.
+
+**The FileCabinet lock (5.3.3).** When Flynn stamps the system cabinet, which happens only on a fresh install or after `reset_all`, it writes `fc_acl_mode` as `{mode: audit, arm_on_acl_v2: true}`. Identity's `acl_migrate` turns it to enforce once ACL v2 is applied. An upgraded install never gets an armed drawer and stays in audit.
 
 **The vault.** The vault is a required system cabinet. Flynn's label gate labels it, and Gate 2.1 initializes it as "Vault Cabinet" on the first pass after warmup (not on the `ha_start` pass). Gate 2.1 also initializes a vault that was never written (state `unknown`, no `variables`): before 2026.11.0 every vault write was dropped, so an existing install's vault never left `unknown`.
 

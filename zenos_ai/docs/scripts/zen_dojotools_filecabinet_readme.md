@@ -517,7 +517,7 @@ Each op resolves on its own: a built-in lock, else the drawer's rule, else the c
 
 **A pointer answers with its cabinet's ACL,** never a drawer `acl`. **An expansion answers with its host's ACL** (one hop; the answer names it in `inherited_from`). An expansion can't have an ACL of its own: Identity's `acl_set` and `take_ownership` refuse it and name the host. A drawer keeps its own `acl` wherever it lives, so a drawer-scope `acl_set` on an expanded key writes it on the copy in the expansion.
 
-**The gate ships in audit mode.** Its mode is the system cabinet's `fc_acl_mode` drawer, `{mode: audit|enforce}`. Only the admin door writes it, and a missing or unreadable drawer reads as audit, so an install stays in audit until an admin sets it.
+**A fresh install enforces; an upgraded one audits.** The gate's mode is the system cabinet's `fc_acl_mode` drawer, `{mode: audit|enforce}`. Only the admin door writes it, and a missing or unreadable drawer reads as audit. When Flynn sets up the system cabinet (a fresh install, or after `reset_all`), it writes the drawer as audit with `arm_on_acl_v2: true`, and Identity's `acl_migrate` turns an armed drawer to enforce once the ACL schema is current. An upgraded install has no drawer, so it stays in audit until an admin sets it.
 
 | Mode | A deny | A rule that asks for a live ack |
 |---|---|---|
@@ -538,19 +538,16 @@ Either way, when the gate would deny or would ask, it logs `fc_acl_audit` (with 
 }
 ```
 
-To turn enforcement on, set the drawer through the admin door:
+To turn enforcement on, run the switch from a Home Assistant console session (Developer Tools). It refuses a call no user started, so no agent, script or automation can flip it:
 
 ```yaml
-action: script.zen_admintools_cabinet_writer
+action: script.zen_admintools_prompt_loader
 data:
-  mode: set
-  volume_entity: sensor.zenos_system_cabinet
-  key: fc_acl_mode
-  value: {mode: enforce}
-  caller: <your name for the audit log>
+  mode: fc_acl_mode
+  action_type: enforce   # status | audit | enforce
 ```
 
-To roll back, remove the drawer (`mode: remove`) or set `{mode: audit}`. The admin door's own gate is separate and still audit only.
+`status` answers the mode, whether the drawer is set, and whether a fresh install armed it. `audit` is the rollback. Setting it by hand drops the arm flag, so your choice stands. The answer carries `was` and the `console_user` that set it. The admin door's own gate is separate and still audit only.
 
 Read the record only through the CABS macros (`acl_record`, `acl_for`, `acl_check`); see [zenos_cabinets.jinja](../custom_templates/zenos_cabinets_jinja.md). Identity's `acl_migrate`, `acl_set` and `take_ownership` write it; see [Identity](zen_dojotools_identity_readme.md).
 

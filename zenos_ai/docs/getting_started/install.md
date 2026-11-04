@@ -298,7 +298,9 @@ If any other sensor shows `warn` or `error`, check its attributes for detail. Fl
 
 **The vault cabinet.** `sensor.zen_cabinet_health` warns until the vault (`sensor.zenos_vault_cabinet`) is online. Flynn provisions it on its own on the first pass after warmup. Nothing to do unless the warning stays.
 
-**Access control ships in audit mode.** FileCabinet's access gate checks every cabinet call but refuses nothing until you switch it to enforce. While it audits, `fc_acl_audit` warnings from `zen_sutra_filecabinet` in the Home Assistant log are expected, not errors: each one is a call enforcement would have refused or asked you to approve. Read them for a while before you turn enforcement on. The switch and the rollback are in the [FileCabinet readme](../scripts/zen_dojotools_filecabinet_readme.md#access-control-acl-v2).
+**Access control is on for a fresh install.** FileCabinet's access gate checks every cabinet call. On a fresh install Flynn arms it, and it switches to enforce on its own once every cabinet carries the ACL record; the log says "FileCabinet locked". From then on a call the rules deny is refused, and one that needs a person asks the household admin.
+
+**An upgraded install stays in audit.** The gate refuses nothing, and `fc_acl_audit` warnings from `zen_sutra_filecabinet` in the Home Assistant log are expected, not errors: each one is a call enforcement would have refused or asked you to approve. Read them for a while, then lock it from the Home Assistant console with `zen_admintools_prompt_loader mode=fc_acl_mode action_type=enforce`. `action_type=audit` is the rollback, and `status` shows where it stands. See the [FileCabinet readme](../scripts/zen_dojotools_filecabinet_readme.md#access-control-acl-v2).
 
 ---
 

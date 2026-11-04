@@ -1,4 +1,4 @@
-# Zen DojoTools Identity — v5.14.1
+# Zen DojoTools Identity — v5.15.0
 
 *Identity resolution, presence, and household/family group management for ZenOS-AI*
 
@@ -608,7 +608,9 @@ What it stamps:
 - the kata cabinet's owner (the default agent) when it has none
 - after a clean full apply, `acl_schema: {version, migrated}` on the system cabinet. A cabinet skipped because nothing loaded is reported but doesn't hold the stamp back
 
-Answer fields: `status` (`dry_run` / `ok` / `error`), `schema_stamped`, `scanned`, `changed`, `changes` (each `{cabinet, patch, unset, remove, members, notes}`), `clean`, `dangling` (`{cabinet, guid}` principals that resolve to no cabinet, reported and never dropped), `skipped` (cabinets that can't be read) and `remaining` (cabinets still failing the schema check after apply).
+**It locks a fresh install's FileCabinet (5.15.0).** When an apply leaves the schema current and the system cabinet's `fc_acl_mode` drawer is armed (Flynn arms it when it sets up the system cabinet), it sets the drawer to `enforce` through the admin door and logs "FileCabinet locked". An upgraded install has no armed drawer and stays as it is.
+
+Answer fields: `status` (`dry_run` / `ok` / `error`), `schema_stamped`, `fc_acl_locked`, `scanned`, `changed`, `changes` (each `{cabinet, patch, unset, remove, members, notes}`), `clean`, `dangling` (`{cabinet, guid}` principals that resolve to no cabinet, reported and never dropped), `skipped` (cabinets that can't be read) and `remaining` (cabinets still failing the schema check after apply).
 
 ### `acl_set` — Change a Cabinet's or Drawer's Ops (owner only)
 

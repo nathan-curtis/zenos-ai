@@ -237,10 +237,10 @@ flowchart TD
   ReloadAll["tool: ha_reload_all"]
   Restart["tool: ha_restart<br/>confirm_action: true"]
   SoftLabels["script.zen_dojotools_labels<br/>action_type: reset"]
-  HardLabels["script.zen_admintools_reset_labels<br/>confirm: true"]
+  HardLabels["script.zen_admintools_reset_labels<br/>confirm: true + live ack"]
   SingleCab["script.zen_admintools_cabinetadmin<br/>mode: reset"]
   PromptLoader["script.zen_admintools_prompt_loader<br/>cortex_version: latest"]
-  Nuclear["Last resort:<br/>reset labels, then reset_all cabinets"]
+  Nuclear["Last resort:<br/>reset_all (dry_run first)"]
 
   Start --> Health --> Issues
   Issues -- "no" --> Done
@@ -368,7 +368,7 @@ script.zen_admintools_reset_labels
   confirm: true
 ```
 
-⚠️ **Deletes all `zen_` labels and all assignments. No undo.**
+⚠️ **Deletes all `zen_` labels and all assignments. No undo.** Needs `zenos.registry.label_lifecycle_control` at level 2, and asks the household admin to approve every call.
 
 Non-zen labels (`home`, `media_players`, `hot_tub`, etc.) are never touched. Flynn rebuilds the full label set automatically — Gate 0 recreates, Gate 1 reassigns. No HA restart required on HA 2024.x+.
 
@@ -393,16 +393,17 @@ Wipes all drawers from a single cabinet. Use when one specific cabinet has corru
 ### Step 7 — Nuclear Cabinet Reset (Last Resort)
 
 ```
-# Run in order:
-1. script.zen_admintools_reset_labels     (confirm: true)
-2. script.zen_admintools_cabinetadmin     (op: reset_all, confirm: true)
+# See the plan first:
+script.zen_admintools_cabinetadmin   (mode: reset_all, dry_run: true)
+# Then wipe:
+script.zen_admintools_cabinetadmin   (mode: reset_all, confirm: true)
 ```
 
-⚠️ **Wipes all Ring-0 canonical cabinets + all zen_ labels. No undo.**
+⚠️ **Wipes every cabinet and every `zen_` label. No undo.**
 
-Step 1 nukes labels. Step 2 wipes all 14 Ring-0 cabinets, reseeds schemas via `reset_template`, and fires Flynn bootstrap. User cabinets (`sensor.primary_user_cabinet`, etc.) are never touched. Order matters — labels first, cabinets second.
+The default `scope: all` is a true fresh start: every cabinet (your user and AI user cabinets, the vault and expansions included) and every `zen_` label on the house, your own included; Flynn recreates only its own labels. It needs the cabinet lifecycle cert, the label delete cert at level 2, and a live household-admin yes. `scope: core` wipes only the 14 Ring-0 cabinets and keeps labels. One call does both; there is no separate label step.
 
-Flynn handles the full rebuild sequence automatically.
+Flynn rebuilds the install as a fresh one, schemas, templates and the FileCabinet lock included.
 
 **Use when:** Nothing else worked, or you're doing a clean reinstall.
 

@@ -39,7 +39,7 @@ A partner link is delegation, not a social relationship. `link_partners` adds ea
 
 FileCabinet's cabinet gate reads partner links. By default a person's cabinet answers to that person, their partners and the prime agent, and a cabinet rule can name `@partner` (Chapter 21).
 
-> **Not yet built.** The cabinet gate ships in audit mode, so today a partner link changes what the gate logs, not what it refuses. No other gated tool reads `acls.partners`: outside the cabinets, certification (Chapter 19) decides. Partner-aware authorization beyond the cabinets is design direction.
+> **Not yet built.** On an upgraded install the cabinet gate runs in audit mode, so there a partner link changes what the gate logs, not what it refuses. On a fresh install, which enforces, it changes what the gate allows. No other gated tool reads `acls.partners`: outside the cabinets, certification (Chapter 19) decides. Partner-aware authorization beyond the cabinets is design direction.
 
 ## 18.4 Resolving the caller
 

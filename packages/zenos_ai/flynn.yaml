@@ -1,5 +1,18 @@
 ###############################################################################
-# FLYNN: UNIFIED ENGINE (v5.3.2)
+# FLYNN: UNIFIED ENGINE (v5.3.4)
+# v5.3.4: the cabinet init answer is read from cabinetadmin's envelope (the
+#   reason is under result). Both checks on it read the top level, so the
+#   fresh-install lock never armed and the rearm_required notice never fired.
+#   Flynn stamps missing cabinets through cabinetadmin_factory directly (the
+#   same virgin test; residue raises the manual-init notice), not cabinetadmin
+#   init, which is gated through identity: on a fresh install the sim_mode
+#   policy it reads is not written yet, so every init was refused
+#   (identity_policy_blocked). Each slot's init answer is logged.
+# v5.3.3: a fresh install arms the FileCabinet lock. When Flynn initializes
+#   the system cabinet (only ever on a fresh install or a smashed cabset), it
+#   writes fc_acl_mode {mode: audit, arm_on_acl_v2: true}; identity
+#   acl_migrate turns it to enforce once ACL v2 is applied. An existing
+#   install never gets the drawer and stays on audit.
 # v5.3.2: the cabinet-upgrade alert fires only for a pre-RC2 cabinet (state
 #   Variables), not for any cabinet warn (a vault not yet written raised it),
 #   and is cleared on the all-green early exit too, which never reached the
@@ -1455,6 +1468,12 @@ script:
             default_user_history: "History Cabinet"
             default_ai_user_history: "History Cabinet"
 
+      - action: system_log.write
+        continue_on_error: true
+        data:
+          level: warning
+          logger: flynn
+          message: "Flynn: initialize_cabinets slots={{ missing_list }} system_state={{ states(slot_to_entity.get('system', '')) if slot_to_entity.get('system') else 'none' }}"
       - repeat:
           for_each: "{{ missing_list }}"
           sequence:
@@ -1496,14 +1515,47 @@ script:
                           but AI_Cabinet_VolumeInfo is present — cabinet has data.
                           Init blocked. Boot race artifact. Will self-heal on next write.
                     - stop: "REINIT BLOCKED — {{ entity_id }} has VolumeInfo. Data present. Not a missing cabinet."
-                - action: script.zen_admintools_cabinetadmin
+                # Flynn stamps through the factory directly, never cabinetadmin
+                # init: that op is gated through identity, whose sim_mode policy
+                # lives in the household cabinet this pass is building, so on a
+                # fresh install every init was refused (identity_policy_blocked).
+                # Same virgin test as cabinetadmin: no system drawers and nothing
+                # else. Residue is never stamped; it raises the manual-init notice.
+                - variables:
+                    _non_sys: >-
+                      {%- set sys = ['AI_Cabinet_VolumeInfo', '_label_index', '_context', '_restored_marker', '_hammered'] -%}
+                      {{- ((_cab_vars.keys() | list) if _cab_vars is mapping else []) | reject('in', sys) | list -}}
+                    _is_virgin: >-
+                      {{- not _has_volumeinfo and (_cab_vars is not mapping
+                          or ('_label_index' not in _cab_vars and '_context' not in _cab_vars)) -}}
+                - variables:
+                    _is_virgin: "{{ _is_virgin | bool and _non_sys | count == 0 }}"
+                - if: "{{ _is_virgin }}"
+                  then:
+                    - action: script.zen_admintools_cabinetadmin_factory
+                      continue_on_error: true
+                      data:
+                        confirm_action: true
+                        cabinet_entity: "{{ entity_id }}"
+                        cabinet_type: "{{ cabinet_type }}"
+                      response_variable: _init_result
+                    - event: zen_resolver_refresh
+                # The factory answers in its envelope; its own answer is under result.
+                - variables:
+                    _init_reason: >-
+                      {%- if not _is_virgin -%}rearm_required
+                      {%- else -%}
+                        {%- set _r = _init_result | default({}) -%}
+                        {%- set _r = _r.get('result', _r) if _r is mapping else {} -%}
+                        {{- 'initialized' if (_r is mapping and _r.get('status') == 'success') else '' -}}
+                      {%- endif -%}
+                - action: system_log.write
+                  continue_on_error: true
                   data:
-                    mode: init
-                    confirm_action: true
-                    target_cabinet: "{{ entity_id }}"
-                    cab_type: "{{ cabinet_type }}"
-                  response_variable: _init_result
-                - if: "{{ (_init_result | default({})).get('reason', '') == 'rearm_required' }}"
+                    level: warning
+                    logger: flynn
+                    message: "Flynn: init {{ slot }} ({{ entity_id }}): {{ _init_reason if _init_reason != '' else ('no reason; answer ' ~ ((_init_result | default({})) | tojson)[:240]) }}"
+                - if: "{{ _init_reason == 'rearm_required' }}"
                   then:
                     - action: persistent_notification.create
                       data:
@@ -1525,6 +1577,38 @@ script:
                           `script.zen_admintools_cabinetadmin` → mode: `hammer`, target_cabinet: `{{ entity_id }}`, confirm_action: `true`
 
                           Flynn will complete mount and wiring automatically after either succeeds.
+                # A fresh install arms the FileCabinet lock. The system cabinet
+                # is only ever initialized here, on a fresh install (or a smashed
+                # cabset), never on an existing one. Armed reads as audit; the
+                # lock goes to enforce once ACL v2 is applied (Gate 3), unless
+                # the operator set fc_acl_mode first.
+                - if: "{{ slot == 'system' and _init_reason == 'initialized' }}"
+                  then:
+                    - wait_template: "{{ state_attr(entity_id, 'variables') is mapping }}"
+                      timeout: "00:00:15"
+                      continue_on_timeout: true
+                    - if: >-
+                        {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                        {{- CABS.cabinet_drawer_value(entity_id, 'fc_acl_mode', {}) | from_json({}) == {} -}}
+                      then:
+                        - action: script.zen_admintools_cabinet_writer
+                          continue_on_error: true
+                          data:
+                            mode: set
+                            volume_entity: "{{ entity_id }}"
+                            key: fc_acl_mode
+                            value:
+                              mode: audit
+                              arm_on_acl_v2: true
+                              armed: "{{ now().isoformat() }}"
+                            caller: flynn
+                            reason: "flynn fresh install arms the FileCabinet lock"
+                        - action: system_log.write
+                          continue_on_error: true
+                          data:
+                            level: warning
+                            logger: flynn
+                            message: "Flynn: fresh install, FileCabinet lock armed (enforce once ACL v2 is applied)."
 
       # Post-init: mount per-construct history cabinets and wire history mount in parent.
       # Runs for all 4 slots unconditionally — skips already-mounted cabs, handles
