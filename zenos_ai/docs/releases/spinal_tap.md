@@ -1,6 +1,6 @@
 # Release Notes — 2026.11.0 'This Is Spinal Tap'
 
-**Status:** Public beta 4.1 (patch on beta 4)
+**Status:** Release candidate 1
 **ETA:** Saturday, November 14, 2026
 **Branch:** `feat/2026.11.0`
 **Base:** 2026.10.1 (patch on 2026.10.0 'Tron')
@@ -27,7 +27,7 @@ The road crew needs passes too. The summarizer works when no one's on stage: it 
 
 And the guitar?
 
-Don't touch it. Don't look at it. Don't EVEN point at it. Once cabinet enforcement is on, a cabinet your agent has no pass for won't just refuse the read. It won't show up in the listing.
+Don't touch it. Don't look at it. Don't EVEN point at it. In 11, a cabinet your agent has no pass for refuses the read. In 12 it won't even show up in the listing.
 
 **Backstage passes for agents and locks on the cabinets.**
 
@@ -40,7 +40,7 @@ Don't touch it. Don't look at it. Don't EVEN point at it. Once cabinet enforceme
 **The chain:** Postman approves, CertAdmin admits, the enclave stores credentials, `zen_root_authentik` authenticates, Identity authorizes, and FileCabinet enforces. Where a call came from is recorded for audit and is never authority.
 
 1. **Access-path audit.** Every way into a protected drawer is mapped before any enforcement lands: tool calls, mounts, live drawers, boot and repair paths.
-2. **FileCabinet security.** One enforcement point. Read, write, protected configuration and cabinet administration are separate permissions. They cover listing, search, copies, moves, mounts, expansion and live-drawer dispatch. Authorization follows the resolved destination, and a cross-cabinet operation checks both sides. Following a mount confers no authority, so mount resolution happens before the access check. Callers see only what they may read: a hidden drawer is indistinguishable from one that does not exist. You can't touch the guitar, and you can't point at it either. Effective inherited access can be shown per drawer.
+2. **FileCabinet security.** One enforcement point. Read, write, protected configuration and cabinet administration are separate permissions. They cover listing, search, copies, moves, mounts, expansion and live-drawer dispatch. Authorization follows the resolved destination, and a cross-cabinet operation checks both sides. Following a mount confers no authority, so mount resolution happens before the access check. Callers see only what they may read: a hidden drawer is indistinguishable from one that does not exist. You can't touch the guitar, and you can't point at it either (hiding moves to 2026.12.0). Effective inherited access can be shown per drawer.
 3. **Trusted entry points.** System and Default Agent authority are separated. Flynn and the prompt loader are named trusted entry points, and there is no agent-selectable "system" bypass.
 4. **Admission enforcement.** `zenos.agent.basic` stops being a badge that is requested and becomes one that is checked. In 11.0 the check is the onboarding gate: the backstage pass, checked by every agent-facing tool. Participation stays distinct from administrative authority. The admission-token contract with `zen_root_authentik`, and Postman approvals bound to the enrollment they were given for, are not in 11.0: they need an OIDC plugin first, and the gate is their precursor.
 5. **Bootstrap and recovery.** Flynn's cold boot, upgrade, revocation and recovery run on a trusted path, and each is proven.
@@ -73,9 +73,9 @@ The backstage pass checks calls a user started. A call no user started (boot, Fl
 
 ---
 
-## Where It Stands: the Amps Are Wired, the Volume Is at Ten
+## Where It Stands: Cranked to Eleven
 
-Every lock on the cabinets is built and wired to its door. **A fresh install goes to eleven:** Flynn arms FileCabinet's gate when it sets up the system cabinet, and the gate locks to enforce once ACL v2 is on every cabinet. **An upgraded install stays at ten, in audit mode:** the gate decides every FileCabinet call, logs what it would have refused or asked a human about, and lets the call through, so the logs show what enforcement will change before it changes anything. The admin door's own gate is audit only on every install.
+Every lock on the cabinets is built and wired to its door. **A fresh install is cranked to eleven:** Flynn arms FileCabinet's gate when it sets up the system cabinet, and the gate locks to enforce once ACL v2 is on every cabinet. **An upgraded install has the same knob, and you turn it:** until you do, the gate runs in audit mode. It decides every FileCabinet call, logs what it would have refused or asked a human about, and lets the call through, so the logs show what enforcement will change before it changes anything. The admin door's own gate is audit only on every install.
 
 The knob is one drawer, `fc_acl_mode`, and one switch: `zen_admintools_prompt_loader mode=fc_acl_mode`, from the Home Assistant console. `action_type: enforce` turns an upgraded install to eleven, and `audit` turns any install back. No agent or automation can flip it.
 
@@ -83,10 +83,10 @@ The FileCabinet security work planned for 11 is done. Its cold boot is proven: a
 
 One gate ships on: the backstage pass. An agent you haven't approved gets help and onboarding, and nothing else. See [The Backstage Pass](#the-backstage-pass).
 
-| Planned | Landed (audit mode, unless noted) | Still to come |
+| Planned | Landed | Still to come |
 |---|---|---|
 | Access-path audit | The audit drove the default table and caller origin below. | Finishing the map of every path in. |
-| FileCabinet security | One gate, checking every hop of a mount chain. Separate read, write, delete and admin rules. Default rules for every cabinet class, and locks on credential and approval drawers. Effective access per drawer (`CABS.acl_for`). Enforced on a fresh install; a console switch for an upgraded one. | Enforcement by default on upgraded installs. Hiding unreadable drawers from listings and search. |
+| FileCabinet security | One gate, checking every hop of a mount chain. Separate read, write, delete and admin rules. Default rules for every cabinet class, and locks on credential and approval drawers. Effective access per drawer (`CABS.acl_for`). Enforced on a fresh install; a console switch for an upgraded one. | Enforcement by default on upgraded installs. Hiding unreadable drawers from listings and search (planned for 2026.12.0). |
 | Trusted entry points | The gate tells an agent from a tool (caller origin). Boot, Flynn and automations are exempt at the admin door. Provisioning and Flynn's cabinet setup are named lifecycle principals. | Separating System and Default Agent authority. |
 | Admission enforcement | The backstage pass: every agent-facing tool checks `zenos.agent.basic` first. It ships on, not in audit. Flynn asks for it when onboarding starts. | The admission-token contract with `zen_root_authentik`, after the OIDC plugin (a later phase). |
 | Bootstrap and recovery | A cold fresh install, proven: Flynn stamps every cabinet, migrates, and locks the FileCabinet. An upgrade migrates and stamps when the bootstrap next runs, or on `acl_migrate` / `cabinet_schema_upgrade`. `reset_all` returns an install to a true fresh start. | Revocation and recovery on the trusted path. |

@@ -10,7 +10,7 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Public Beta 4.1: 2026.11.0 'This Is Spinal Tap'** (`feat/2026.11.0`, ETA Saturday, November 14, 2026) | Current Stable: 2026.10.2 'Tron' (security patch on 2026.10.0) | Legacy line: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) and 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/spinal_tap.md).
+**Release Candidate 1: 2026.11.0 'This Is Spinal Tap'** (`feat/2026.11.0`, ETA Saturday, November 14, 2026) | Current Stable: 2026.10.2 'Tron' (security patch on 2026.10.0) | Legacy line: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) and 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/spinal_tap.md).
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
@@ -40,7 +40,7 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 
 **Also in the beta:** certs that say where they may be used (interactive, or a background pipeline stage), which replace the summarizer's seed and act whitelists, with `zenos_agent_autonomous` for the agent's background notifications; semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, Cortex 45, every cert under `zenos.*` with a plain-words approval prompt, and the vault as a required cabinet that holds the cert catalog.
 
-**Still to come:** enforcement by default on upgraded installs, hiding unreadable drawers from listings, and the operator permission report. Display stays beta and gave its 11 slot to the naming work; its dashboard moves to 2026.12.0.
+**Still to come:** enforcement by default on upgraded installs, the operator permission report, and hiding unreadable drawers from listings, which is planned for 2026.12.0. Display stays beta and gave its 11 slot to the naming work; its dashboard moves to 2026.12.0.
 
 → [Release Notes — This Is Spinal Tap](zenos_ai/docs/releases/spinal_tap.md)
 

@@ -147,7 +147,7 @@ Every "Not yet built" box in the book, in one place.
 | 20 | Administrative competency certification | Design direction for this release line |
 | 21 | Certifying a corpus (a cabinet) as an object | Direction |
 | 21 | Cabinet ACLs enforced by default | Built in 2026.11.0 for a fresh install; an upgraded install audits until its administrator switches it |
-| 21 | Filtering at the source: unreadable drawers hidden from listings and search, caches keyed by caller, derived data inheriting its sources' rules | In progress |
+| 21 | Filtering at the source: unreadable drawers hidden from listings and search, caches keyed by caller, derived data inheriting its sources' rules | In progress; hiding planned for 2026.12.0 |
 | 21 | A LiveDrawer's tool call bounded by its reader's authority | Not settled; the read itself is gated |
 | 21 | Per-principal traversal | Arrives with session binding |
 | 21 | Membership edges that gate actions | Design direction |
