@@ -1,4 +1,4 @@
-# Zen DojoTools Ectoplasm — v6.5.1
+# Zen DojoTools Ectoplasm — v6.5.2
 
 *Spook/HA extended surface wrapper — repairs, areas, floors, entity lifecycle, labels, integrations*
 

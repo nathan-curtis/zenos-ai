@@ -12,6 +12,7 @@
 
 - **Home Assistant** 2025.x or newer
 - **Spook Integration** Installable through HACS. [Spook Install instructions](https://spook.boo/installation/)
+  > **On Home Assistant 2026.11, install Spook 5.5.1.** Park there until the pending Spook fixes ship in 5.11.2 or later. Spook 5.6.0 to 5.10.0 fail to load on 2026.11, and 5.11.0 and 5.11.1 freeze a ZenOS install for 30 to 40 seconds at a time. In HACS, open **Spook**, choose **Redownload**, and pick **5.5.1**. See the ZenOS Spook advisory in the [README](../../../README.md) for what 5.5.1 leaves out.
   > **No Microsoft 365 Teams?** Spook will flag a ghost warning about `script.zen_dojotools_teams` referencing `sensor.homeassistant_chat` and `sensor.homeassistant_status`. These entities only exist with the M365 Teams integration. The warning is harmless — ignore it, or suppress it by assigning a `watchman_ignore` label to those entities.
 - **A conversation agent** configured in HA with a tool-calling capable model. Models smaller than ~8B parameters or with short context windows are not recommended — ZenOS-AI prompts are large and tool use is required.
 - **The Home Assistant Companion App**, installed on your phone and logged into this HA instance, with notification permission granted. Step 3.5 below walks through confirming this works — do it before you finish this guide, not after. As of 2026.9.0 this isn't optional infrastructure: every certification grant (locks, alarm, covers, infra, room overrides) requires a real push notification reaching a real device, with no fallback, every time.
