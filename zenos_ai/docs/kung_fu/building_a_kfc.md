@@ -254,7 +254,12 @@ Before 11.0 the pipeline ran as nobody and answered to two lists in the system c
 
 **The 11 bridge.** Through 11, the old seed whitelist still passes a tool that declares no `seed_modes`, and the old act whitelist still passes an act whose cert the agent holds for interactive use only. Both are stamped legacy. Both lists, and the bridge, are removed in 12. Declare `seed_modes` and `st_ok` now.
 
-**Minimum level (`meta.requires`).** A drawer's `meta.requires: {cert, level}` names the cert, and the minimum level, the responsible agent needs for the component to run. Enforcement lands in 2026.11.0 RC2; until then the field is stored and not read. Leave it empty (`cert: ""`, `level: 0`) unless your component needs it.
+**Minimum level (`meta.requires`).** A drawer's `meta.requires: {cert, level}` names a cert, and the minimum level, the responsible agent must hold, granted for stage `s` (Ninja seed), for the component to run. Empty (`cert: ""`, `level: 0`) is no requirement, and that's every shipped component.
+- **The Ninja checks it** after the onboarded check and before the seed and the model, however the run started. A refusal is `kfc_cert_required`: the last kata stays, a `zen_event` (`pipeline_component_refused`) and a notification (`zen_kfc_cert_required_<slug>`) say what's missing, and the answer carries `required {cert, level, stage}` and `held {cert, level, stages}`. The 11 cert-name alias applies.
+- **An unmet component stays out of the prompt,** as a disabled one does: out of `dojo_loader()`, SuperSummary's feed and Trapper Keeper's `kata_tier` seed. Its kata is kept, and it comes back once the cert is granted.
+- **The cert must allow stage `s`.** A tool declares that in its `tool_manifest` `certs_required` (`s` in `st_ok`), or a grant can't ask for the stage. No shipped tool allows `s` yet, so a component that adopts a minimum level needs a tool that declares it.
+- **Scribe checks it on `publish_kfc`** against the cert catalog and refuses with `kfc_requires_invalid`, publishing nothing, when no tool declares the cert, its tools don't allow `s`, or the level is above its `max_level`. Set it with a patch: `changes: {meta: {requires: {cert: ..., level: ...}}}`.
+- **A self-registering tool** declares it in its `kfc_manifest` `meta`; `bootstrap_kfc` rewrites the mount when it changes.
 
 **The tool's own gate still applies.** An agent without `zenos.agent.basic` still gets a tool's `help`, `tool_manifest` and `kfc_manifest`, so a live mount resolves before onboarding; anything else answers `onboarding_required`. Calls no user started (the scheduler, automations) pass.
 
@@ -350,4 +355,4 @@ automation:
 - [ ] Drawer written by Scribe or `bootstrap_kfc`, never by a direct FileCabinet write (the Dojo takes writes only from `@internal`)
 - [ ] A `seed` that calls a tool names a mode in that tool's `tool_manifest` `seed_modes`
 - [ ] A `suggested_act_event` target has a cert whose `st_ok` includes `e`, and the household's agent holds it with stage `e` (`zenos_agent_autonomous`)
-- [ ] `meta.requires` left empty unless the component needs a minimum level
+- [ ] `meta.requires` left empty unless the component needs a minimum level; if set, its cert allows stage `s` and the agent holds it with `s`

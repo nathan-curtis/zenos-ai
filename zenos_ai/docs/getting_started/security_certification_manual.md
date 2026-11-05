@@ -279,7 +279,7 @@ If you grant broad allow scope and later regret it, remove the specific entry as
 - Each tool declares the stages its certs allow (`st_ok` in its `certs_required`). A grant can't ask for a stage its tool doesn't allow.
 - Outside `i`, only an exact grant counts. A parent cert never covers a child in the background.
 - Adding a stage goes to your phone like any grant, and the prompt says it in plain words ("in the background, with no one asking"). Revoking with `cert_stages` drops just those stages.
-- In 2026.11.0 the Ninja emit stage (`e`) is the one a check reads. Seeds are declared by the tool (`seed_modes`), not granted.
+- In 2026.11.0 two stages are read. The Ninja emit stage (`e`) gates the act at the end of a run. The Ninja seed stage (`s`) gates a component that sets a minimum level (`meta.requires`): the agent must hold that cert with `s`, or the run is refused (`kfc_cert_required`). Seed tools themselves are declared by the tool (`seed_modes`), not granted.
 - The pipeline acts as the agent responsible for the household: the prime in its ACL, else the default agent. That agent must be onboarded, or summaries pause.
 
 ```yaml

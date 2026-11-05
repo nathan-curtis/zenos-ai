@@ -1,4 +1,4 @@
-# Zen DojoTools Scribe — v5.6.3
+# Zen DojoTools Scribe — v5.7.0
 
 *Guided authoring and lifecycle management for KF6 artifacts — MCP-exposed*
 
@@ -51,7 +51,7 @@ in different states.
 | `clear_field` | Remove named fields from the payload. Requires explicit field list. |
 | `delete` | Delete the drawer entirely. Requires `delete_confirm: true`. |
 | `formalize_scroll` | Lock the artifact as formal and read-only (`artifact_state: formal`). Applies `zen_scroll` label — hard RO via FileCabinet. |
-| `publish_kfc` | Press a formal scroll to the Dojo as a live KFC. Requires `artifact_state == formal` and `publish_confirm: true`. |
+| `publish_kfc` | Press a formal scroll to the Dojo as a live KFC. Requires `artifact_state == formal` and `publish_confirm: true`. A `meta.requires` is checked against the cert catalog first (see Safety Model). |
 | `republish_kfc` | Edit-and-republish an existing KFC without going through the formal scroll gate. Reads the current KFC from the Dojo, merges any supplied field changes, runs the full trim block (label create-or-update, `icon` sync, chonk warning). Use after `patch` when label sync is needed, or standalone to sync only the label description. |
 | `dry_run` | Preview scope discovery and authoring guidance without writing anything. |
 | `list_triggers` | Return all available scheduler trigger IDs. |
@@ -290,6 +290,7 @@ Scribe is non-destructive by default:
 - **`replace`** requires `replace_confirm: true`
 - **`delete`** requires `delete_confirm: true`
 - **`publish_kfc`** requires `artifact_state == formal` and `publish_confirm: true` — cannot publish a draft
+- **`publish_kfc` checks `meta.requires` (5.7.0, KF6).** A cert at level 1 or more must be one some tool declares, whose tools allow stage `s` (Ninja seed), at a level within its `max_level`. Otherwise it refuses with `kfc_requires_invalid` and publishes nothing, since the Ninja could never run it. It reads the vault's catalog cache, else a live `cert_audit`; if neither answers, it refuses. Set the field with a patch: `changes: {meta: {requires: {cert: ..., level: ...}}}`.
 - **Live KFC writes are human-gated.** Publishing, republishing, or a patch, replace, clear_field or delete on a KFC needs `zenos.knowledge.kfc_publish`, or the household admin's approval of that one write through Identity's `request_live_ack` (the console override stands in). Declined or timed out, the write is refused and the refusal carries `live_ack`. A blocked identity, a call the target guard refuses, a publish without `publish_confirm` and a `publish_dry_run` are refused without asking. Each ask is logged as `scribe_live_ack`.
 - **Self-indexing guard** — prevents a component from including its own drawer in scope discovery
 - **Drawer feedback loop guard** — drawer blurbs are advisory; they don't re-enter authoring context
@@ -318,6 +319,7 @@ Scribe is non-destructive by default:
 
 | Version | Change |
 |---------|--------|
+| v5.7.0 | KF6: `publish_kfc` checks `meta.requires` against the cert catalog (`kfc_requires_invalid`). The help and descriptions say KF6. |
 | v1.8.0 | `republish_kfc` mode — edit-and-republish path that bypasses the formal scroll gate; merges changes and runs full trim block including label sync. `component_size` feedback on `publish_kfc`/`republish_kfc` responses — reports component_instructions chars, token estimate (~chars/4), % of 16KB FileCabinet drawer limit, and size_tier (ok/advisory/warning/danger). `schedules_summary` field on read responses (count + kata_keys). Patch mode merges `schedules[]` by `kata_key` (upsert) instead of replacing the full array. `publish_kfc` preserves schedules array. `repair` mode — detect and flatten wrapper-accumulated drawer corruption up to 5 levels deep (dry_run default). |
 | v1.7.0 | `icon` field added to KFC schema; set on first publish (label create), preserved on update. `publish_kfc` label upsert — creates label if absent, always updates description. Component summary chonk warning (>150 chars). |
 | v1.4.0 | `seed` and `area_seed` input fields; parsed into draft and publish payloads. |

@@ -56,7 +56,7 @@ For one KFC, the Ninja Summarizer:
 
 ## 14.3 SuperSummary: the whole house
 
-SuperSummary reads every active component's Kata and produces one whole-house summary, `zen_summary`. A component is active if its definition has a `kata_key`, its `meta.enabled` is true or absent, and its Kata exists.
+SuperSummary reads every active component's Kata and produces one whole-house summary, `zen_summary`. A component is active if its definition has a `kata_key`, its `meta.enabled` is true or absent, its minimum level (`meta.requires`, if it sets one) is met by the agent the pipeline acts as, and its Kata exists. A component that is off or unmet stays out of the agent's prompt as well, and its Kata is kept.
 
 Components are handled by tier:
 

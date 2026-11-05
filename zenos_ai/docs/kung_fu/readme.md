@@ -63,8 +63,8 @@ Run with `mode=schema` to get the live `kfc_template` from the Dojo cabinet.
 |-------|----------|-------------|
 | `version` | yes | Semantic version string, e.g. `1.0.0` |
 | `friendly_name` | yes | Human-readable component title |
-| `meta.enabled` | yes | Boolean — `true` to enable, `false` to disable this component |
-| `meta.requires.cert` | no | Cert the household's agent must hold for this component to run (e.g. `zenos.comms.dispatch`). Enforced from 2026.11.0 RC2; stored, not read, before that. |
+| `meta.enabled` | yes | Boolean — `true` to enable, `false` to disable this component. A disabled component stays out of the agent's prompt. |
+| `meta.requires.cert` | no | Cert the household's agent must hold, granted for stage `s` (Ninja seed), for this component to run. Unmet: the Ninja refuses with `kfc_cert_required` and the component stays out of the prompt. Its tool must allow `s`. See [the minimum level](building_a_kfc.md#kf6-the-security-contract-2026110). |
 | `meta.requires.level` | no | Minimum level (1–4) of that cert. `0` = no requirement. |
 | `label` | yes | HA label that scopes the component's entity set |
 | `component_summary` | yes | One-sentence description of what this component manages |

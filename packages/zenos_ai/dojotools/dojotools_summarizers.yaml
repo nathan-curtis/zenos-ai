@@ -2,9 +2,19 @@
 # ZenOS-AI DojoTools: Summarizers Package
 #
 # Scripts:
-#   zen_dojotools_supersummary: SuperSummary - Whole-Home Synthesizer (v4.7.1)
-#   zen_dojotools_ninja_summarizer: Ninja Summarizer - Per-Component Kata Writer (v4.7.2)
+#   zen_dojotools_supersummary: SuperSummary - Whole-Home Synthesizer (v4.8.0)
+#   zen_dojotools_ninja_summarizer: Ninja Summarizer - Per-Component Kata Writer (v4.8.0)
 #
+# ninja 4.8.0 (KF6): component minimum level. A KFC's meta.requires {cert,
+#   level} is enforced: the agent the run acts as must hold the cert at that
+#   level or higher, granted for stage s (Ninja seed); the 11 alias applies.
+#   Empty cert or level 0 is no requirement (every shipped KFC). A refusal
+#   stops before the seed and the monk with kfc_cert_required, a zen_event
+#   and a notification naming what to grant; the last kata stays.
+# supersummary 4.8.0 / ninja 4.8.0 (KF6): a component whose requirement the
+#   responsible agent does not meet stays out of the prompt: SuperSummary's
+#   keeper feed and the Ninja kata_tier seed (Trapper Keeper) both skip its
+#   kata, the same way they skip a disabled one. The kata is kept.
 # ninja 4.7.2: the context-overflow guard measures the prompt in characters.
 #   It counted the prompt's keys, so it could never trip.
 #
@@ -239,7 +249,7 @@ script:
                   summary='Writes the whole-home summary for the agent',
                   display_name='SuperSummary - Whole-Home Synthesizer',
                   tier='dojotools',
-                  version='4.7.1',
+                  version='4.8.0',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['dojotools', 'zen_kfc_provider'],
                   optional_labels=['ai_summarizer'],
@@ -378,7 +388,7 @@ script:
               final_response:
                 status: ok
                 tool: zen_dojotools_supersummary
-                version: "4.7.1"
+                version: "4.8.0"
                 mode: kfc_manifest
                 kfc: "{{ _kfc_out }}"
                 count: "{{ _kfc_out | length }}"
@@ -611,6 +621,7 @@ script:
               - alias: Collect active components — keeper tier only
                 variables:
                   active_components: >-
+                    {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
                     {%- set dojo = state_attr(dojo_cabinet, 'variables') | default({}, true) -%}
                     {%- set kata = state_attr(kata_cabinet, 'variables') | default({}, true) -%}
                     {%- set ns = namespace(active={}) -%}
@@ -624,6 +635,13 @@ script:
                           {%- set _meta = val.get('meta', {}) -%}
                           {%- set _meta = _meta if _meta is mapping else {} -%}
                           {%- set resolved = _meta.get('enabled', true) | bool -%}
+                          {#- KF6: a component whose meta.requires the responsible
+                              agent does not meet stays out of the prompt (its last
+                              kata is kept, and returns once the cert is granted). -#}
+                          {%- set _rq = _meta.get('requires') if _meta.get('requires') is mapping else {} -%}
+                          {%- if resolved and ((_rq.get('cert') or '') | string | trim) != '' and (_rq.get('level', 0) | int(0)) > 0 -%}
+                            {%- set resolved = (ID.caller((_rq.get('cert') | string | trim), (_rq.get('level') | int(0)), states('sensor.zen_default_household_cabinet_resolved'), 's') | from_json).cert_ok | default(false) -%}
+                          {%- endif -%}
                           {%- set tier = val.get('pipeline_tier', 'keeper') | lower -%}
                           {%- if resolved and comp_key in kata and tier not in ['ambient', 'system'] -%}
                             {%- set kd = kata[comp_key] -%}
@@ -1073,7 +1091,7 @@ script:
                   summary='Writes one component summary for the agent',
                   display_name='Ninja Summarizer - Per-Component Kata Writer',
                   tier='dojotools',
-                  version='4.7.2',
+                  version='4.8.0',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['dojotools'],
                   optional_labels=['ninja_summarizer', 'ai_summarizer'],
@@ -1393,6 +1411,74 @@ script:
                       "caller_token": caller_token | default(""),
                       "run_started_at": started_at | default("")} }}
 
+        # ── 3a2. Component minimum level (KF6). A KFC may declare
+        # meta.requires {cert, level}. The agent the run acts as must hold that
+        # cert at that level or higher, granted for stage s (Ninja seed). An
+        # empty cert or level 0 is no requirement. A refusal stops the run
+        # before the seed and the monk, and the last kata stays in place. The
+        # Dojo is @internal-write, so an agent cannot lower the bar. ──
+        - variables:
+            _kfc_req: >-
+              {%- set _r = _notify_meta.get('requires', {}) -%}
+              {%- set _r = (_r | from_json({})) if _r is string else _r -%}
+              {%- set _r = _r if _r is mapping else {} -%}
+              {{ {'cert': (_r.get('cert') or '') | string | trim, 'level': _r.get('level', 0) | int(0)} }}
+        - if: "{{ final_response is not defined and _kfc_req.cert != '' and _kfc_req.level > 0 }}"
+          then:
+            - variables:
+                _kfc_req_who: >-
+                  {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                  {{- ID.caller(_kfc_req.cert, _kfc_req.level, household_cabinet, 's') | from_json -}}
+            - if: "{{ not (_kfc_req_who.cert_ok | default(false)) }}"
+              then:
+                - variables:
+                    _kfc_req_msg: >-
+                      {%- set w = _kfc_req_who -%}
+                      {%- set _agent = _ninja_agent.entity_id | default('') -%}
+                      {%- if w.policy_status | default('') == 'blocked' -%}
+                        {%- set _why = 'The identity policy blocks the agent (run prompt_loader mode=load).' -%}
+                      {%- elif (w.cert_satisfied_by | default('')) == '' -%}
+                        {%- set _why = 'The agent does not hold it.' -%}
+                      {%- elif (w.cert_level | int(0)) < _kfc_req.level -%}
+                        {%- set _why = 'The agent holds it at level ' ~ w.cert_level ~ '.' -%}
+                      {%- else -%}
+                        {%- set _why = 'The grant does not include stage s (it has ' ~ (w.cert_stages | default('i', true)) ~ ').' -%}
+                      {%- endif -%}
+                      {{ component_slug ~ ' needs ' ~ _kfc_req.cert ~ ' at level ' ~ _kfc_req.level
+                         ~ ' with stage s (Ninja seed) on ' ~ (_agent if _agent != '' else 'the responsible agent')
+                         ~ '. ' ~ _why ~ ' The monk was not called and the last summary is unchanged.' }}
+                - event: zen_event
+                  event_data:
+                    event:
+                      kind: pipeline_component_refused
+                      component: "{{ component_slug }}"
+                      reason: kfc_cert_required
+                      cert: "{{ _kfc_req.cert }}"
+                      level: "{{ _kfc_req.level }}"
+                      stage: s
+                      agent: "{{ _ninja_agent.entity_id | default('') }}"
+                      held_level: "{{ _kfc_req_who.cert_level | default(0) }}"
+                      held_stages: "{{ _kfc_req_who.cert_stages | default('') }}"
+                      severity: warn
+                - action: persistent_notification.create
+                  continue_on_error: true
+                  data:
+                    notification_id: "zen_kfc_cert_required_{{ component_slug }}"
+                    title: "ZenOS: a summary needs a cert"
+                    message: "{{ _kfc_req_msg }}"
+                - variables:
+                    final_response: >-
+                      {{ {"status": "error", "error": "kfc_cert_required",
+                          "component": component_slug,
+                          "required": {"cert": _kfc_req.cert, "level": _kfc_req.level, "stage": "s"},
+                          "agent": _ninja_agent.entity_id | default(''),
+                          "held": {"cert": _kfc_req_who.cert_satisfied_by | default(''),
+                                   "level": _kfc_req_who.cert_level | default(0),
+                                   "stages": _kfc_req_who.cert_stages | default('')},
+                          "message": _kfc_req_msg,
+                          "caller_token": caller_token | default(""),
+                          "run_started_at": started_at | default("")} }}
+
         # ── 3b. Run governor — dedup burnout window (only if not already
         # skipped above) ────────────────────────────────────────────────────
         # Reads burnout_seconds from zen_ninja_config drawer in household cabinet.
@@ -1574,6 +1660,7 @@ script:
             then:
               - variables:
                   zen_index_result: >-
+                    {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
                     {%- set want = _kfc_seed.get('kata_tier') | string | trim | lower -%}
                     {%- set dojo = state_attr(dojo_cabinet, 'variables') | default({}, true) -%}
                     {%- set kata = state_attr(kata_cabinet, 'variables') | default({}, true) -%}
@@ -1584,8 +1671,11 @@ script:
                       {%- set val = _v2 if _v2 is mapping else {} -%}
                       {%- set ck = val.get('kata_key', '') -%}
                       {%- set _meta = val.get('meta', {}) if val.get('meta') is mapping else {} -%}
+                      {%- set _rq = _meta.get('requires') if _meta.get('requires') is mapping else {} -%}
+                      {%- set _rq_on = ((_rq.get('cert') or '') | string | trim) != '' and (_rq.get('level', 0) | int(0)) > 0 -%}
                       {%- if ck != '' and ck != component_slug and ck in kata
                             and _meta.get('enabled', true) | bool
+                            and (not _rq_on or ((ID.caller((_rq.get('cert') | string | trim), (_rq.get('level') | int(0)), household_cabinet, 's') | from_json).cert_ok | default(false)))
                             and (val.get('pipeline_tier', 'keeper') | lower) == want -%}
                         {%- set kd = kata[ck] -%}
                         {%- set kv = kd.get('value', {}) if kd is mapping else {} -%}

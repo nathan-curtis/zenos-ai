@@ -62,14 +62,14 @@ That's it. That drawer is the entire spec for how ZenOS-AI understands your wate
 |-------|--------------|
 | `friendly_name` | Human-readable name |
 | `label` | The HA label that defines which entities belong to this component |
-| `meta.enabled` | Whether this component is active (`true` / `false`). Replaces the deprecated `master_switch` field. |
+| `meta.enabled` | Whether this component is active (`true` / `false`). A disabled component stays out of the agent's prompt; its last kata is kept. Replaces the deprecated `master_switch` field. |
 | `trigger_subscriptions` | Which Scheduler events cause this component to summarize |
 | `delay_seconds` | How long to wait after trigger before dispatching (lower = higher priority) |
 | `pipeline_tier` | Dispatch priority: `keeper` (default), `ambient` (low-priority), `super` (reserved), `system` (infrastructure). See below. |
 | `staleness_minutes` | How old the kata can get before the drain router forces a re-run. Default: 1440 min (24 h). |
 | `kata_key` | Where to write the summary output |
 | `component_summary` | Instructions the AI reads when summarizing this component |
-| `meta.requires` | Optional cert and minimum level the household's agent needs for this component to run. Enforced from 2026.11.0 RC2; leave it empty unless you need it. |
+| `meta.requires` | Optional cert and minimum level the household's agent needs, granted for the background (stage `s`), for this component to run. Unmet, the run is refused and the component stays out of the prompt. Leave it empty unless you need it. |
 
 The `component_summary` is the most important field. It's your chance to tell the AI what *normal* looks like, what *concerning* looks like, and what specific entities need special interpretation.
 

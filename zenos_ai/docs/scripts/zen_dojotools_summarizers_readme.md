@@ -1,4 +1,4 @@
-# Zen DojoTools Summarizers — Ninja Summarizer v4.7.2 · SuperSummary v4.7.1
+# Zen DojoTools Summarizers — Ninja Summarizer v4.8.0 · SuperSummary v4.8.0
 
 *Ninja Summarizer + SuperSummary — the KF6 action pipeline — MCP-exposed*
 
@@ -92,6 +92,7 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
 3a. **Responsible agent (4.7.0)** — the run acts as the agent responsible for the household: the prime in its ACL, else the default agent. If that agent isn't onboarded, the run stops with `reason: agent_not_onboarded` and the notification "ZenOS: summaries are paused".
 4. **Read Dojo drawer** — loads the component's KFC metadata (friendly name, label, command, tool, kata_key)
 5. **`meta.enabled` check** — exits with `reason: meta_disabled` if the component's `meta.enabled` is `false`
+5a. **Minimum level (4.8.0, KF6)** — if the drawer's `meta.requires` names a cert at level 1 or more, the responsible agent must hold it at that level or higher, granted for stage `s`. Otherwise the run stops before the seed and the monk with `error: kfc_cert_required`, fires `pipeline_component_refused`, posts the notification `zen_kfc_cert_required_<slug>`, and keeps the last kata. The answer carries `required {cert, level, stage}`, `held {cert, level, stages}` and a message naming the gap.
 6. **Run governor** — dedup burnout window check (see below). Exits with `reason: dedup_window` if blocked.
 7. **Step 3c — Seed tool call (v4.3.0+)** — if the KFC defines `seed` or `area_seed`:
    - Resolves `_seed_tool`: `area_seed` takes priority when `area_id` input is set; falls back to `seed`.
@@ -236,8 +237,9 @@ A component is included in SuperSummary if:
 - Its Dojo drawer has a `kata_key` field (non-empty)
 - `meta.enabled` is `true` or absent (switchless KFCs are always included)
 - Its `kata_key` exists as a drawer in the Kata cabinet
+- Its `meta.requires`, if set, is met by the responsible agent (4.8.0)
 
-Components with `meta.enabled: false` are excluded. Components with no `meta` block are included.
+Components with `meta.enabled: false` or an unmet `meta.requires` are excluded; their katas are kept. Components with no `meta` block are included. The Ninja's `kata_tier` seed (Trapper Keeper) and the prompt's `dojo_loader()` skip the same components.
 
 ### Response
 
@@ -305,6 +307,7 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 | Empty or malformed output | Check inference server logs for context length errors. Models under ~4B parameters are not reliable as summarization backends. |
 | Component not included in SuperSummary | Check `meta.enabled` in its Dojo drawer. Also verify `kata_key` is set and a matching drawer exists in Kata cabinet. |
 | Run stops with `seed_tool_not_authorized` | The seed tool doesn't declare that mode in its `tool_manifest` `seed_modes`. Declare it in the tool (the old seed whitelist only carries a tool that declares none, until 2026.12). |
+| Run stops with `kfc_cert_required` | The component's `meta.requires` isn't met: the agent doesn't hold the cert, holds it at a lower level, or holds it without stage `s`. The message says which. Grant it with `cert_stages` including `s`. |
 | Summaries paused / `agent_not_onboarded` | The household's prime agent (else the default agent) isn't onboarded. Onboard it through Flynn. |
 | SuperSummary `monk_failure` | The model call failed or came back empty; the last good summary is kept. Check `input_text.zenos_ai_task_entity` names a working AI task entity, and the inference server's logs. |
 | Ninja `ninja_context_overflow` | The component's prompt is over `max_context_tokens`. Raise `max_context_tokens` in `zen_ninja_config`, or lower `domain_inspect_limit` in its KFC `index_call`. |
@@ -347,6 +350,7 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| SuperSummary v4.8.0 / Ninja v4.8.0 | KF6 component minimum level: `meta.requires` is enforced on the responsible agent with stage `s` (`kfc_cert_required`). A disabled or unmet component stays out of SuperSummary's feed and the `kata_tier` seed. |
 | Ninja v4.7.2 | The context cap measures the prompt in characters (it counted the prompt's keys, so it never tripped). A run over `max_context_tokens` stops with `ninja_context_overflow`. |
 | SuperSummary v4.7.1 / Ninja v4.7.1 | SuperSummary ends a failed model call with `monk_failure` and keeps the last good summary. `prompt_size_chars` counts characters on both. |
 | Ninja / SuperSummary v4.7.0 | Both act as the household's responsible agent, which must be onboarded. SuperSummary's capsule comes from that agent. Seeds must be declared in the tool's `seed_modes`; acts need the emit cert held with stage `e`; a refused act lands on the kata as `act_blocked`. The seed and act whitelists are an 11 bridge, removed in 12. The empty-input guard no longer overwrites an earlier refusal. |

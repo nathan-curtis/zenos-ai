@@ -1,6 +1,6 @@
 # Zen DojoTools Utilities
 
-**Script versions** (per-script `tool_manifest`, canonical): `help` 3.2.1 · `calculator` 1.4.0 · `dice_roller` 1.1.0 · `wait` 1.1.0 · `select_control` 1.3.1 · `boolean` 1.3.1 · `number` 1.3.1 · `text` 1.3.1 · `timekeeper` 1.5.1 · `climate` 2.2.1 · `water_heater` 1.3.1 · `datetime` 1.3.1 · `zones` 1.3.1.
+**Script versions** (per-script `tool_manifest`, canonical): `help` 3.2.2 · `calculator` 1.4.0 · `dice_roller` 1.1.0 · `wait` 1.1.0 · `select_control` 1.3.1 · `boolean` 1.3.1 · `number` 1.3.1 · `text` 1.3.1 · `timekeeper` 1.5.1 · `climate` 2.2.1 · `water_heater` 1.3.1 · `datetime` 1.3.1 · `zones` 1.3.1.
 
 *Calculator, dice, announcements, music search, system help, wait, cabinet audit, and canonical HA domain control tools*
 
@@ -142,7 +142,7 @@ Direct MA service wrapper. Fields: `query`, `artist`, `album`, `media_type`, `nu
 
 ---
 
-## zen_dojotools_help — Global Help Front Door (v3.2.1)
+## zen_dojotools_help — Global Help Front Door (v3.2.2)
 
 `zen_dojotools_help` is now more than the system-overview tool — it's the front door for discovering and proxying to any tool's own help. Five modes:
 

@@ -1,6 +1,6 @@
 # Zen DojoTools AdminTools
 
-**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.2 · `reset_labels` 1.1.0 · `cabinetadmin` 4.9.0 · `cabinetadmin_factory` 1.1.0 · `prompt_loader` 45.3 · `run_repair` 5.2.0.
+**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.2.0 · `reset_labels` 1.1.0 · `cabinetadmin` 4.9.0 · `cabinetadmin_factory` 1.1.0 · `prompt_loader` 45.3 · `run_repair` 5.2.0.
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -22,7 +22,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 
 | Script | Version | MCP-Exposed | Purpose |
 |---|---|---|---|
-| `zen_admintools_reset_template` | 5.1.2 | **No** | Press zen_template and kfc_template into cabinets |
+| `zen_admintools_reset_template` | 5.2.0 | **No** | Press zen_template and kfc_template into cabinets |
 | `zen_admintools_reset_labels` | 1.1.0 | No | Nuclear: delete all zen_ labels and assignments, trigger Flynn rebuild. Label delete cert and a live ack on every call |
 | `zen_admintools_cabinetadmin` | 4.9.0 | No | Inspect, restore, reset, hammer, init, repair_volumeinfo, or reset_all (every cabinet and label, or the Ring-0 cabinets) |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
@@ -417,6 +417,7 @@ Run when a cabinet fails identity's ACL schema check (identity answers `acl_sche
 
 | Version | Change |
 |---------|--------|
+| v5.9.0 | reset_template 5.2.0: `kfc_template` schema 1.5.0 (existing installs re-press it). Its notes give the KF6 rules: `meta.requires` is enforced on the responsible agent with stage `s`, and `suggested_act_event` needs the emit-stage cert. |
 | v5.8.0 | cabinetadmin 4.9.0: `reset_all` takes `scope` (`all`, the default: every cabinet and every `zen_` label; `core`: the Ring-0 cabinets) and `dry_run`; `scope: all` also needs the label delete cert; a refused clear is reported (`partial`). reset_labels 1.1.0: the label delete cert at level 2 and a live ack on every call. |
 | v5.7.0 | prompt_loader 45.3: `mode=fc_acl_mode`, the console-only FileCabinet lock switch. |
 | v5.6.3 | reset_template 5.1.2 writes `zen_template`, `kata_template` and `kfc_template` with upsert, so it creates them on a fresh install. |
