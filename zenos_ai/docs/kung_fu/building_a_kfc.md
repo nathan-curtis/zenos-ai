@@ -1,6 +1,7 @@
 # Building a ZenOS KFC Component
 
-**Audience:** Developers building a new KF4 component for ZenOS-AI.
+**Audience:** Developers building a Kung Fu Component for ZenOS-AI.
+**Spec:** KF6 (2026.11.0). It rolls KF4 (the authored drawer) and KF5 (the self-registering tool) into one contract, and adds the security contract the pipeline runs under since 2026.11.0.
 **Scope:** Why the KFC is shaped the way it is, so you can shape yours the same way.
 
 ---
@@ -162,7 +163,7 @@ ZenOS has several layers of protection:
 
 **How is your kata consumed?**
 
-Your kata becomes a leaf in the ZenOS knowledge tree. The tree has tiers — see [`understanding_kf4.md`](understanding_kf4.md) for the full tier table and shedding thresholds. The two you'll choose between for most components:
+Your kata becomes a leaf in the ZenOS knowledge tree. The tree has tiers — see [`understanding_kf6.md`](understanding_kf6.md) for the full tier table and shedding thresholds. The two you'll choose between for most components:
 
 - **`super` tier** (alert_manager, security, energy, water, zen_system, hot_tub, taskmaster, zen_fusion) — included in every supersummary. Friday sees these on every boot.
 - **`ambient` tier** (weather, room_manager, laundry, dishwasher, grocy, media, autovac, trash_trakker, water_heater) — pre-digested by Trapper Keeper, aggregated into a compressed digest. Friday gets their signal through the ambient index rather than reading each kata directly. Shed on fast triggers and under queue pressure.
@@ -181,47 +182,81 @@ The compact index (Friday's boot payload `index` key) is a pre-built view across
 
 ---
 
-## KF5: Self-Registering Tools
+<a id="kf5-self-registering-tools"></a>
 
-The decisions above still apply — trigger philosophy, scope, output contract, chain control, downstream tier. KF5 changes *how a component gets wired into the dojo*, not what it decides.
+## KF6: Two Ways In, One Contract
 
-Under KF4, a component's dojo drawer is authored via Scribe (`new_thought` → `publish_kfc`) as a standalone artifact. Under KF5, a **tool self-declares** its KFC contract by implementing `mode=kfc_manifest`, and a generic bootstrap scanner (`zen_dojotools_manifest mode=bootstrap_kfc`) discovers it and writes the live drawer mount automatically — no Scribe authoring step required for tools that already exist as scripts.
+The decisions above apply however a component gets into the Dojo. KF6 (2026.11.0) rolls the two earlier patterns into one spec: KF4's authored drawer and KF5's self-registering tool are now two ways in to the same contract, and both answer to the security contract below.
 
-**The pattern:**
+Both paths end in a Dojo drawer the scheduler and the Ninja read the same way. The Dojo takes writes only from internal callers (its ACL class gives `write` and `delete` to `@internal`), so a drawer gets there through Scribe or `bootstrap_kfc`, never through a direct FileCabinet write. On an install that enforces, an agent's direct write to the Dojo is refused; on one that audits, it's logged.
 
-1. Add `mode=kfc_manifest` to your tool. It returns `{status: ok, kfc: {...}}` where the `kfc` block is shaped like a dojo drawer definition (`kata_key`, `component_summary`, `component_instructions`, `seed`, `trigger_subscriptions`, `drift_threshold`, `meta.enabled`). `meta` also accepts optional `notify_tag`/`notify_response_type` — set both to get an interactive Postman push (a tag plus a response type, e.g. a single "Got it" acknowledge button) on your component's `suggested_act_event` emissions instead of the default fire-and-forget notify every component gets when these are left unset.
-2. Inside that same `kfc_manifest` sequence, self-register your tool on the FC callout whitelist: `tool:kfc_manifest` — hardcoded to your own tool name and this mode only. No dynamic or open whitelist writes.
-3. Add `script.zen_dojotools_yourtool` to the `_bkfc_known` list in `dojotools_manifest.yaml`.
-4. Run `zen_dojotools_manifest mode=bootstrap_kfc` (or wait for its automatic firing on `homeassistant_start` + daily `00:01`).
+### Path A: an authored drawer (Scribe)
 
-**FC whitelist mode-scoping** (what makes this safe): the FileCabinet callout whitelist supports three entry formats:
+For a component no tool owns. Write it with Scribe (`new_thought`, then `formalize_scroll`, then `publish_kfc`); `mode=schema` returns the live `kfc_template` every drawer is checked against. See [`zen_dojotools_scribe_readme.md`](../scripts/zen_dojotools_scribe_readme.md).
+
+### Path B: a self-registering tool (`kfc_manifest`)
+
+For a component a tool owns. The tool declares its own KFC, and `zen_dojotools_manifest mode=bootstrap_kfc` writes a live drawer mount that calls the tool fresh on every Ninja run. No Scribe step. The full pattern is in [`zen_kf6_pattern_readme.md`](../scripts/zen_kf6_pattern_readme.md).
+
+1. Add `mode=kfc_manifest` to your tool. It returns `{status: ok, kfc: {...}}` where the `kfc` block is shaped like a dojo drawer definition (`kata_key`, `component_summary`, `component_instructions`, `seed`, `trigger_subscriptions`, `drift_threshold`, `meta.enabled`). `meta` also accepts optional `notify_tag`/`notify_response_type`: set both to get an interactive Postman push (a tag plus a response type, e.g. a single "Got it" acknowledge button) on your component's `suggested_act_event` emissions instead of the default fire-and-forget notify every component gets when these are left unset.
+2. List `kfc_manifest` among the modes in your `tool_manifest`, or tag the script `zen_kfc_provider`. `bootstrap_kfc` finds providers either way and tags any that lack the label. There is no list to edit.
+3. If your component's `seed` calls your own tool, list that mode in your `tool_manifest` `seed_modes` (see the security contract below).
+4. Run `zen_dojotools_manifest mode=bootstrap_kfc`, or wait for it: it runs on `homeassistant_start` and daily at `00:01`.
+
+**Your tool doesn't touch the callout whitelist.** A live drawer can only call a tool the FileCabinet callout whitelist allows, and the whitelist lives in the system cabinet, which only the admin door writes. `bootstrap_kfc` registers one entry per provider, `<tool>:kfc_manifest`, through `prompt_loader mode=whitelist`. The whitelist supports three entry formats:
 
 | Format | Meaning |
 |---|---|
-| `tool` | Plain tool name, all modes reachable via a live drawer — **deprecated, backcompat only** |
-| `tool:*` | All modes reachable — preferred for tools where every mode is FC-safe |
-| `tool:mode` | Restricted to exactly one mode — **required for any tool with write-capable modes** |
+| `tool` | Plain tool name, all modes reachable via a live drawer. **Deprecated, backcompat only** |
+| `tool:*` | All modes reachable. For tools where every mode is FC-safe |
+| `tool:mode` | Restricted to exactly one mode. **Required for any tool with write-capable modes** |
 
-A finance-domain tool, for example, is scoped `zen_dojotools_finance:kfc_manifest` — the live drawer can only ever reach that one read-only, self-describing mode, never a write path. `kfc_manifest` registering only its own hardcoded `tool:mode` pair (never a wildcard, never another tool's name) is what keeps self-registration from becoming an open write vector.
+The `tool:kfc_manifest` entry means the live drawer can only ever reach that one read-only, self-describing mode, never a write path.
 
-**Live drawer shape** written by `bootstrap_kfc` (both the FC mount and the breadcrumb fields the summarizer resolves at runtime):
+**Live drawer shape** written by `bootstrap_kfc` (the FC mount plus the breadcrumb fields the scheduler and prompt loader read raw):
 
 ```json
 {
   "mount_point": true,
-  "fc_args": {"tool": "zen_dojotools_yourtool", "params": {"mode": "kfc_manifest"}},
+  "fc_args": {"tool": "zen_dojotools_yourtool", "params": {"mode": "kfc_manifest", "component": "your_component"}},
   "friendly_name": "Your Tool",
   "label": "Your Component",
+  "seed": {},
+  "trigger_subscriptions": "hourly_trigger,force_summary",
+  "drift_threshold": 6,
+  "emission_cooldown_minutes": 1440,
+  "delay_seconds": 0,
   "kata_key": "your_component",
-  "meta": {"enabled": true, "requires": {"cert": "", "level": 0}}
+  "pipeline_tier": "keeper",
+  "meta": {"enabled": true}
 }
 ```
 
-**`component_summary` is intentionally left out of the written drawer, but not out of the picture.** `bootstrap_kfc` still reads `component_summary` from your `kfc_manifest` response and returns it in its own result (`_bkfc_registered` entries) — so direct callers of `bootstrap_kfc` or `kfc_manifest` can see it. What it deliberately does NOT do is persist it into the cabinet drawer — this mirrors the space-saving convention Scribe already uses on the KF4 path (`trim_description`, see `dojotools_scribe.yaml`). The ninja summarizer resolves an empty `component_summary` from the HA label's description at read time instead (`dojotools_summarizers.yaml`, step 3d) — the summary lives once, on the label, not duplicated into every cabinet drawer. Set a real label description for your component; that's what the summarizer actually reads at runtime, not the drawer field.
+`meta` is your `kfc_manifest`'s own `meta`, or `{"enabled": true}` if it declares none.
 
-Because the live drawer resolves `kfc_manifest` fresh on every ninja run, changing `component_instructions` and reloading scripts takes effect on the next run — no re-bootstrap needed.
+**`component_summary` is intentionally left out of the written drawer, but not out of the picture.** `bootstrap_kfc` still reads `component_summary` from your `kfc_manifest` response and returns it in its own result (`_bkfc_registered` entries), so direct callers of `bootstrap_kfc` or `kfc_manifest` can see it. What it deliberately does NOT do is persist it into the cabinet drawer, the same space-saving convention Scribe uses on the authored path (`trim_description`, see `dojotools_scribe.yaml`). The ninja summarizer resolves an empty `component_summary` from the HA label's description at read time instead (`dojotools_summarizers.yaml`, step 3d): the summary lives once, on the label. Set a real label description for your component; that's what the summarizer actually reads at runtime, not the drawer field.
 
-KF4's Scribe-authored path and KF5's self-registration path are not mutually exclusive — both ultimately produce a dojo drawer the summarizer reads the same way. KF5 is the better fit when the KFC contract belongs to a tool that already exists as a script (Firefly, Finance, any `zen_dojotools_*`); Scribe authoring remains the path for components that aren't backed by an existing tool.
+Because the live drawer resolves `kfc_manifest` fresh on every ninja run, changing `component_instructions` and reloading scripts takes effect on the next run, with no re-bootstrap needed.
+
+Path B is the better fit when the KFC contract belongs to a tool that already exists as a script (Firefly, Finance, any `zen_dojotools_*`); Path A remains the path for components that aren't backed by an existing tool.
+
+---
+
+## KF6: The Security Contract (2026.11.0)
+
+Before 11.0 the pipeline ran as nobody and answered to two lists in the system cabinet. In KF6 a component runs as a named agent, reads only what a tool declares, and acts only with a grant a person approved for the background. The full story is in the [release notes](../releases/spinal_tap.md#the-pipeline-gets-a-pass).
+
+**It runs as the agent responsible for the household:** the prime in the household's ACL, else the default agent. That agent must be onboarded, or the run refuses with `agent_not_onboarded`, summaries pause, and a notification says why. SuperSummary writes as the same agent.
+
+**Seeds are declared by the tool.** A `seed` that calls a tool must name a mode that tool lists in its `tool_manifest` `seed_modes` (each `mode` or `mode:case`), or the run stops before the model is called with `seed_tool_not_authorized`, naming the modes that are declared. Index, Room Manager, AutoVac, Taskmaster, Inventory and Finance declare theirs. A `kata_tier` seed reads the kata cabinet directly and calls no tool.
+
+**Acts need the emit stage.** A grant says where it may be used, one letter per pipeline stage (`i` interactive, `l` live drawer, `s` Ninja seed, `e` Ninja emit, `m` SuperSummary, `c` scheduler). Each tool declares the stages its certs allow (`st_ok`). Before the Ninja acts on `suggested_act_event`, it finds the cert on the target tool whose `st_ok` includes `e`, and the responsible agent must hold that cert with stage `e`. Today that's Postman's `zenos.comms.dispatch`, granted through the `zenos_agent_autonomous` bundle. A refused act doesn't happen and lands on the kata as `act_blocked`, with what to grant. A life-safety act skips the cert check; the kill switch and the infrastructure deny still apply.
+
+**The 11 bridge.** Through 11, the old seed whitelist still passes a tool that declares no `seed_modes`, and the old act whitelist still passes an act whose cert the agent holds for interactive use only. Both are stamped legacy. Both lists, and the bridge, are removed in 12. Declare `seed_modes` and `st_ok` now.
+
+**Minimum level (`meta.requires`).** A drawer's `meta.requires: {cert, level}` names the cert, and the minimum level, the responsible agent needs for the component to run. Enforcement lands in 2026.11.0 RC2; until then the field is stored and not read. Leave it empty (`cert: ""`, `level: 0`) unless your component needs it.
+
+**The tool's own gate still applies.** An agent without `zenos.agent.basic` still gets a tool's `help`, `tool_manifest` and `kfc_manifest`, so a live mount resolves before onboarding; anything else answers `onboarding_required`. Calls no user started (the scheduler, automations) pass.
 
 ---
 
@@ -244,7 +279,7 @@ trigger_philosophy: <event-based | lifecycle | sweep-only>
 # lifecycle: fires on household lifecycle events (wake/sleep, arrival/departure)
 # sweep-only: hourly cadence is sufficient — no KFC trigger automation needed
 
-pipeline_tier: keeper            # keeper (default) | ambient | super — see understanding_kf4.md
+pipeline_tier: keeper            # keeper (default) | ambient | super — see understanding_kf6.md
 
 output_contract:
   nominal: boolean               # true = domain is in expected state
@@ -310,4 +345,9 @@ automation:
 - [ ] `for:` delays added for any state that needs debouncing
 - [ ] `caller_token: <component_name>` on all FileCabinet writes in your tool (if applicable)
 - [ ] `mode: queued` on trigger automation
-- [ ] Scribe `publish_kfc` run — artifact_state must be `formal` before Dojo accepts it
+- [ ] Path A: Scribe `publish_kfc` run — artifact_state must be `formal` before Dojo accepts it
+- [ ] Path B: `kfc_manifest` declared (or the script tagged `zen_kfc_provider`), and `bootstrap_kfc` lists your `kata_key` in `registered[]`; no whitelist write in your tool
+- [ ] Drawer written by Scribe or `bootstrap_kfc`, never by a direct FileCabinet write (the Dojo takes writes only from `@internal`)
+- [ ] A `seed` that calls a tool names a mode in that tool's `tool_manifest` `seed_modes`
+- [ ] A `suggested_act_event` target has a cert whose `st_ok` includes `e`, and the household's agent holds it with stage `e` (`zenos_agent_autonomous`)
+- [ ] `meta.requires` left empty unless the component needs a minimum level

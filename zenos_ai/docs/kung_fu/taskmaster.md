@@ -29,7 +29,7 @@ Taskmaster self-registers with the Lens Bus (same pattern as `zen_dojotools_inve
 
 | Mode | Description |
 |------|-------------|
-| `briefing` | The scheduled seed — urgency-scored household briefing. Fires on `quarter_hour` + occupancy-change triggers via KF5 self-registration, 60-minute emission cooldown, 180s delay so it doesn't crowd every other component firing on the raw `quarter_hour` tick. Conductor items (Friday's own schedule-driven task list) surface first, then everything else from `task_list`, scored by shape (medication classification/PRN/date rules for todo+crm, chore due-status for inventory, priority passthrough for radar). Also returns a `context` block of real (not LLM-guessed) situational signals — see [Context Block](#context-block) below. |
+| `briefing` | The scheduled seed — urgency-scored household briefing. Fires on `quarter_hour` + occupancy-change triggers via KF6 self-registration, 60-minute emission cooldown, 180s delay so it doesn't crowd every other component firing on the raw `quarter_hour` tick. Conductor items (Friday's own schedule-driven task list) surface first, then everything else from `task_list`, scored by shape (medication classification/PRN/date rules for todo+crm, chore due-status for inventory, priority passthrough for radar). Also returns a `context` block of real (not LLM-guessed) situational signals — see [Context Block](#context-block) below. |
 | `almanac` | On-demand "what does today look like" — meal plan (`zen_dojotools_kitchen mode=run case=mealplan_today`), appointments (`zen_dojotools_rolodex mode=appointments_list`), plus a meal/appointment collision flag. Informational only, never blocking. |
 | `stale_review` | Filters `briefing`'s own scoring to urgency ≥ 2, sorted highest-first. Suppresses Radar tickets triaged `radar_rank_backlog` regardless of raw priority — those are intentionally deprioritized, not stale in the "forgotten" sense. |
 | `facilities_brief` | Building-super/housekeeping-lead view. Reads live kata cabinet entries for physical-plant components directly (`energy_manager`, `water_manager`, `hot_tub_manager`, `garage_freezer_thermal_model`, `dishwasher_manager`, `laundry_manager`) — no re-query — surfaces only urgency ≥ 2. Plus open Radar tickets tagged to a physical area and the house-wide chore backlog. |
@@ -41,7 +41,7 @@ Taskmaster self-registers with the Lens Bus (same pattern as `zen_dojotools_inve
 | `help` | Standard mode/field listing. |
 | `register` / `unregister` | Lens Bus provider registration lifecycle. |
 | `tool_manifest` | Standard manifest response. |
-| `kfc_manifest` | KF5 self-registration payload — the `component_instructions` prompt text that ships with the KFC (see [KF5 Pattern](../scripts/zen_kf5_pattern_readme.md)). |
+| `kfc_manifest` | KF6 self-registration payload — the `component_instructions` prompt text that ships with the KFC (see [KF6 Pattern](../scripts/zen_kf6_pattern_readme.md)). |
 
 ---
 
@@ -90,7 +90,7 @@ Any todo entity tagged with `taskmaster` + a domain label (`daily`, `weekly`, `t
 ## Related
 
 - [Kitchen / Mealie](../plugins/mealie.md) — `prep_brief` feeds Taskmaster's `context.prep_schedule`.
-- [KF5 Self-Registration Pattern](../scripts/zen_kf5_pattern_readme.md) — how Taskmaster registers itself without a manual Scribe authoring step.
+- [KF6 Self-Registration Pattern](../scripts/zen_kf6_pattern_readme.md) — how Taskmaster registers itself without a manual Scribe authoring step.
 
 ---
 

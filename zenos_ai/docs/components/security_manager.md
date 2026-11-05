@@ -170,9 +170,9 @@ zen_dojotools_security_manager:
 
 ---
 
-## KFC Registration (KF5)
+## KFC Registration (KF6)
 
-`zen_dojotools_security_manager` self-registers via `mode=kfc_manifest`, declaring **4 components** — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools):
+`zen_dojotools_security_manager` self-registers via `mode=kfc_manifest`, declaring **4 components** — see [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract):
 
 | Component | Role |
 |---|---|

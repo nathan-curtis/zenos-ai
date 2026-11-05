@@ -217,5 +217,5 @@ concepts.md -> install.md -> first_run.md -> first_alert.md -> entity_exposure.m
 ---
 
 → **[Full Documentation Hub](../readme.md)**
-→ **[Understanding KF4 — Adding Components](../kung_fu/understanding_kf4.md)**
+→ **[Understanding KF6 — Adding Components](../kung_fu/understanding_kf6.md)**
 → **[Health Sensor Reference](../sensors/readme.md)**

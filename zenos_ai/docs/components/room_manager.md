@@ -366,9 +366,9 @@ All three are optional and additive — omitting them preserves existing values 
 
 ---
 
-## KFC Registration (KF5)
+## KFC Registration (KF6)
 
-`zen_dojotools_room_manager` self-registers its dojo drawer via `mode=kfc_manifest` (`room_manager` component, no seed — pure rollup) — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools).
+`zen_dojotools_room_manager` self-registers its dojo drawer via `mode=kfc_manifest` (`room_manager` component, no seed — pure rollup) — see [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract).
 
 ---
 

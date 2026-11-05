@@ -1,16 +1,16 @@
-# KF5 — Self-Registering KFC Components (2026.7.0)
-**File:** `zen_kf5_pattern_readme.md`
+# KF6 — Self-Registering KFC Components
+**File:** `zen_kf6_pattern_readme.md`
 **Type:** Architecture Guide (cross-cutting pattern, not a single script)
 
 ---
 
 ## Overview
 
-KF5 is the fifth generation of the Kung Fu Component (KFC) registration pattern. A tool that owns a domain also owns its KFC registration — no hand-provisioning, no drift between what a tool does and what the Dojo cabinet says it does.
+This is the self-registering path of the KF6 spec (2026.11.0). It arrived as KF5 in 2026.7.0; KF6 keeps it as one of two ways in and adds the [security contract](../kung_fu/building_a_kfc.md#kf6-the-security-contract-2026110) every component runs under. A tool that owns a domain also owns its KFC registration — no hand-provisioning, no drift between what a tool does and what the Dojo cabinet says it does.
 
 Before KF5, a component's summarizer instructions lived as a hand-authored blob directly in the Dojo cabinet drawer, maintained separately from the tool that actually implements the behavior. Any change to the tool required a matching manual edit to the drawer, and the two silently drifted apart over time.
 
-Under KF5, the tool script itself exposes a `mode=kfc_manifest` that returns its own KFC definition. `zen_dojotools_manifest mode=bootstrap_kfc` discovers all such tools and writes a **live drawer mount** — a pointer, not a copy — into the Dojo cabinet. Add a tool, run bootstrap, done.
+On this path, the tool script itself exposes a `mode=kfc_manifest` that returns its own KFC definition. `zen_dojotools_manifest mode=bootstrap_kfc` discovers all such tools and writes a **live drawer mount** — a pointer, not a copy — into the Dojo cabinet. Add a tool, run bootstrap, done.
 
 ---
 
@@ -30,7 +30,7 @@ This split matters for drawer design: only the Ninja Summarizer resolves the liv
 
 ## Drawer shape
 
-A KF5 live-mount drawer contains only the fields the raw readers need:
+A live-mount drawer contains only the fields the raw readers need:
 
 ```yaml
 mount_point: true
@@ -45,7 +45,8 @@ drift_threshold: <int>
 emission_cooldown_minutes: <int>
 delay_seconds: <int>                  # scheduler dispatch
 kata_key: <str>
-meta: {enabled: bool, requires: {cert: str, level: int}}
+pipeline_tier: <str>                  # scheduler dispatch, default keeper
+meta: {...}                           # the tool's own meta, default {enabled: true}
 ```
 
 **Deliberately absent:** `component_instructions` — the full monk-facing instructions text lives only in the tool script, fetched fresh by the Ninja Summarizer's live-mount resolution. Storing it in the drawer would be pure duplication (nothing reads it there) and was the single largest contributor to Dojo cabinet bloat before this was corrected.
@@ -58,11 +59,11 @@ Also absent: legacy per-component metadata that nothing raw-reads (`area_seed`, 
 
 ---
 
-## Building a new KF5 component
+## Building a new self-registering component
 
 **1. File and naming.** New file at `packages/zenos_ai/dojotools/dojotools_<name>.yaml` (core), or an equivalent path under your own non-core package directory for a personal/custom component. Script entity: `zen_dojotools_<name>`.
 
-**2. Required modes:** `status`, `help`, `kfc_manifest`, `tool_manifest`. `kfc_manifest` is the contract — it returns the full component list when called with no `component` field, or a single component dict when `component=<kata_key>` is passed (used by FC's live-mount resolution).
+**2. Required modes:** `status`, `help`, `kfc_manifest`, `tool_manifest`. `kfc_manifest` is the contract — it returns the full component list when called with no `component` field, or a single component dict when `component=<kata_key>` is passed (used by FC's live-mount resolution). If a component's `seed` calls this tool, list that mode in `tool_manifest` `seed_modes`, or the Ninja refuses the run (`seed_tool_not_authorized`).
 
 ```yaml
 script:
@@ -134,18 +135,21 @@ script:
 | 7 | `zen_dojotools_manifest mode=bootstrap_kfc` | Your `kata_key` appears in `registered[]` with `written: true`; `errors: []` |
 | 8 | `zen_dojotools_ninja_summarizer mode=run kung_fu_component_id=<kata_key> post_to_kata_cabinet=false force=true` | Response includes full `component_instructions` in `dojo_drawer` — confirms live-mount resolution is working end to end |
 
-Discovery for bootstrap is driven entirely by the HA label `zen_kfc_provider` on the script entity — there is no YAML-side registration list.
+Discovery for bootstrap is driven by the HA label `zen_kfc_provider` on the script entity, or by a `tool_manifest` that declares `kfc_manifest` (`bootstrap_kfc` tags those with the label) — there is no YAML-side registration list. `bootstrap_kfc` also registers each provider's `tool:kfc_manifest` entry on the FileCabinet callout whitelist through the admin door; the tool never writes the whitelist itself.
 
 ---
 
 ## Write semantics caveat
 
-`zen_dojotools_filecabinet mode=upsert` (and `create`) default to **deep-merge** with the existing stored value — dropping a key from a write payload does not remove it from storage, the old value persists underneath. Only `mode=update` defaults to replace, and it requires the key to already exist unless `force_action=true` is also passed. `bootstrap_kfc`'s live-mount write therefore uses:
+A merge write keeps every key the payload leaves out — dropping a key from a write payload does not remove it from storage. `bootstrap_kfc`'s live-mount write therefore states replace, and creates the drawer if it's missing:
 
 ```yaml
 mode: update
+write_mode: replace
 force_action: true
 ```
+
+It writes through the FileCabinet engine (`zen_sutra_filecabinet`), which makes it an internal caller: the only kind the Dojo cabinet takes writes from.
 
 This is why the drawer shape above is achievable — the old fat KF4 blob is genuinely replaced, not merged with the new lean mount fields.
 
@@ -155,4 +159,4 @@ This is why the drawer shape above is achievable — the old fat KF4 blob is gen
 
 `trapper_keeper`, `zen_system`, `camera_manager`, `room_manager`, `security_manager` (+ `security_perimeter`, `security_panel`, `security_cameras`), `alert_manager`, `autovac`, `finance_budget`, `finance_bills`, `finance_networth`, `finance_manager`, `battery_health`, `logistics_intake`, `logistics_volatile`, `dishwasher_manager`, `hot_tub_manager`, `trash_trakker`, `laundry_manager`, `energy_manager`, `water_manager`, `garage_freezer_thermal_model`.
 
-Not yet migrated: `taskmaster` (large instruction set — pending a dedicated pass).
+`taskmaster` has since moved to this path too.

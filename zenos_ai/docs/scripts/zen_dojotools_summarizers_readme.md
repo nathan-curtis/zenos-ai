@@ -1,6 +1,6 @@
 # Zen DojoTools Summarizers — Ninja Summarizer v4.7.2 · SuperSummary v4.7.1
 
-*Ninja Summarizer + SuperSummary — the KF4 action pipeline — MCP-exposed*
+*Ninja Summarizer + SuperSummary — the KF6 action pipeline — MCP-exposed*
 
 ---
 
@@ -10,7 +10,7 @@
 
 ## Overview
 
-The summarizer package is the KF4 action pipeline. It runs continuously on a schedule, reads each component's context via HyperIndex, writes structured kata to the Kata cabinet, and synthesizes that knowledge into the `zen_summary` drawer that loads Friday's prompt context. Where a component's kata calls for action — a notification, an event, a dispatch — the pipeline fires it.
+The summarizer package is the KF6 action pipeline. It runs continuously on a schedule, reads each component's context via HyperIndex, writes structured kata to the Kata cabinet, and synthesizes that knowledge into the `zen_summary` drawer that loads Friday's prompt context. Where a component's kata calls for action — a notification, an event, a dispatch — the pipeline fires it.
 
 Two scripts ship in this package:
 

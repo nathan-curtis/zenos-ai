@@ -291,7 +291,7 @@ The whitelist supports three entry formats, parsed via a `tool[:mode]` split:
 
 Adding a bare `*` or a `tool:` entry with an empty mode suffix is rejected by Admintools on add.
 
-Mode-scoping exists so a live drawer can expose a self-describing or read-only mode (e.g. `kfc_manifest`) without opening any write path on that tool. `zen_dojotools_finance`, for example, is scoped `zen_dojotools_finance:kfc_manifest` only — no live drawer can reach a finance write mode. See [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools) for the self-registration flow that writes these entries.
+Mode-scoping exists so a live drawer can expose a self-describing or read-only mode (e.g. `kfc_manifest`) without opening any write path on that tool. `zen_dojotools_finance`, for example, is scoped `zen_dojotools_finance:kfc_manifest` only — no live drawer can reach a finance write mode. See [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract) for the self-registration flow that writes these entries.
 
 ---
 

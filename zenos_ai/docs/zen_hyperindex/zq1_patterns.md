@@ -68,7 +68,7 @@ means the filter fell back.
 
 ---
 
-## 3. Coverage Gap Analysis — "What's monitored vs. what's watched by KF4?"
+## 3. Coverage Gap Analysis — "What's monitored vs. what's watched by KF6?"
 
 ```json
 {

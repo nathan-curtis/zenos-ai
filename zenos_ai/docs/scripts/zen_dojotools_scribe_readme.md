@@ -1,6 +1,6 @@
 # Zen DojoTools Scribe — v5.6.3
 
-*Guided authoring and lifecycle management for KF4 artifacts — MCP-exposed*
+*Guided authoring and lifecycle management for KF6 artifacts — MCP-exposed*
 
 > **Versioning note:** The script version (v1.8.0) tracks Scribe's internal feature history. The ZenOS-AI package version (5.1.0) tracks the overall DojoTools package release. Both axes are independent.
 
@@ -10,7 +10,7 @@
 > **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 ## What Scribe Does
 
-Scribe is the authoring tool for the KF4 ecosystem. It manages the full lifecycle of
+Scribe is the authoring tool for the KF6 ecosystem. It manages the full lifecycle of
 **thoughts**, **scrolls**, and **KFCs** — from blank draft to published, running component.
 
 It is fully MCP-exposed. Friday can use it directly. A capable LLM with access to Scribe
@@ -304,7 +304,7 @@ Scribe is non-destructive by default:
 | `script.zen_dojotools_labels` | Label create / auto-create |
 | `script.zen_dojotools_index` | Scope discovery on `new_thought` and `dry_run` |
 | `sensor.zen_dojo_cabinet_resolved` | Default target cabinet |
-| `kfc_template` drawer in Dojo | KF4 contract schema — validated on `publish_kfc` |
+| `kfc_template` drawer in Dojo | KF6 contract schema — validated on `publish_kfc` |
 
 ---
 

@@ -26,7 +26,7 @@ The common composition for a consequential capability is layered: an agent calls
 
 A Kung Fu Component (KFC) is a domain the Monastery summarizes: security, alerts, tasks, the physical plant, and so on. Its definition lives in a drawer in the Dojo cabinet: what labels it reads, what triggers it subscribes to, its pipeline tier, its staleness ceiling, and its instructions (Chapter 14).
 
-Under KF5, a tool owns its own KFC. The tool carries the `zen_kfc_provider` label and answers `mode=kfc_manifest` with its component definition. `zen_dojotools_manifest mode=bootstrap_kfc` runs on Home Assistant start and daily, finds every tool labeled `zen_kfc_provider`, collects each `kfc_manifest`, and mounts the result into the Dojo cabinet. Nobody authors a KFC drawer by hand. Adding a tool that owns a domain adds that domain to the Monastery.
+Under KF6, a tool owns its own KFC. The tool carries the `zen_kfc_provider` label and answers `mode=kfc_manifest` with its component definition. `zen_dojotools_manifest mode=bootstrap_kfc` runs on Home Assistant start and daily, finds every tool labeled `zen_kfc_provider`, collects each `kfc_manifest`, and mounts the result into the Dojo cabinet. Nobody authors a KFC drawer by hand. Adding a tool that owns a domain adds that domain to the Monastery.
 
 ## 13.3 The Lens Bus
 

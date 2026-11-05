@@ -183,7 +183,7 @@ Invisible   →  Do nothing
 
 * [The Book of Friday, Chapter 10: Exposure](../architecture/10_exposure_tools_not_entities.md): why tools, not entities
 * [Cabinet Placement Guide](cabinet_placement.md): where things go once you have decided what to label
-* [Understanding KF4](../kung_fu/understanding_kf4.md): how labels connect to KFC components
+* [Understanding KF6](../kung_fu/understanding_kf6.md): how labels connect to KFC components
 * [Zen HyperIndex](../zen_hyperindex/zen_hyperindex_overview.md): how the index traverses labels
 * [DojoTools AdminTools](../scripts/zen_dojotools_admintools_readme.md): what never to expose
 * [Install Guide](install.md): conversation agent configuration

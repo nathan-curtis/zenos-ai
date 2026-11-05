@@ -147,7 +147,7 @@ truncated value. Just enough context to reason with, not enough to bloat the con
 
 **The rule:** Thoughts and scrolls can live in any cabinet. KFCs must be in the Dojo.
 
-When Scribe presses a KFC to the Dojo (`mode: publish_kfc`), it writes the component drawer with the full KF4 contract schema — the same structure `kfc_template` defines and Flynn gate-3 validates. From that point, the Scheduler picks it up automatically on the next cycle.
+When Scribe presses a KFC to the Dojo (`mode: publish_kfc`), it writes the component drawer with the full KF6 contract schema — the same structure `kfc_template` defines and Flynn gate-3 validates. From that point, the Scheduler picks it up automatically on the next cycle.
 
 Scribe calls `zen_dojotools_index` automatically during `new_thought` — before any content is written, it runs a live scope discovery pass and embeds the result in the draft payload. This means the LLM knows exactly which entities the component will see before it writes a single line of `component_summary`.
 

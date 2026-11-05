@@ -105,9 +105,9 @@ Accepts `on`/`true`/`1` and `off`/`false`/`0` (case-insensitive). Omitting `valu
 
 ---
 
-## KFC Registration (KF5)
+## KFC Registration (KF6)
 
-`zen_dojotools_systemtools` self-registers via `mode=kfc_manifest` — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools). Declares one component, `zen_system` — a rollup-only kata. Per its own `component_instructions`: it deliberately does **not** expand individual component detail — if a specific subsystem is warn/critical, `zen_system` names it and stops, leaving detail to that subsystem's own monk.
+`zen_dojotools_systemtools` self-registers via `mode=kfc_manifest` — see [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract). Declares one component, `zen_system` — a rollup-only kata. Per its own `component_instructions`: it deliberately does **not** expand individual component detail — if a specific subsystem is warn/critical, `zen_system` names it and stops, leaving detail to that subsystem's own monk.
 
 `zen_sutra_ha_api` (the internal REST bridge in this same file) also gained a `tool_manifest` early-exit for UMP self-description — it is not a KFC/Lens Bus participant, just a standard self-describing internal tool.
 

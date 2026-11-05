@@ -40,7 +40,7 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 
 **Upgrading?** Approve your agent if it never got its pass: run `zen_flynn_oobe mode=run` and say yes to the push. Certs are renamed under `zenos.*`; old grants keep working until 2026.12. The ACL migration is mandatory. Flynn runs it on its own; you can dry-run it first with `zen_dojotools_identity mode=acl_migrate` and review the plan. Expect audit lines in the log; they're the preview of enforcement, not errors. Your install stays in audit until you lock it from the console. Summaries pause until the household's agent is onboarded, and the summarizer's background notifications need `zenos_agent_autonomous`. See [Read this before upgrading](zenos_ai/docs/releases/spinal_tap.md#read-this-before-upgrading).
 
-**Also in the beta:** certs that say where they may be used (interactive, or a background pipeline stage), which replace the summarizer's seed and act whitelists, with `zenos_agent_autonomous` for the agent's background notifications; semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF5 self-registration, Cortex 45, every cert under `zenos.*` with a plain-words approval prompt, and the vault as a required cabinet that holds the cert catalog.
+**Also in the beta:** certs that say where they may be used (interactive, or a background pipeline stage), which replace the summarizer's seed and act whitelists, with `zenos_agent_autonomous` for the agent's background notifications; semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF6 self-registration, Cortex 45, every cert under `zenos.*` with a plain-words approval prompt, and the vault as a required cabinet that holds the cert catalog.
 
 **Still to come:** enforcement by default on upgraded installs, the operator permission report, and hiding unreadable drawers from listings, which is planned for 2026.12.0. Display stays beta and gave its 11 slot to the naming work; its dashboard moves to 2026.12.0.
 
@@ -67,7 +67,7 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 | New install | **[Install Guide](zenos_ai/docs/getting_started/install.md)** |
 | First boot | **[First Run & OOBE](zenos_ai/docs/getting_started/first_run.md)** |
 | First component | **[AutoVac Quick Start](zenos_ai/docs/getting_started/autovac_quick_start.md)** — touches every part of the system in one visible loop |
-| Adding a component | **[Understanding KF4](zenos_ai/docs/kung_fu/understanding_kf4.md)** · **[Building a KFC](zenos_ai/docs/kung_fu/building_a_kfc.md)** |
+| Adding a component | **[Understanding KF6](zenos_ai/docs/kung_fu/understanding_kf6.md)** · **[Building a KFC](zenos_ai/docs/kung_fu/building_a_kfc.md)** |
 | How it's built, and why | **[The Book of Friday, Volume 2](zenos_ai/docs/architecture/00_preface.md)** |
 | Full documentation | **[Documentation Hub](zenos_ai/docs/readme.md)** |
 
@@ -128,7 +128,7 @@ ZenOS-AI operates in **concentric rings**, separating definition, runtime cognit
 | Ring | Name | What it does |
 |------|------|-------------|
 | Ring-0 | Core Kit | Defines the rules: labels, cabinet schema, identity contracts, event bus, health sensors. Does not run behavior. If Ring-0 breaks, Friday forgets who she is. |
-| Ring-1 | Cognitive Runtime | Binds behavior to Ring-0's definitions: DojoTools scripts, KF4 pipeline, prompt compilation, persona capsules, conversation agent interface. This is where Friday thinks. |
+| Ring-1 | Cognitive Runtime | Binds behavior to Ring-0's definitions: DojoTools scripts, KF6 pipeline, prompt compilation, persona capsules, conversation agent interface. This is where Friday thinks. |
 | Ring-2 | Admin & Recovery | Maintenance, repair, and recovery: cabinet repair, manifest writing, KFC loading, identity audit. The "don't panic" layer. |
 
 ---
@@ -263,7 +263,7 @@ packages/zenos_ai/
     dojotools_dispatcher.yaml  — Two-level urgency dispatch router
 
     — AI Interface —
-    dojotools_scribe.yaml      — KF4 artifact authoring (MCP-exposed KFC registration)
+    dojotools_scribe.yaml      — KFC authoring (MCP-exposed KFC registration)
     dojotools_ectoplasm.yaml   — Spook/HA extended surface (areas, floors, entity lifecycle)
     dojotools_camera.yaml      — Camera tool — look/scan, alert policy, dynamic cabinet routing
     dojotools_postman.yaml     — Notifications — ack loop, actionable alerts, image support
@@ -354,7 +354,7 @@ v6.2.0 introduces **CabCeption** — nested drawer trees via `/` path separator.
 
 ---
 
-# Kung Fu Components (KF4)
+# Kung Fu Components (KF6)
 
 ZenOS-AI ships a fully self-describing component architecture.
 
@@ -368,11 +368,11 @@ Every home subsystem — security, water, energy, hot tub — is defined as a **
 
 Adding a new component requires no code changes and no Scheduler edits. Write a drawer, create a label, tag entities, dry-run, go live.
 
-→ **[Understanding KF4](zenos_ai/docs/kung_fu/understanding_kf4.md)**
+→ **[Understanding KF6](zenos_ai/docs/kung_fu/understanding_kf6.md)**
 
 ---
 
-# KF4 Action Pipeline
+# KF6 Action Pipeline
 
 ZenOS-AI compresses system activity through a Dojo-driven action pipeline.
 

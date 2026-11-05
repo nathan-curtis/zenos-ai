@@ -260,9 +260,9 @@ All three drawers are created automatically on first write. The `_` prefix marks
 
 ---
 
-## KFC Registration (KF5)
+## KFC Registration (KF6)
 
-`zen_dojotools_alertmanager` self-registers its dojo drawer via `mode=kfc_manifest` (`alert_manager` component) — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools). No Scribe authoring step is needed; `zen_dojotools_manifest mode=bootstrap_kfc` discovers and mounts it automatically.
+`zen_dojotools_alertmanager` self-registers its dojo drawer via `mode=kfc_manifest` (`alert_manager` component) — see [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract). No Scribe authoring step is needed; `zen_dojotools_manifest mode=bootstrap_kfc` discovers and mounts it automatically.
 
 ---
 

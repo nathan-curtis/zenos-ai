@@ -335,7 +335,7 @@ The two labels are orthogonal. A camera can carry either, both, or neither.
 
 ---
 
-## KFC Components (KF5)
+## KFC Components (KF6)
 
 The camera tool hosts two Kung Fu Components through its own `mode=kfc_manifest`. `zen_dojotools_manifest mode=bootstrap_kfc` registers them as live dojo drawers on reload and daily; nothing ships them by hand.
 

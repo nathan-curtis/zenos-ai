@@ -337,7 +337,7 @@ The switch for FileCabinet's ACL gate: the system cabinet's `fc_acl_mode` drawer
 
 `seed` and `act` replace the deleted `zen_admintools_summarizer_act` and `zen_admintools_summarizer_seed` standalone scripts.
 
-> **Deprecated in 2026.11.0, removed in 2026.12.** The seed and act lists are a bridge. A seed is now a mode the tool declares in its `tool_manifest` `seed_modes`, and an act needs the target tool's emit cert granted with the Ninja emit stage (`cert_req_grant cert_stages=ie`, or the `zenos_agent_autonomous` bundle). `mode=whitelist type=seed|act` still works through 11 and answers with a `deprecated` note naming the replacement. See [Stages](../getting_started/security_certification_manual.md#64-stages). `fc` is the FileCabinet live-drawer callout whitelist used by KF5 self-registering tools — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools).
+> **Deprecated in 2026.11.0, removed in 2026.12.** The seed and act lists are a bridge. A seed is now a mode the tool declares in its `tool_manifest` `seed_modes`, and an act needs the target tool's emit cert granted with the Ninja emit stage (`cert_req_grant cert_stages=ie`, or the `zenos_agent_autonomous` bundle). `mode=whitelist type=seed|act` still works through 11 and answers with a `deprecated` note naming the replacement. See [Stages](../getting_started/security_certification_manual.md#64-stages). `fc` is the FileCabinet live-drawer callout whitelist used by KF6 self-registering tools — see [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract).
 
 ```yaml
 # Add Room Manager as a seed source

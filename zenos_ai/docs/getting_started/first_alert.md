@@ -415,7 +415,7 @@ If you completed Step 7 above, your household and user cabinets already have a w
 
 - **[Notification Routing Guide](notification_routing.md)** — the full household/family policy (quiet hours, work hours, multiple people) beyond the one-user seed from Step 7
 - **[AlertManager reference](../components/alertmanager.md)** — full current behavior, TTL, priority context, and tool modes
-- **[Understanding KF4](../kung_fu/understanding_kf4.md)** — how summarizer-driven components fit beside direct event alerts
+- **[Understanding KF6](../kung_fu/understanding_kf6.md)** — how summarizer-driven components fit beside direct event alerts
 - **[Entity Exposure](entity_exposure.md)** — what to expose to your AI and what to keep behind tools
 
 ---
