@@ -1,4 +1,4 @@
-# Zen DojoTools Scribe — v5.7.0
+# Zen DojoTools Scribe — v5.8.0
 
 *Guided authoring and lifecycle management for KF6 artifacts — MCP-exposed*
 
@@ -123,6 +123,13 @@ Use this when one domain (e.g., `water_manager`) needs multiple summarizer views
 | `drift_threshold` | Urgency score at or above this value triggers forced supersummary. Default 5. |
 | `emission_cooldown_minutes` | Minimum minutes between urgency/action emissions. Default 60. |
 | `suggested_act_event` | Static suggested_act_event slug for this KFC — must be a registered dojotool slug or blank. |
+
+### Minimum Level (KF6, v5.8.0)
+
+| Field | Purpose |
+|---|---|
+| `requires_cert` | Sets `meta.requires.cert`: the cert the household's agent must hold, granted for stage `s` (Ninja seed), before this component runs or shows in the prompt. Works on `new_thought`, `patch`, `republish_kfc` and `publish_kfc`; on a publish it overrides the scroll. |
+| `requires_level` | Sets `meta.requires.level`, the minimum level of that cert. An empty `requires_cert` with `requires_level: 0` clears the requirement. |
 | `master_switch` | `input_boolean` entity ID that gates this component (optional). Preserved for backward compat. |
 
 ### Component Content
@@ -290,7 +297,7 @@ Scribe is non-destructive by default:
 - **`replace`** requires `replace_confirm: true`
 - **`delete`** requires `delete_confirm: true`
 - **`publish_kfc`** requires `artifact_state == formal` and `publish_confirm: true` — cannot publish a draft
-- **`publish_kfc` checks `meta.requires` (5.7.0, KF6).** A cert at level 1 or more must be one some tool declares, whose tools allow stage `s` (Ninja seed), at a level within its `max_level`. Otherwise it refuses with `kfc_requires_invalid` and publishes nothing, since the Ninja could never run it. It reads the vault's catalog cache, else a live `cert_audit`; if neither answers, it refuses. Set the field with a patch: `changes: {meta: {requires: {cert: ..., level: ...}}}`.
+- **Every write that sets `meta.requires` is checked (5.7.0, 5.8.0, KF6)**, on `new_thought`, `patch`, `republish_kfc` and `publish_kfc`, before any live ack. A cert at level 1 or more must be one some tool declares, whose tools allow stage `s` (Ninja seed), at a level within its `max_level`. Otherwise Scribe refuses with `kfc_requires_invalid` and writes nothing, since the Ninja could never run it. It reads the vault's catalog cache, else a live `cert_audit`; if neither answers, it refuses. Set the requirement with `requires_cert` and `requires_level`.
 - **Live KFC writes are human-gated.** Publishing, republishing, or a patch, replace, clear_field or delete on a KFC needs `zenos.knowledge.kfc_publish`, or the household admin's approval of that one write through Identity's `request_live_ack` (the console override stands in). Declined or timed out, the write is refused and the refusal carries `live_ack`. A blocked identity, a call the target guard refuses, a publish without `publish_confirm` and a `publish_dry_run` are refused without asking. Each ask is logged as `scribe_live_ack`.
 - **Self-indexing guard** — prevents a component from including its own drawer in scope discovery
 - **Drawer feedback loop guard** — drawer blurbs are advisory; they don't re-enter authoring context
@@ -319,6 +326,7 @@ Scribe is non-destructive by default:
 
 | Version | Change |
 |---------|--------|
+| v5.8.0 | KF6: `requires_cert` and `requires_level` set `meta.requires` on `new_thought`, `patch`, `republish_kfc` and `publish_kfc`. One check covers every write that sets it, before any live ack; `republish_kfc` and a `patch` on a published KFC used to set it unchecked. |
 | v5.7.0 | KF6: `publish_kfc` checks `meta.requires` against the cert catalog (`kfc_requires_invalid`). The help and descriptions say KF6. |
 | v1.8.0 | `republish_kfc` mode — edit-and-republish path that bypasses the formal scroll gate; merges changes and runs full trim block including label sync. `component_size` feedback on `publish_kfc`/`republish_kfc` responses — reports component_instructions chars, token estimate (~chars/4), % of 16KB FileCabinet drawer limit, and size_tier (ok/advisory/warning/danger). `schedules_summary` field on read responses (count + kata_keys). Patch mode merges `schedules[]` by `kata_key` (upsert) instead of replacing the full array. `publish_kfc` preserves schedules array. `repair` mode — detect and flatten wrapper-accumulated drawer corruption up to 5 levels deep (dry_run default). |
 | v1.7.0 | `icon` field added to KFC schema; set on first publish (label create), preserved on update. `publish_kfc` label upsert — creates label if absent, always updates description. Component summary chonk warning (>150 chars). |

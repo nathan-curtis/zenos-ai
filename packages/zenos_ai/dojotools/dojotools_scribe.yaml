@@ -1,6 +1,11 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Scribe
-# Version: 5.7.0
+# Version: 5.8.0
+# v5.8.0 (KF6): requires_cert and requires_level set meta.requires on
+#   new_thought, patch, republish_kfc and publish_kfc (they override the
+#   scroll). Every write that sets meta.requires, from the fields or from
+#   changes, is checked against the cert catalog before any live ack;
+#   republish_kfc and a patch on a published KFC could set it unchecked.
 # v5.7.0 (KF6): publish_kfc checks meta.requires against the cert catalog
 #   (the vault cache, else a live cert_audit). A cert no tool declares, one
 #   whose tools do not allow stage s, or a level above its max_level is
@@ -532,6 +537,23 @@ script:
         selector:
           boolean:
 
+      requires_cert:
+        name: Requires cert
+        description: "KF6 minimum level: the cert the agent must hold, granted for stage s (Ninja seed), before this component runs or shows in the prompt. Sets meta.requires.cert on new_thought, patch, republish_kfc and publish_kfc (overrides the scroll). It must be declared by a tool with s in st_ok, or the write is refused. Empty with requires_level 0 clears it."
+        required: false
+        selector:
+          text:
+
+      requires_level:
+        name: Requires level
+        description: "KF6 minimum level: the level the agent must hold requires_cert at (1-4). 0 = no requirement."
+        required: false
+        selector:
+          number:
+            min: 0
+            max: 4
+            mode: box
+
       version_semantic:
         name: Version
         description: semantic version string
@@ -822,6 +844,32 @@ script:
             {% else %}
               {{ _changes }}
             {% endif %}
+      # KF6: requires_cert / requires_level set meta.requires. Given either,
+      # they become a requires change (patch / republish_kfc), seed a new
+      # thought, and override the scroll on publish_kfc.
+      - variables:
+          _req_given: "{{ (requires_cert is defined and requires_cert is not none) or (requires_level is defined and requires_level is not none) }}"
+          _req_fields: >-
+            {{ {'cert': (requires_cert | default('', true) | string | trim),
+                'level': (requires_level | default(0, true) | int(0))} }}
+      - variables:
+          _changes: >-
+            {%- set c = _changes if _changes is mapping else {} -%}
+            {%- if _req_given -%}
+              {{ c | combine({'meta': {'requires': _req_fields}}, recursive=true) }}
+            {%- else -%}
+              {{ c }}
+            {%- endif -%}
+          # The requires this write would set, from the fields or from changes
+          # (a patch, replace or republish can carry meta.requires directly).
+          _req_in: >-
+            {%- set c = _changes if _changes is mapping else {} -%}
+            {%- set m = c.get('meta') if c.get('meta') is mapping else {} -%}
+            {%- set r = m.get('requires') if m.get('requires') is mapping else none -%}
+            {%- if _req_given -%}{{ _req_fields }}
+            {%- elif r is mapping -%}{{ {'cert': (r.get('cert') or '') | string | trim, 'level': r.get('level', 0) | int(0)} }}
+            {%- else -%}{{ {} }}
+            {%- endif -%}
 
       # -------------------------------------------------------------------
       # Onboarding gate (zen_os_1 entry_gate): an agent without
@@ -967,6 +1015,7 @@ script:
                   "Parent and subcomponents may share one clock, one trigger set, and one labelset.",
                   "Use component_key for the published view and primary_index_key for shared corpus identity.",
                   "publish_kfc requires source to be artifact_state=formal (run formalize_scroll first).",
+                  "KF6 MINIMUM LEVEL: requires_cert + requires_level make the agent hold that cert at that level, granted for stage s (Ninja seed), before the component runs or shows in the prompt. The cert must be declared by a tool with s in st_ok, or the write is refused (kfc_requires_invalid). Leave both empty for no requirement.",
                   "CONTEXT SOURCE CHOICE: index_call is concept-first (what label do I query?). seed/area_seed is tool-first (what tool do I call, with what params?). Use seed when the context source is richer than a label query — e.g. Room Manager returns topology + live state + domain routing in one call.",
                   "AMBIENT vs REACTIVE: Ambient KFCs run on schedule and synthesize home state continuously. Reactive KFCs fire on triggers (state change, alert, event). Ambient needs loose governors (long cooldown, moderate drift threshold). Reactive needs tight debounce (short delay_seconds) and low drift threshold to catch fast-moving situations.",
                   "SPATIAL KFCs: When awareness is room-scoped, use area_seed with zen_dojotools_room_manager. Pass area_id at trigger time. One KFC per room fires independently; parent KFC rolls up across rooms. This is the per-area rollup pattern."
@@ -1187,6 +1236,60 @@ script:
               zenos.knowledge.kfc_publish cert level {{ _scribe_cert_level }} is below the required minimum (1) to write the agent's live procedural memory.
             {%- endif -%}
 
+      # KF6: any write that sets meta.requires (the fields, or changes on a
+      # patch / replace / republish_kfc) is checked here, before any live ack.
+      # The cert must be one some tool declares with s in st_ok, at a level
+      # within its max_level; anything else could never be met. publish_kfc
+      # checks the scroll's own requires again when the fields do not override it.
+      - if: >-
+          {{ result is not defined and _mode in ['new_thought', 'patch', 'replace', 'republish_kfc', 'publish_kfc']
+             and _req_in is mapping and (_req_in.get('cert') or '') != '' and (_req_in.get('level', 0) | int(0)) > 0 }}
+        then:
+          - action: script.zen_dojotools_identity
+            continue_on_error: true
+            data:
+              mode: cert_cache_refresh
+              caller_token: "{{ caller_token }}"
+            response_variable: _rq_cc
+          - variables:
+              _rq_catalog: >-
+                {%- set c = (_rq_cc.get('catalog') if _rq_cc is mapping else {}) -%}
+                {{ c if c is mapping else {} }}
+          - if: "{{ _rq_catalog | count == 0 }}"
+            then:
+              - action: script.zen_dojotools_manifest
+                continue_on_error: true
+                data:
+                  mode: cert_audit
+                  caller_token: "{{ caller_token }}"
+                response_variable: _rq_ca
+              - variables:
+                  _rq_catalog: >-
+                    {%- set r = (_rq_ca.get('result', _rq_ca) if _rq_ca is mapping else {}) -%}
+                    {%- set c = (r.get('catalog') if r is mapping else {}) -%}
+                    {{ c if c is mapping else {} }}
+          - variables:
+              _rq_error: >-
+                {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                {%- set _alias = ID.cert_alias_of(_req_in.cert) | trim -%}
+                {%- set _e = _rq_catalog.get(_req_in.cert) or (_rq_catalog.get(_alias) if _alias != '' else none) -%}
+                {%- if _rq_catalog | count == 0 -%}The cert catalog could not be read, so meta.requires cannot be checked. Nothing was written.
+                {%- elif _e is not mapping -%}meta.requires names '{{ _req_in.cert }}', which no tool declares in its tool_manifest certs_required. Nothing was written.
+                {%- elif 's' not in (ID.stage_letters(_e.get('st_ok') or 'i') | from_json).st -%}meta.requires names '{{ _req_in.cert }}', but its tools do not allow stage s (Ninja seed; st_ok is {{ _e.get('st_ok') or 'i' }}), so it can never be granted for a run. Nothing was written.
+                {%- elif _e.get('max_level') is not none and _req_in.level > (_e.get('max_level') | int(4)) -%}meta.requires asks for '{{ _req_in.cert }}' at level {{ _req_in.level }}, above its max_level {{ _e.get('max_level') }}. Nothing was written.
+                {%- endif -%}
+          - if: "{{ _rq_error | trim != '' }}"
+            then:
+              - variables:
+                  result:
+                    ok: false
+                    tool: zen_dojotools_scribe
+                    mode: "{{ _mode }}"
+                    caller_token: "{{ caller_token }}"
+                    error: kfc_requires_invalid
+                    requires: "{{ _req_in }}"
+                    message: "{{ _rq_error | trim }}"
+
       # Live approval: a caller whose identity resolves but who does not hold
       # zenos.knowledge.kfc_publish can still make this one change when the household
       # admin approves it live (identity request_live_ack; the console override
@@ -1264,7 +1367,7 @@ script:
                       summary='Write and publish thoughts, scrolls, and KFC components',
                       display_name='Scribe',
                       tier='dojotools',
-                      version='5.7.0',
+                      version='5.8.0',
                       health={'configured': true, 'status': 'ok', 'notes': []},
                       required_labels=['dojotools'],
                       optional_labels=['scribe', 'kfc'],
@@ -1570,6 +1673,7 @@ script:
                             "master_switch": master_switch | default('', true),
                             "meta": {
                               "enabled": enabled | default(true) | bool,
+                              "requires": (_req_fields if _req_given else {"cert": "", "level": 0}),
                               "read_only": false,
                               "formalized_from": "",
                               "published_from": "",
@@ -2147,9 +2251,9 @@ script:
                         {%- set _m = (_k3.get('meta') if _k3 is mapping else {}) -%}
                         {%- set _r = (_m.get('requires') if _m is mapping else {}) -%}
                         {%- set _r = _r if _r is mapping else {} -%}
-                        {{ {'cert': (_r.get('cert') or '') | string | trim, 'level': _r.get('level', 0) | int(0)} }}
+                        {{ _req_fields if _req_given else {'cert': (_r.get('cert') or '') | string | trim, 'level': _r.get('level', 0) | int(0)} }}
                       _pub_catalog: {}
-                  - if: "{{ _pub_req.cert != '' and _pub_req.level > 0 }}"
+                  - if: "{{ _pub_req.cert != '' and _pub_req.level > 0 and not _req_given }}"
                     then:
                       - action: script.zen_dojotools_identity
                         continue_on_error: true
@@ -2177,7 +2281,7 @@ script:
                   - variables:
                       _pub_req_error: >-
                         {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
-                        {%- if _pub_req.cert == '' or _pub_req.level <= 0 -%}
+                        {%- if _pub_req.cert == '' or _pub_req.level <= 0 or _req_given -%}
                         {%- else -%}
                           {%- set _alias = ID.cert_alias_of(_pub_req.cert) | trim -%}
                           {%- set _e = _pub_catalog.get(_pub_req.cert) or (_pub_catalog.get(_alias) if _alias != '' else none) -%}
@@ -2260,7 +2364,7 @@ script:
                                 "meta": {
                                   "enabled": (base.get('meta', {}) if base is mapping else {}).get('enabled', enabled | default(true) | bool),
                                   "published_from": _storage_key,
-                                  "requires": (base.get('meta', {}) if base is mapping else {}).get('requires', {"cert": "", "level": 0})
+                                  "requires": (_req_fields if _req_given else (base.get('meta', {}) if base is mapping else {}).get('requires', {"cert": "", "level": 0}))
                                 }
                               } | tojson
                             }}
