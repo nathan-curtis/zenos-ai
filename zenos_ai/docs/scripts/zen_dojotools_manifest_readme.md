@@ -1,6 +1,6 @@
-# Zen DojoTools Manifest — v6.15.0 (ZenOS-AI 2026.11.0)
+# Zen DojoTools Manifest — v6.16.0 (ZenOS-AI 2026.11.0)
 
-> **2026.11.0 (6.10.0 to 6.15.0):** `mode=component_certs` shows every Dojo component, on or off, with each cert its run needs and a status: `off`, `refused`, `never_fires`, `act_broken`, `act_blocked`, `missing_audit` or `ready`. `cert_audit` builds `zenos_agent_parity` (the read certs enabled summaries need, plus emit certs still carried by the act bridge) and returns `parity_components`. `bootstrap_kfc` stores each mount's `suggested_act_event` and `chain_to` and rewrites on a change, keeping the drawer's own `meta.enabled`. `mcp_sync` answers `critical` (`forbidden_exposed`) when an admin tool is in the agent's tool list. See [the KF6 spec](../kung_fu/building_a_kfc.md#kf6-acts-chains-read-certs-and-triggers-2026110).
+> **2026.11.0 (6.10.0 to 6.16.0):** `mode=component_certs` shows every Dojo component, on or off, with each cert its run needs and a status: `off`, `cache` (a `role: cache` slot, 6.16.0), `refused`, `never_fires`, `act_broken`, `act_blocked`, `missing_audit` or `ready`. `cert_audit` builds `zenos_agent_parity` (the read certs enabled summaries need, plus emit certs still carried by the act bridge) and returns `parity_components`. `bootstrap_kfc` stores each mount's `suggested_act_event` and `chain_to` and rewrites on a change, keeping the drawer's own `meta.enabled`. `mcp_sync` answers `critical` (`forbidden_exposed`) when an admin tool is in the agent's tool list. See [the KF6 spec](../kung_fu/building_a_kfc.md#kf6-acts-chains-read-certs-and-triggers-2026110).
 **File:** `zen_dojotools_manifest_readme.md`
 **Type:** Technical Documentation
 

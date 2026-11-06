@@ -1,4 +1,4 @@
-# Zen DojoTools Scribe — v5.13.0
+# Zen DojoTools Scribe — v5.14.0
 
 *Guided authoring and lifecycle management for KF6 artifacts — MCP-exposed*
 
@@ -326,6 +326,7 @@ Scribe is non-destructive by default:
 
 | Version | Change |
 |---------|--------|
+| v5.14.0 | The preflight doesn't report `never_fires` for a cache slot (`role: cache`). |
 | v5.13.0 | `list_triggers` reads the trigger registry (`source: registry`, with each trigger's pack, `fires`, frequency and labels; the static list is only a fallback). The preflight adds `triggers_unregistered`, `triggers_frequent` and `never_fires`. An unregistered trigger never refuses a write. |
 | v5.12.0 | The preflight reports `act_problem`. |
 | v5.11.0 | `master_switch` is ignored and stored empty: on and off is `meta.enabled` only. `disable` keeps the component's certs and says how to revoke one. |

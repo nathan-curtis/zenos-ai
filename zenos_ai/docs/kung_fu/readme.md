@@ -79,6 +79,7 @@ Run with `mode=schema` to get the live `kfc_template` from the Dojo cabinet.
 | `emission_cooldown_minutes` | no | Minimum minutes between emissions for this component. Prevents notification spam on rapid-fire triggers. |
 | `drift_threshold` | no | Minimum urgency delta required to consider a kata change "significant" for emission gating. |
 | `suggested_act_event` | no | Slug of the action the AI should suggest in kata output (e.g. `zen_dojotools_notification_router`). `null` = no action. The act runs only if the household's agent holds the target tool's emit cert with stage `e`; otherwise the kata records `act_blocked`. |
+| `role` | no | `cache`: a cache slot a trigger pack writes and another component reads. No triggers; the Ninja never summarizes it (`cache_slot`). Omit for a normal component. |
 | `chain_to` | no | Components this one may start through the Ninja's `run` act. A target outside the list is refused; the chain stops 3 deep and never loops. Needs `zenos.pipeline.chain` with stage `e`. |
 | `master_switch` | removed | Ignored and stored empty since 2026.11.0. On and off is `meta.enabled` (Scribe `enable` / `disable`). |
 

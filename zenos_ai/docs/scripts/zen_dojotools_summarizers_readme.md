@@ -1,4 +1,4 @@
-# Zen DojoTools Summarizers — Ninja Summarizer v5.5.0 · SuperSummary v4.9.0
+# Zen DojoTools Summarizers — Ninja Summarizer v5.6.0 · SuperSummary v4.9.0
 
 *Ninja Summarizer + SuperSummary — the KF6 action pipeline — MCP-exposed*
 
@@ -353,6 +353,7 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| Ninja v5.6.0 | A component with `role: cache` is a cache slot: the Ninja skips it with reason `cache_slot`, so a targeted force or `force_ninja` can't overwrite the cache with a summary. |
 | Ninja v5.5.0 | `seed_aliases`: a seed mode the tool no longer declares runs through the tool's declared alias instead of being refused (mode and case rewritten). The kata is stamped `seed_alias {from, to}`, `zen_event` `seed_alias` fires, and one notice `zen_seed_alias_<component>` says how to make it permanent. The new mode passes every gate as itself. |
 | Ninja v5.4.0 / SuperSummary v4.9.0 | Declared acts (`suggested_act_args`; `no_act_declared`, `act_args_invalid`) and chaining (`run`, `chain_to`, `zenos.pipeline.chain`; `chain_loop`, `chain_depth`). Read certs on seeds: a `seed_modes` entry tagged `@cert:level` needs that cert with stage `s` under `seed_cert_mode` enforce (`seed_cert_required`, kata stamped `seed_requires`, dropped from every prompt feed); audit logs `seed_cert_audit` and changes nothing. A refusal under enforce starts one `zenos_agent_parity` ask. See [the KF6 spec](../kung_fu/building_a_kfc.md#kf6-acts-chains-read-certs-and-triggers-2026110). |
 | SuperSummary v4.8.0 / Ninja v4.8.0 | KF6 component minimum level: `meta.requires` is enforced on the responsible agent with stage `s` (`kfc_cert_required`). A disabled or unmet component stays out of SuperSummary's feed and the `kata_tier` seed. |
