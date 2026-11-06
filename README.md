@@ -42,6 +42,8 @@ Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets b
 
 **Also in the beta:** certs that say where they may be used (interactive, or a background pipeline stage), which replace the summarizer's seed and act whitelists, with `zenos_agent_autonomous` for the agent's background notifications; semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF6 self-registration, Cortex 45, every cert under `zenos.*` with a plain-words approval prompt, and the vault as a required cabinet that holds the cert catalog.
 
+**New in RC2: the background asks first.** Kung Fu is KF6. Background summaries read private data (finance, meds, presence) only with a cert you approved, and act only through what a tool declares. Upgrades start in audit, and one approval (`zenos_agent_parity`) keeps everything running when you lock it. Any device you can label (leak, smoke, door, power, appliance) can wake a summary with no YAML, and admin tools are never exposed to the agent. See [What the New Security Unlocks](zenos_ai/docs/releases/spinal_tap.md#what-the-new-security-unlocks).
+
 **Still to come:** enforcement by default on upgraded installs, the operator permission report, and hiding unreadable drawers from listings, which is planned for 2026.12.0. Display stays beta and gave its 11 slot to the naming work; its dashboard moves to 2026.12.0.
 
 → [Release Notes — This Is Spinal Tap](zenos_ai/docs/releases/spinal_tap.md)

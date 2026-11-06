@@ -83,6 +83,16 @@ The FileCabinet security work planned for 11 is done. Its cold boot is proven: a
 
 One gate ships on: the backstage pass. An agent you haven't approved gets help and onboarding, and nothing else. See [The Backstage Pass](#the-backstage-pass).
 
+**Release candidate 2 turns the same knob on the background.** RC1 locked the cabinets. RC2 locks what the agent does when no one is asking:
+- **Kung Fu is KF6.** One spec for every component, with the security rules written in: a component runs as the household's onboarded agent, can require a minimum cert level, and reaches the Dojo only through Scribe or `bootstrap_kfc`.
+- **Background reads need consent.** Finance, medication and presence summaries read only with a read cert you approved. Upgrades start in audit, so a working install changes nothing, and one approval (`zenos_agent_parity`) keeps it all running when you lock it.
+- **Background acts are declared.** A tool says what it does and what it takes; the agent can only do that, behind that tool's cert. Summaries can start other summaries, only where they're allowed to.
+- **Anything you can label can wake a summary.** The trigger registry and five label triggers (leak, smoke, door, power, appliance) need no YAML.
+- **The admin plane stays out of reach.** Admin tools are never exposed to the agent, and Flynn checks every hour.
+- **Turning a component on asks for exactly the certs it needs.**
+
+See [What the New Security Unlocks](#what-the-new-security-unlocks).
+
 | Planned | Landed | Still to come |
 |---|---|---|
 | Access-path audit | The audit drove the default table and caller origin below. | Finishing the map of every path in. |
@@ -93,6 +103,7 @@ One gate ships on: the backstage pass. An agent you haven't approved gets help a
 | Audit-only rollout | Shipping now: `fc_acl_audit` and `door_gate_audit`. A fresh install enforces; an upgraded one audits until you switch it. | Enforcement by default on upgraded installs, and at the admin door. |
 | Operator permission report | | The report. |
 | Pipeline authority (added in Beta 4) | The summarizer acts as the household's responsible agent, which must be onboarded. Seeds are modes the tool declares; acts need a cert granted for the Ninja emit stage. Ships on, not in audit, with the old whitelists as a bridge. | Stage checks for live drawers, SuperSummary and the scheduler. Removing the whitelists in 2026.12. |
+| Background consent (added in RC2) | KF6. A component's minimum level, enforced at the Ninja seed stage. Read certs on seeds, with a switch (audit on an upgrade, enforce on a fresh install) and one-approval parity. Declared acts and summary chains. The trigger registry and label triggers. The admin plane guard. | A core pack that fills Security Manager's cache slots on a stock install. |
 
 ---
 
