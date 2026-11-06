@@ -378,7 +378,7 @@ See [Building a KFC](../kung_fu/building_a_kfc.md#kf6-acts-chains-read-certs-and
 - **CertAdmin's live-ack prompt** falls back to the cert name when the catalog description is empty.
 - **Mealie `foods_audit` reads every page** instead of stopping silently at 1,000 foods, and reports `total_available`, `pages_read` and `truncated`. Its advanced GET joins an endpoint's own query string with `&`.
 - **Twenty REST calls** strip a leading `/` or `/rest/` from the endpoint.
-- **Inspect reads `config_entry_id`** before the deprecated `config_entries` device field.
+- **ZenOS no longer triggers Home Assistant's `config_entries` deprecation warning.** Inspect, Music Assistant and the target resolver read a device's `config_entry_id` (HA removes `config_entries` in 2027.10).
 - **Help matches the code.** SystemTools answers an unknown mode with a `guarded:` error pointing at `mode=help` and `zen_health_report`; Labels' `tag`/`untag` need no `confirm`; Postman's family-policy recipe no longer suggests seeding `{}`.
 - **A refusal stops the call.** Branches that ran after a refusal or cert denial, overwriting it and doing their side effect, now wait on the result in Room Manager, Labels (a refused `tag` used to tag anyway), Lights, Media Manager, Climate, Scribe, Display, Plant, Finance, Manifest, Covers, Service Desk, SystemTools, Timekeeper, Calendar, Todo, Library, Spa Master, Camera and Infra.
 - **Autovac's cert check holds.** `pause`, `unpause`, `queue`, `dequeue`, `clear`, `skip`, `unskip`, `ready`, `unready` and `mark_cleaned` wrote their state after `zenos.autovac.operate` denied: a denied pause answered ok and paused.

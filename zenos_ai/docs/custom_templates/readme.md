@@ -77,6 +77,7 @@ Key macros:
 * `resolve_targets(entity_id, room, label, domain_pattern)` — unified precedence resolver for the three addressing modes (entity_id > label+room > label > room)
 * `entity_extended_notes(entity_id, exclude_labels)` — surfaces any label carrying a real `label_description()` as agent-facing guidance, e.g. a lock labeled with an instruction to always confirm out loud before unlocking
 * `discover_targets(...)` — bundles resolve+enrich into one call for any tool's discover mode
+* `device_config_entries(dev)` (1.2.0) — a device's config entries: `config_entry_id` on HA 2026.8 and later, the deprecated `config_entries` before that. Use it instead of reading `config_entries` directly, which HA warns about and removes in 2027.10. Inspect, Music Assistant and `device_children` use it.
 
 All macros return JSON strings, same convention as `zenos_cabinets.jinja` — callers do `| from_json` on the result.
 

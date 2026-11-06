@@ -1,4 +1,4 @@
-# Zen DojoTools Inspect — v5.3.0
+# Zen DojoTools Inspect — v5.3.1
 **File:** `zen_dojotools_inspect_readme.md`  
 **Type:** Technical Documentation  
 
