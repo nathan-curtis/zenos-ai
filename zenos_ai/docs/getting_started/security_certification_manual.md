@@ -272,14 +272,16 @@ If you grant broad allow scope and later regret it, remove the specific entry as
 
 *(2026.11.0)* A grant says where it may be used. Most use is interactive: someone asks, and the agent calls a tool. The summarizer pipeline acts with no one asking, so its use is a separate stage, and a grant has to name it.
 
-| Letter | Stage |
-|---|---|
-| `i` | interactive |
-| `l` | live drawer |
-| `s` | Ninja seed |
-| `e` | Ninja emit (the act at the end of a run) |
-| `m` | SuperSummary |
-| `c` | scheduler |
+| Letter | Stage | Checked? |
+|---|---|---|
+| `i` | interactive | Yes, by every gated tool |
+| `s` | Ninja seed | Yes: read certs on seeds, and a component's `meta.requires` |
+| `e` | Ninja emit (the act at the end of a run) | Yes: acts and chaining |
+| `l` | live drawer | Not yet. FileCabinet will check it when it runs a live drawer's tool. |
+| `m` | SuperSummary | Reserved. SuperSummary calls no gated tool, and reads katas the Ninja already filtered. |
+| `c` | scheduler | Reserved. The scheduler only calls housekeeping. |
+
+No tool allows `m` or `c` in its `st_ok`, so a grant can't ask for them.
 
 - A grant stores its stages as `st`. A grant without one is interactive only, which is every grant made before 11.0.
 - Each tool declares the stages its certs allow (`st_ok` in its `certs_required`). A grant can't ask for a stage its tool doesn't allow.
