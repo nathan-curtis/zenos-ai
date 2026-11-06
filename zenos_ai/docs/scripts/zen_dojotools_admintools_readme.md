@@ -1,6 +1,6 @@
 # Zen DojoTools AdminTools
 
-**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.2.0 · `reset_labels` 1.1.0 · `cabinetadmin` 4.9.0 · `cabinetadmin_factory` 1.1.0 · `prompt_loader` 45.3 · `run_repair` 5.2.0.
+**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.2.0 · `reset_labels` 1.1.0 · `cabinetadmin` 4.9.0 · `cabinetadmin_factory` 1.1.0 · `prompt_loader` 45.7 · `run_repair` 5.2.0.
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -27,7 +27,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 | `zen_admintools_cabinetadmin` | 4.9.0 | No | Inspect, restore, reset, hammer, init, repair_volumeinfo, or reset_all (every cabinet and label, or the Ring-0 cabinets) |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
-| `zen_admintools_prompt_loader` | 45.3 | No | Load versioned Cortex, Directives, and Purpose (v45 = Open Door (default/latest), v44 = Open Door, v43 = Rule Zero). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`, and the FileCabinet lock via `mode=fc_acl_mode` (console only). |
+| `zen_admintools_prompt_loader` | 45.7 | No (never exposed) | Load versioned Cortex, Directives, and Purpose (v45 = Open Door (default/latest), v44 = Open Door, v43 = Rule Zero). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`, the FileCabinet lock via `mode=fc_acl_mode`, and the read-cert switch via `mode=seed_cert_mode` (both console only). Declares `never_expose`: it is never exposed to the agent. |
 | `zen_admintools_run_repair` | 5.2.0 | **No** | Human-confirmed passthrough to identity `acl_migrate` (the one repair action) |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
@@ -417,6 +417,10 @@ Run when a cabinet fails identity's ACL schema check (identity answers `acl_sche
 
 | Version | Change |
 |---------|--------|
+| v5.13.0 | prompt_loader 45.7: the `seed_cert_mode` enforce parity ask uses stages `ise`. |
+| v5.12.0 | prompt_loader 45.6 declares `mcp_exposed=false` and `never_expose`: it holds the lock switches and the cortex. Anything that exposes entities must refuse it. |
+| v5.11.0 | prompt_loader 45.5: switching `seed_cert_mode` to enforce stamps the katas of summaries whose read cert is missing, so their data leaves the prompt at once. |
+| v5.10.0 | prompt_loader 45.4: `mode=seed_cert_mode` (`status`, `audit`, `enforce`; console only). `status` lists the parity certs still missing; `enforce` asks for parity once. See [Read certs and parity](../getting_started/security_certification_manual.md#66-read-certs-and-parity). |
 | v5.9.0 | reset_template 5.2.0: `kfc_template` schema 1.5.0 (existing installs re-press it). Its notes give the KF6 rules: `meta.requires` is enforced on the responsible agent with stage `s`, and `suggested_act_event` needs the emit-stage cert. |
 | v5.8.0 | cabinetadmin 4.9.0: `reset_all` takes `scope` (`all`, the default: every cabinet and every `zen_` label; `core`: the Ring-0 cabinets) and `dry_run`; `scope: all` also needs the label delete cert; a refused clear is reported (`partial`). reset_labels 1.1.0: the label delete cert at level 2 and a live ack on every call. |
 | v5.7.0 | prompt_loader 45.3: `mode=fc_acl_mode`, the console-only FileCabinet lock switch. |

@@ -1,6 +1,13 @@
 #####################################################################
 # zen_dojotool_dispatcher — Event-driven dojotool dispatch layer
-# Version: 5.4.8
+# Version: 5.5.0
+#
+# v5.5.0
+#   + declared-act route: a tool with no hand route is called if its own
+#   tool_manifest declares an act {mode, args}. The dispatcher reads the
+#   declaration itself, calls only that mode with only the declared args (enum
+#   values checked) plus kata_input, and never lets the payload pick the mode.
+#   Hand routes win. No declaration: unknown_tool, as before.
 #
 # v5.4.8
 #   + lens_dispatch 1.2.0: onboarding gate (zen_os_1 entry_gate): an agent
@@ -794,25 +801,69 @@ automation:
                   pm_tag:             "{{ _payload.get('pm_tag', '') }}"
                 response_variable: _result
 
-        # ── Unknown tool — structured fault, NOT a hard crash ─────────────
+        # ── Declared act (generic route), else unknown tool ───────────────
+        # A tool with no hand route above can still be called if its own
+        # tool_manifest declares an act {mode, args}. The dispatcher reads
+        # that declaration itself and calls only the declared mode, with only
+        # the declared args (enum values checked), plus kata_input. The
+        # payload never chooses the mode. Hand routes above always win.
         default:
           - variables:
-              _result:
-                status: error
-                error: unknown_tool
-                message: "Dispatcher: unknown tool '{{ _tool }}' v{{ _ver }}. Not in registry."
-                tool: "{{ _tool }}"
-                version: "{{ _ver }}"
-                correlation_id: "{{ _cid }}"
-          - event: zen_event
-            event_data:
-              event:
-                kind: dojotool_dispatch_error
-                tool: "{{ _tool }}"
-                version: "{{ _ver }}"
-                correlation_id: "{{ _cid }}"
-                error: unknown_tool
-                message: "Dispatcher: unknown tool '{{ _tool }}' v{{ _ver }}. Not in registry."
+              _gr_ok: >-
+                {{ (_tool | string) is match('^zen_dojotools_[a-z0-9_]+$')
+                   and states['script.' ~ _tool] is not none and _ver | string == '1' }}
+              _gr_act: {}
+          - if: "{{ _gr_ok }}"
+            then:
+              - action: "script.{{ _tool }}"
+                continue_on_error: true
+                data:
+                  mode: tool_manifest
+                response_variable: _gr_tm
+              - variables:
+                  _gr_act: >-
+                    {%- set ns = namespace(r=(_gr_tm if _gr_tm is mapping else {})) -%}
+                    {%- for _ in range(3) -%}
+                      {%- if 'act' not in ns.r and ns.r.get('result') is mapping -%}{%- set ns.r = ns.r.get('result') -%}{%- endif -%}
+                    {%- endfor -%}
+                    {%- set a = ns.r.get('act') -%}
+                    {{ a if (a is mapping and (a.get('mode') or '') | string is match('^[a-z0-9_]+$')) else {} }}
+          - if: "{{ _gr_act | count > 0 }}"
+            then:
+              - variables:
+                  _gr_data: >-
+                    {%- set spec = (_gr_act.get('args') if _gr_act.get('args') is mapping else {}) -%}
+                    {%- set given = _payload.get('act_args', {}) if _payload is mapping else {} -%}
+                    {%- set given = (given | from_json({})) if given is string else given -%}
+                    {%- set ns = namespace(d={}) -%}
+                    {%- for k, v in (given if given is mapping else {}).items() if k in spec and k not in ['mode', 'tool', 'kata_input', 'caller_token'] -%}
+                      {%- set sp = spec[k] if spec[k] is mapping else {} -%}
+                      {%- set en = sp.get('enum') -%}
+                      {%- if not (en is sequence and en is not string) or (v | string) in (en | map('string') | list) -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.d | combine({'mode': _gr_act.mode, 'kata_input': _payload.get('kata_input', {}), 'caller_token': _payload.get('caller_token', '')}) }}
+              - action: "script.{{ _tool }}"
+                continue_on_error: true
+                data: "{{ _gr_data }}"
+                response_variable: _result
+            else:
+              - variables:
+                  _result:
+                    status: error
+                    error: unknown_tool
+                    message: "Dispatcher: unknown tool '{{ _tool }}' v{{ _ver }}. Not in registry, and it declares no act."
+                    tool: "{{ _tool }}"
+                    version: "{{ _ver }}"
+                    correlation_id: "{{ _cid }}"
+              - event: zen_event
+                event_data:
+                  event:
+                    kind: dojotool_dispatch_error
+                    tool: "{{ _tool }}"
+                    version: "{{ _ver }}"
+                    correlation_id: "{{ _cid }}"
+                    error: unknown_tool
+                    message: "Dispatcher: unknown tool '{{ _tool }}' v{{ _ver }}. Not in registry, and it declares no act."
 
       # ── Fire correlated return ────────────────────────────────────────────
       - event: zen_event

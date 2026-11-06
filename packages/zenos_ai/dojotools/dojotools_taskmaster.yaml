@@ -1,6 +1,14 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Taskmaster
-# Version: 0.8.4
+# Version: 0.9.0
+# v0.9.0: medications split out with a read cert. briefing takes case:
+#   household (everything but medications), medications (only medications;
+#   no conductor list), or none (everything, as before). The taskmaster
+#   summary seeds briefing:household; the new taskmaster_meds summary seeds
+#   briefing:medications, which carries zenos.health.read (level 1, st_ok is):
+#   it runs only while the agent holds that cert with stage s. Bare briefing
+#   is no longer a seed mode, since it carries medications untagged. Asking in
+#   conversation does not need the cert.
 # v0.8.4: its tool_manifest declares seed_modes, the read modes the Ninja
 #   summarizer may seed a run with (#10549).
 # v0.8.3: HA naming (2026.11): name outputs carry entity_name and device_name
@@ -77,7 +85,7 @@ script:
                 summary='Tasks and the day ahead; ask it any when question',
                 display_name='Taskmaster',
                 tier='dojotools',
-                version='0.8.4',
+                version='0.9.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools', 'zen_kfc_provider'],
                 optional_labels=['taskmaster', 'todo', 'radar', 'inventory', 'crm'],
@@ -90,10 +98,15 @@ script:
                 impact='soft',
                 mcp_exposed=true,
 
-                seed_modes=['briefing'],
+                seed_modes=['briefing:household', 'briefing:medications@zenos.health.read:1'],
                 caller_token=caller_token | default('')
             ) | from_json | combine({'register_mode': 'register', 'provider_key': 'taskmaster', 'lens_provider': true, 'lens_anchors': ['area_id', 'label', 'person', 'company'], 'lens_returns': ['task_evidence'], 'certs_required': [
-                {'cert': 'zenos.comms.pii_disclosure', 'max_level': 2, 'description': "Send messages and add events or tasks for you; level 2 also edits the mail safe list", 'level': 1, 'modes': ['task_create']}
+                {'cert': 'zenos.comms.pii_disclosure', 'max_level': 2, 'description': "Send messages and add events or tasks for you; level 2 also edits the mail safe list", 'level': 1, 'modes': ['task_create']},
+                {'cert': 'zenos.health.read', 'max_level': 1, 'st_ok': 'is', 'display_name': 'Health Read',
+                 'description': "Read your medication reminders for the background summary",
+                 'detail': 'The taskmaster_meds summary seeds through briefing case=medications (medication reminders, their class and how overdue they are). Granted with the Ninja seed stage (s), the background summary may read them; without it the meds summary stops and its last kata leaves the prompt. The household briefing summary never carries medications. Asking in conversation does not need it.',
+                 'gates': ['seed: briefing:medications (Ninja seed)'],
+                 'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.health.read cert_stages=is'}
             ]}) }}
 
     # ── KF5 self-registration: kfc_manifest ────────────────────────────────────
@@ -105,8 +118,8 @@ script:
               friendly_name: Taskmaster
               label: taskmaster
               component_summary: >-
-                Household tasks, chores, tickets, and medications — urgency-scored
-                briefing across Radar, Inventory, CRM, and To Do.
+                Household tasks, chores and tickets, urgency-scored across Radar,
+                Inventory, CRM, and To Do. Medications are in taskmaster_meds.
               component_instructions: >-
                 You are reading the household task briefing for this household.
 
@@ -160,10 +173,50 @@ script:
                 tool: zen_dojotools_taskmaster
                 params:
                   mode: briefing
+                  case: household
               trigger_subscriptions: "home_occupancy_change,default_user_bed_changes,secondary_user_bed_changes,force_summary,quarter_hour"
               drift_threshold: 5
               emission_cooldown_minutes: 60
               delay_seconds: 180
+              meta:
+                enabled: true
+                requires:
+                  cert: ''
+                  level: 0
+            - kata_key: taskmaster_meds
+              friendly_name: Taskmaster Medications
+              label: taskmaster
+              component_summary: >-
+                Medication reminders from To Do and CRM: what is due, overdue or
+                taken as needed. Needs zenos.health.read (stage s).
+              component_instructions: >-
+                You are reading the household medication reminders.
+
+                SEED OUTPUT (zen_dojotools_taskmaster, mode=briefing case=medications):
+                  items: medication reminders only, already scored. category is
+                  SUPPLEMENT, STANDARD, CLINICAL, BIOLOGIC or prn. top_line has the
+                  due-today and overdue counts. Trust these fields; do not re-derive
+                  urgency.
+
+                HARD RULE: A MISSED DOSE IS A REMINDER, NOT AN EMERGENCY.
+                  Never call a medication CRITICAL or set urgency above 3. The tool
+                  caps it; this is defense in depth.
+
+                REPORTING:
+                  Name what is due or overdue now, CLINICAL and BIOLOGIC first. One
+                  line each. prn items only if asked. Nothing due: "Meds on track."
+                  context.quiet_hours_active or home_mode Night/Night-Late: hold
+                  anything not overdue.
+              tool: zen_dojotools_taskmaster
+              seed:
+                tool: zen_dojotools_taskmaster
+                params:
+                  mode: briefing
+                  case: medications
+              trigger_subscriptions: "home_occupancy_change,default_user_bed_changes,secondary_user_bed_changes,force_summary,quarter_hour"
+              drift_threshold: 5
+              emission_cooldown_minutes: 60
+              delay_seconds: 200
               meta:
                 enabled: true
                 requires:
@@ -296,7 +349,7 @@ script:
             intent: Lens Bus self-removal — removes this tool's own entry from the household cabinet's lens_registry.
             needs: []
           briefing:
-            intent: Urgency-scored household briefing — conductor items (the agent's schedule-driven list) surfaced first, then everything else from task_list scored by shape (medication classification/PRN/date rules for todo+crm, chore due-status for inventory, priority passthrough for radar). Deterministic scoring can be disabled via household cabinet key taskmaster_scoring_enabled (default true) — when off, items are returned unscored. Medication-classification overrides read from household cabinet key medication_classifications (title -> SUPPLEMENT/STANDARD/CLINICAL/BIOLOGIC). Also returns a context block — real (not LLM-guessed) situational signals, namely home_mode/is_away (zen_home_mode-labeled entity), is_weekday, quiet_hours_active/work_hours_active (zen_quiet_hours/zen_work_hours-labeled entities), guest_present/guest_note (manual flags + Rolodex stays_active_list — Twenty CRM's structured stays, correctly date-scoped), upcoming_appointments (Rolodex appointments_list), prep_schedule (zen_dojotools_kitchen prep_brief for today — scheduled [PREP:N]-tagged dishes sorted by start_by, plus unscheduled_count), and weather.outdoor_ok (label zen_weather -> weather.* entity, false when condition is rain/snow/storm). This is the seed called live by the self-registered taskmaster KFC on every trigger firing.
+            intent: Urgency-scored household briefing — conductor items (the agent's schedule-driven list) surfaced first, then everything else from task_list scored by shape (medication classification/PRN/date rules for todo+crm, chore due-status for inventory, priority passthrough for radar). Deterministic scoring can be disabled via household cabinet key taskmaster_scoring_enabled (default true) — when off, items are returned unscored. Medication-classification overrides read from household cabinet key medication_classifications (title -> SUPPLEMENT/STANDARD/CLINICAL/BIOLOGIC). Also returns a context block — real (not LLM-guessed) situational signals, namely home_mode/is_away (zen_home_mode-labeled entity), is_weekday, quiet_hours_active/work_hours_active (zen_quiet_hours/zen_work_hours-labeled entities), guest_present/guest_note (manual flags + Rolodex stays_active_list — Twenty CRM's structured stays, correctly date-scoped), upcoming_appointments (Rolodex appointments_list), prep_schedule (zen_dojotools_kitchen prep_brief for today — scheduled [PREP:N]-tagged dishes sorted by start_by, plus unscheduled_count), and weather.outdoor_ok (label zen_weather -> weather.* entity, false when condition is rain/snow/storm). case=household drops medications, case=medications returns only medications (no conductor list), no case returns everything. The taskmaster summary seeds case=household; the taskmaster_meds summary seeds case=medications, which needs zenos.health.read with stage s.
             needs: []
           tier_status:
             intent: Report which upgrade tiers are currently active (crm, radar, inventory) by checking each subsystem's tool_manifest health.configured flag.
@@ -1064,6 +1117,11 @@ script:
           sequence:
           - variables:
               _br_hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+              # household: everything but medications. medications: only
+              # medications (no conductor list). none: everything.
+              _br_case: >-
+                {%- set _c = case | default('', true) | string | trim | lower -%}
+                {{ _c if _c in ['household', 'medications'] else '' }}
           - action: script.zen_sutra_filecabinet
             response_variable: _br_scoring_flag_raw
             continue_on_error: true
@@ -1088,7 +1146,7 @@ script:
                 {{ _v if _v is mapping else {} }}
           # ── conductor: the agent's own schedule-driven list, surfaced first ────
           - variables:
-              _br_conductor_ids: "{{ label_entities('schedule') | select('match', '^todo\\.') | list }}"
+              _br_conductor_ids: "{{ [] if _br_case == 'medications' else (label_entities('schedule') | select('match', '^todo\\.') | list) }}"
               _br_conductor_accum: []
           - repeat:
               for_each: "{{ _br_conductor_ids }}"
@@ -1170,6 +1228,14 @@ script:
                   {%- set _src = it.get('source', '') -%}
                   {%- set _due_dt = ((it.get('due') | as_datetime).date()) if it.get('due') else none -%}
                   {%- set _days_over = ((_today - _due_dt).days) if _due_dt is not none else -9999 -%}
+                  {#- A medication is a To Do/CRM item the med rules classify (prn, an
+                      override, or a med keyword). case household drops them, case
+                      medications keeps only them. -#}
+                  {%- set _is_med = _src not in ['radar', 'inventory'] and (
+                        (_br_prn_kw | select('in', _title_lc) | list | length) > 0
+                        or _br_med_overrides.get(it.get('title',''), none) is not none
+                        or ((_br_clinical_kw + _br_biologic_kw + _br_standard_kw + _br_supplement_kw) | select('in', _title_lc) | list | length) > 0) -%}
+                  {%- if (_br_case == 'household' and _is_med) or (_br_case == 'medications' and not _is_med) -%}{%- continue -%}{%- endif -%}
                   {%- if not _br_scoring_on -%}
                     {%- set ns.items = ns.items + [it | combine({'urgency': none, 'category': none, 'action_required': false})] -%}
                   {%- elif _src == 'radar' -%}
@@ -1310,6 +1376,7 @@ script:
               final_response:
                 status: success
                 mode: briefing
+                case: "{{ _br_case if _br_case != '' else 'all' }}"
                 scoring_enabled: "{{ _br_scoring_on }}"
                 generated_at: "{{ utcnow().isoformat() }}"
                 context: "{{ _br_context }}"
@@ -1909,6 +1976,14 @@ script:
               - unregister
               - by_anchor
         default: help
+      case:
+        description: "For briefing only: household (everything but medications), medications (only medications), or omit for everything."
+        required: false
+        selector:
+          select:
+            options:
+              - household
+              - medications
       items:
         description: "For catch_up only: title substrings to restrict the sweep to (case-insensitive). Omit to catch up every stale item found."
         required: false

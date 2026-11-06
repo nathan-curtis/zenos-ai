@@ -1,6 +1,8 @@
 # ZenOS-AI Security Manager
 
-**Version:** 5.4.0
+**Version:** 5.8.0
+
+> **2026.11.0 (5.8.0):** the `security_manager` KFC drops `master_switch` and its instruction; on and off is `meta.enabled`. Its summary seeds Room Manager's `home_overview`, so under `seed_cert_mode` enforce it needs `zenos.presence.read` with stage `s`.
 **File:** `dojotools/dojotools_security_manager.yaml`
 **Replaces:** `zen_dojotools_alarm_panel` (deleted)
 

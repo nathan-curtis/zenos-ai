@@ -248,7 +248,7 @@ Before 11.0 the pipeline ran as nobody and answered to two lists in the system c
 
 **It runs as the agent responsible for the household:** the prime in the household's ACL, else the default agent. That agent must be onboarded, or the run refuses with `agent_not_onboarded`, summaries pause, and a notification says why. SuperSummary writes as the same agent.
 
-**Seeds are declared by the tool.** A `seed` that calls a tool must name a mode that tool lists in its `tool_manifest` `seed_modes` (each `mode` or `mode:case`), or the run stops before the model is called with `seed_tool_not_authorized`, naming the modes that are declared. Index, Room Manager, AutoVac, Taskmaster, Inventory and Finance declare theirs. A `kata_tier` seed reads the kata cabinet directly and calls no tool.
+**Seeds are declared by the tool.** A `seed` that calls a tool must name a mode that tool lists in its `tool_manifest` `seed_modes` (each `mode` or `mode:case`, optionally tagged with a read cert; see [Read certs on seeds](#read-certs-on-seeds)), or the run stops before the model is called with `seed_tool_not_authorized`, naming the modes that are declared. Index, Room Manager, AutoVac, Taskmaster, Inventory and Finance declare theirs. A `kata_tier` seed reads the kata cabinet directly and calls no tool.
 
 **Acts need the emit stage.** A grant says where it may be used, one letter per pipeline stage (`i` interactive, `l` live drawer, `s` Ninja seed, `e` Ninja emit, `m` SuperSummary, `c` scheduler). Each tool declares the stages its certs allow (`st_ok`). Before the Ninja acts on `suggested_act_event`, it finds the cert on the target tool whose `st_ok` includes `e`, and the responsible agent must hold that cert with stage `e`. Today that's Postman's `zenos.comms.dispatch`, granted through the `zenos_agent_autonomous` bundle. A refused act doesn't happen and lands on the kata as `act_blocked`, with what to grant. A life-safety act skips the cert check; the kill switch and the infrastructure deny still apply.
 
@@ -262,6 +262,79 @@ Before 11.0 the pipeline ran as nobody and answered to two lists in the system c
 - **A self-registering tool** declares it in its `kfc_manifest` `meta`; `bootstrap_kfc` rewrites the mount when it changes.
 
 **The tool's own gate still applies.** An agent without `zenos.agent.basic` still gets a tool's `help`, `tool_manifest` and `kfc_manifest`, so a live mount resolves before onboarding; anything else answers `onboarding_required`. Calls no user started (the scheduler, automations) pass.
+
+---
+
+## KF6: Acts, Chains, Read Certs and Triggers (2026.11.0)
+
+The rule behind all of this is that a tool says what it does and what it needs, in its own `tool_manifest`, so nobody hand-writes it twice. A capability ships switched off, behind a cert the tool declares, and turns on only when a person approves it on a real device. The grant history then shows exactly what the agent can do in the background.
+
+### Declared acts
+
+- **A tool declares its act** in `tool_manifest`, next to its emit cert (the cert whose `st_ok` has `e`): `act: {mode, args: {<name>: {enum?, required?, description?}}, description}`.
+- **The model sees the declaration.** When a KFC names a tool in `suggested_act_event`, the Ninja reads that tool's `act` and tells the model which args it may return (`suggested_act_args`). A KFC doesn't need a hand-written list of available actions.
+- **The act is checked against it.** Only declared keys, only enum values, every required key present. Otherwise the act is refused with `no_act_declared` or `act_args_invalid` and recorded on the kata as `act_blocked`, with `args_errors` listing each problem. Then the emit cert is checked as before.
+- **The dispatcher routes declared acts.** A tool with no hand-written route is called if it declares an act: the dispatcher reads the declaration itself and calls only that mode, with only the declared args (plus `kata_input`). The payload never picks the mode. A hand-written route always wins.
+- **Shipped acts:** Camera `scan` (`label: exterior|interior`, required), behind `zenos.security.camera_scan`; Postman `resolve_and_dispatch`, behind `zenos.comms.dispatch`.
+
+### Chaining summaries
+
+- **A summary can start another summary** through the Ninja's own act, `run` (`kung_fu_component_id` required), behind `zenos.pipeline.chain` (stage `e` only).
+- **A KFC lists the targets it may start in `chain_to`.** The Dojo takes writes only from internal callers, so only the KFC's author sets it. A target outside `chain_to` is refused (`act_args_invalid`).
+- **Each chained run carries `chain_path`,** set by the Ninja, never by the model. A component already on the path is refused (`chain_loop`), and the chain stops 3 deep (`chain_depth`). Each hop passes every gate on its own.
+- A chained run is handed off, not waited on.
+
+### Read certs on seeds
+
+- **A tool can say which cert reads each seed mode:** a `seed_modes` entry may carry `@cert:level`, for example `'run:budget_summary@zenos.finance.read:1'` (level defaults to 1). The part before `@` is the mode; an exact `mode:case` entry wins over a bare `mode`.
+- **Tagged today:** Finance (`zenos.finance.read`, four `run` cases), Room Manager `home_overview` (`zenos.presence.read`) and Taskmaster `briefing:medications` (`zenos.health.read`). Each cert allows stages `is`, so asking in conversation isn't gated; only the background read is.
+- **The switch is `seed_cert_mode`,** like the FileCabinet lock, set from a console session with `zen_admintools_prompt_loader mode=seed_cert_mode` (`action_type` `status`, `audit` or `enforce`). Missing means audit.
+  - **Audit (every upgrade):** a missing read cert never stops a run. The Ninja logs `seed_cert_audit` (`would_deny`), and nothing leaves the prompt. A working install does nothing.
+  - **Enforce (a fresh install; Flynn's first `complete` writes it):** a seed through a tagged mode needs the cert at that level with stage `s`, or the run returns `seed_cert_required` before the tool and the model are called. The kata is stamped `seed_requires`, and every prompt feed drops a kata whose stamp the agent doesn't meet, so turning a cert off pulls the data out of the prompt too.
+- **One approval for parity.** `cert_audit` builds `zenos_agent_parity` from what actually runs: the read certs your enabled summaries need, plus the emit cert of any act still carried by the 11 act bridge. Granting it (stages `ise` by default; each cert gets only what its tool allows) keeps everything running. Under enforce, the first refusal starts one parity ask, and Flynn's `complete` asks for whatever is missing.
+
+### Turning a component on
+
+- **On and off is `meta.enabled`, only** (Scribe `mode=enable` / `disable`). Master switches are gone: the field is ignored and stored empty. Nothing in code ever read one.
+- **Scribe's preflight** runs on `enable`, `publish_kfc` and `republish_kfc` and lists every cert the run will need: `meta.requires` at `s`, the seed's read cert at `s`, the act's emit cert at `e`, and the chain cert at `e`. Each is checked against the agent that will run it, with `held`, `enforced`, `missing` and the `grant` call. It also reports `act_problem`, `triggers_unregistered`, `triggers_frequent` and `never_fires`.
+- **Turning a component on requests what's missing,** for the agent that will run it. You approve each request on your phone. Turning it off and on again retries an approval that expired or was declined. Turning it off keeps its certs; `disable` says how to revoke one.
+- **`zen_dojotools_manifest mode=component_certs`** shows one row per component, on or off: every cert it needs, whether the runner holds it, and a status: `off`, `refused`, `never_fires`, `act_broken` (the act tool is missing, or a chain act has no `chain_to`), `act_blocked`, `missing_audit` or `ready`.
+
+### Triggers
+
+- **The registry.** The system cabinet drawer `zen_trigger_registry` lists every trigger a KFC can subscribe to: `{packs, triggers: {<id>: {pack, fires, frequency, labels, dispatch}}}`. Only the scheduler writes it. `frequency` is `continuous`, `minutes`, `hourly`, `daily` or `event`; `minutes` and `continuous` cost a model call each time they fire.
+- **Scribe `list_triggers` reads it** (`source: registry`), with each trigger's pack, plain-words `fires`, frequency and labels. A KFC subscribed only to names nobody registers shows as `never_fires`. A write is never refused for an unregistered trigger, so custom triggers still work.
+- **Label triggers need no YAML.** These fire on Home Assistant purpose triggers aimed at a label, and sit idle until an entity carries it:
+
+| ID | Fires when | Label it watches |
+|---|---|---|
+| `zen_leak` | a moisture sensor detects water | `zen_leak` |
+| `zen_smoke` | smoke, CO or gas is detected | `zen_smoke` |
+| `zen_door` | a door or window opens or closes | `zen_door` |
+| `zen_power` | a power sensor stays below 1 W for 30 s (a fed circuit went dead) | `zen_power` |
+| `zen_appliance` | power rises above 10 W (started), or stays below 3 W for 2 minutes (finished) | `zen_appliance` |
+
+  A label follows the entity live, so labeling a sensor is enough; no reload. Prefer `zen_door` over the older group-based `door_opens_or_closes`, `window_opens_or_closes`, `lock_changes` and `garage_door`, which never fire on an install without `group.all_doors` and its siblings.
+
+- **The whole loop, with no YAML:** install a leak sensor; the agent labels it `zen_leak`; through Scribe it writes a KFC subscribed to `zen_leak` with what normal and abnormal look like; the sensor fires and the Ninja runs it; the KFC acts through Postman under its emit cert. Labeling needs the Labels cert, the KFC write needs `kfc_publish` or a live yes, and the act needs its emit cert.
+- **A trigger pack of your own registers itself** from an automation at Home Assistant start:
+
+```yaml
+- event: zen_event
+  event_data:
+    event:
+      kind: trigger_pack_register
+      pack: my_pack              # slug
+      version: "1.0.0"
+      triggers:
+        my_trigger_id:
+          fires: "plain words: when it fires"
+          frequency: event       # continuous|minutes|hourly|daily|event
+          labels: [my_label]     # optional, label-driven only
+          dispatch: subscribe    # or targeted
+```
+
+  A pack's registration replaces its own earlier entries. Only automation context is accepted: a registration from a user or agent call is ignored, so the agent can't invent triggers. `dispatch: subscribe` means the scheduler runs every subscribed KFC, so your automation must also run the Dojo-driven dispatch (see [the custom scheduler example](../examples/zen_dojotools_scheduler_custom.yaml)); `targeted` means your pack calls one component itself and is listed for visibility only.
 
 ---
 
@@ -350,9 +423,13 @@ automation:
 - [ ] `for:` delays added for any state that needs debouncing
 - [ ] `caller_token: <component_name>` on all FileCabinet writes in your tool (if applicable)
 - [ ] `mode: queued` on trigger automation
+- [ ] No `master_switch`: on and off is `meta.enabled`
 - [ ] Path A: Scribe `publish_kfc` run — artifact_state must be `formal` before Dojo accepts it
 - [ ] Path B: `kfc_manifest` declared (or the script tagged `zen_kfc_provider`), and `bootstrap_kfc` lists your `kata_key` in `registered[]`; no whitelist write in your tool
 - [ ] Drawer written by Scribe or `bootstrap_kfc`, never by a direct FileCabinet write (the Dojo takes writes only from `@internal`)
 - [ ] A `seed` that calls a tool names a mode in that tool's `tool_manifest` `seed_modes`
 - [ ] A `suggested_act_event` target has a cert whose `st_ok` includes `e`, and the household's agent holds it with stage `e` (`zenos_agent_autonomous`)
 - [ ] `meta.requires` left empty unless the component needs a minimum level; if set, its cert allows stage `s` and the agent holds it with `s`
+- [ ] A tool your KFC acts through declares its `act`; a chaining KFC lists its targets in `chain_to`
+- [ ] `trigger_subscriptions` names registered triggers (Scribe `list_triggers`); a labeled device uses a label trigger, not a hand-written automation
+- [ ] Turned on with Scribe `enable`, and `component_certs` shows it `ready`

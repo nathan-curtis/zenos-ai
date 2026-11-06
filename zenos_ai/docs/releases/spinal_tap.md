@@ -213,6 +213,26 @@ ZenOS speaks that model in 11.0, and it took Display's place to do it. Display b
 - **Child devices are followed.** Inspect's device tree keeps the hub (via) and the parent apart and lists child devices. A device selector in Index, Security Manager's zone walk and Spa Master's anchor device include child devices' entities, the way HA targets a parent.
 - **Gated on the HA version,** read from the core update entity. Without Supervisor there is no update entity, and the code detects the feature instead.
 
+---
+
+## What the New Security Unlocks
+
+Each of these was unsafe, or a dead path, before 11. Now each one ships switched off, behind a cert its tool declares, and turns on only when you approve it on a real device. The grant history shows exactly what the agent can do in the background, and why.
+
+- **Unattended camera scans.** The camera heartbeat scans on its own schedule: exterior always, interior only when you're away. It needs `zenos.security.camera_scan` for the background.
+- **Summaries that start other summaries.** Up to three in a row, only to the targets each one lists in `chain_to`, each hop gated on its own, and never in a loop. It needs `zenos.pipeline.chain`.
+- **Acts any tool can declare.** A tool says what it does and what it takes, and the pipeline routes to it with no hand-written route. That's the base for future acts such as lights, covers and locks, each behind its own cert.
+- **Private data in background summaries, with consent.** Finance, medication and presence summaries can run unsupervised, because the agent may only read them with a read cert you approved. Turning the cert off pulls the data out of the prompt too.
+- **A medication summary of its own.** Meds no longer ride along in the household task summary.
+- **Any device you can label becomes a trigger, with no YAML.** Label a leak sensor `zen_leak`, write a component that subscribes to it, and it runs when the sensor gets wet. Leak, smoke, CO and gas sensors work on day one once they're labeled.
+- **The agent can manage what it exposes, safely.** Ectoplasm can expose and unexpose entities, because the admin plane can never be exposed: expose always refuses it, and Flynn removes it every hour.
+- **Turning a component on asks for its own certs.** You don't have to work out which cert a summary needs.
+- **One approval covers an upgrade.** `zenos_agent_parity` replaces chasing individual grants, and read certs start in audit on an upgrade, so a working install does nothing.
+
+See [Building a KFC](../kung_fu/building_a_kfc.md#kf6-acts-chains-read-certs-and-triggers-2026110) and the [Security & Certification manual](../getting_started/security_certification_manual.md#66-read-certs-and-parity).
+
+---
+
 ## Read this before upgrading
 
 - **Approve your agent.** An agent that never received `zenos.agent.basic` loses every ZenOS tool except help and onboarding until you approve it: run `zen_flynn_oobe mode=run` (or ask the agent to) and say yes to the push. An agent you approved at the end of onboarding in 2026.10 already holds it. Until then, dashboard buttons and your own Developer Tools calls to ZenOS tools are refused too. The push goes to `notify.admin_devices` until Postman has a profile; if no push can reach you, use the console override ([Install Guide](../getting_started/install.md#if-no-push-can-reach-you)).
@@ -238,12 +258,26 @@ ZenOS speaks that model in 11.0, and it took Display's place to do it. Display b
 - **Grant `zenos_agent_autonomous` for background notifications.** The Ninja's routine Postman sends need `zenos.comms.dispatch` with the Ninja emit stage. The bridge only covers an agent that already holds that cert for interactive use, and many upgraded installs don't. Until you grant the bundle, routine sends are refused and written onto the component's summary as `act_blocked`. Life-safety sends aren't affected.
 - **A seed tool of your own needs `seed_modes`** in its `tool_manifest` before 2026.12. Until then the old seed list carries it, with a legacy stamp on each run.
 - **The Ninja's context cap now trips.** It never could before (see Fixed), so a component with a very large prompt that used to run may now stop with `ninja_context_overflow`. Raise `max_context_tokens` in `zen_ninja_config` if your model's context window allows it, or lower `domain_inspect_limit` in that component's `index_call`.
+- **Read certs start in audit, so nothing changes.** Finance, medication and presence summaries keep running and log `seed_cert_audit` where enforce would refuse. To lock them: grant `zenos_agent_parity` (one phone approval), then switch from the console with `zen_admintools_prompt_loader mode=seed_cert_mode action_type=enforce`. A fresh install starts in enforce and asks for parity at onboarding.
+- **Master switches are gone.** A component turns on and off only through its drawer: Scribe `mode=enable` / `disable`. Nothing ever read a master switch, so nothing changes, but an `input_boolean` you kept for one does nothing.
+- **Medications have their own summary.** The `taskmaster` summary no longer carries meds; `taskmaster_meds` does, and registers at the next `bootstrap_kfc` (boot or 00:01).
+- **Admin tools leave the agent's tool list.** Flynn removes every `zen_admintools_*` script from Assist, Alexa and Google every hour. A test server that needs them sets the system cabinet's `admin_plane_guard` drawer to `listed`. The guard needs Spook.
+- **The camera heartbeat and summary chains stay off until granted.** Both were dead paths before. Grant `zenos.security.camera_scan` or `zenos.pipeline.chain` with the background stage (or `zenos_agent_autonomous`) to turn them on; a chain also needs `chain_to` on the component that starts it.
+- **Check what each component needs:** `zen_dojotools_manifest mode=component_certs`. A component listed `never_fires` subscribes only to triggers nothing registers.
+- **Prefer `zen_door` over the group triggers.** `door_opens_or_closes`, `window_opens_or_closes`, `lock_changes` and `garage_door` watch `group.all_doors` and its siblings, and never fire without them.
+- **A trigger automation of your own** can register its IDs (see the [custom scheduler example](../examples/zen_dojotools_scheduler_custom.yaml)), so its components don't show as `never_fires`.
 - **Your own copy of the scheduler loop** needs the same fix as the scheduler (see Fixed): sleep the gap since the previous subscriber, not each subscriber's whole delay.
 
 ---
 
 ## Added
 
+- **Declared acts and summary chains.** A tool declares its act (`act: {mode, args, description}`) next to its emit cert; the Ninja tells the model what it may return and checks it (`no_act_declared`, `act_args_invalid`), and the dispatcher routes any declared act with no hand-written route. Camera declares `scan` behind the new `zenos.security.camera_scan`. A summary can start another through the Ninja's `run` act, behind `zenos.pipeline.chain`, only to targets in its `chain_to`, at most 3 deep and never in a loop (`chain_loop`, `chain_depth`).
+- **Read certs on seeds.** A tool tags a seed mode with the cert that reads it (`'mode@cert:level'`). Finance, Room Manager's `home_overview` and Taskmaster's medications carry `zenos.finance.read`, `zenos.presence.read` and `zenos.health.read`. The switch is `seed_cert_mode`: audit on an upgrade, enforce on a fresh install. Under enforce a missing cert refuses the run (`seed_cert_required`) and that summary's data leaves the prompt.
+- **`zenos_agent_parity`,** one approval that keeps an upgraded install running as before, built from what your enabled summaries actually need.
+- **Turning a component on asks for its certs.** Scribe's preflight lists every cert the run needs and requests the missing ones for the agent that will run it. `component_certs` shows every component's status, and flags an act whose tool doesn't exist (`act_broken`), so a summary can't silently notify through a retired tool.
+- **The trigger registry and label triggers.** `zen_trigger_registry` lists every trigger a component can subscribe to; packs register themselves from automation context. Five label triggers (`zen_leak`, `zen_smoke`, `zen_door`, `zen_power`, `zen_appliance`) fire on whatever carries their label. Scribe `list_triggers` reads the registry, and a component nothing can fire shows as `never_fires`.
+- **The admin plane guard.** `prompt_loader` is never exposed, Flynn unexposes the admin plane every hour, and `mcp_sync` flags an exposed admin tool as critical. Ectoplasm gains `entity_expose` (refuses the admin plane) and `entity_unexpose`.
 - **A component's minimum level is enforced (KF6).** A KFC's `meta.requires: {cert, level}` was stored and never read. Now the agent the pipeline acts as must hold that cert at that level, granted for the Ninja seed stage `s`, or the run stops before the model with `kfc_cert_required`, keeps the last summary, and a notification names what to grant. An unmet component stays out of the agent's prompt. Scribe sets it (`requires_cert`, `requires_level`) and refuses any write of a requirement that could never be met (`kfc_requires_invalid`), and `bootstrap_kfc` rewrites a mount when a tool changes it. Every shipped component has no requirement, so nothing changes on upgrade. See [Building a KFC](../kung_fu/building_a_kfc.md#kf6-the-security-contract-2026110).
 - **Semantic roots.** The tool manifest publishes a root for each question word: who (Identity), what (Index), when (Taskmaster almanac), where (Room Manager), why (history), how (help) and knowledge (FileCabinet). Each root answers what matters now and names where to go deeper, and the boot prompt renders them as one line.
 - **Taskmaster almanac, the "when" root.** One call returns a headline and the current period of the day, vacation, events from calendars carrying the `almanac` label (timed events first, at most two per calendar), tasks due by today, meals and weather. `horizon_hours`, `lookahead_days` and `max_items` tune it.
@@ -272,6 +306,8 @@ ZenOS speaks that model in 11.0, and it took Display's place to do it. Display b
 
 ## Changed
 
+- **Master switches are gone.** A component turns on and off only through `meta.enabled`. Scribe ignores `master_switch` and stores it empty, and Security Manager's KFC drops its own.
+- **Taskmaster's briefing takes a `case`** (`household`, `medications`, or none for everything), and meds move to their own `taskmaster_meds` summary.
 - **Help is the default.** A `zen_*` script answers help for a missing or unknown mode, and a bare call (no mode and no input) never acts, crashes or errors. Tools that used to act on a bare call (announce, the summarizers, the prompt loader, the reset and repair tools, Camera, Provisioner and FileCabinet GC) now return help. Calls that pass input are unchanged, and every internal caller now names its mode.
 - **Compact bare replies.** Inventory, Kitchen and Finance return a short mode list on a bare call, down from roughly 100k, 65k and a few thousand characters. The full catalogue is for `mode=help`.
 - **Manifest publish cadence.** Publishing runs on the events a reload itself fires, writes only when content changed, and cannot loop on its own events.
@@ -295,6 +331,7 @@ ZenOS speaks that model in 11.0, and it took Display's place to do it. Display b
 
 ## Fixed
 
+- **Scribe `enable` and `disable` write again.** Both always answered `missing_required`.
 - **Event emitter refuses internal event kinds.** The agent-facing `zen_dojotools_event_emitter` passed any `kind` through to the event bus, and several listeners act on kinds: scheduled reloads, tool dispatch, approval acknowledgements, prompt injection, garbage collection, and cabinet, identity, alert and label signals. Those kinds are now reserved and refused with a `guarded:` error. Internal callers fire their own events directly. Free-form kinds and the summary and ninja forces still work.
 - **The help proxy only reaches ZenOS tools.** `zen_dojotools_help` took any script name and called it with `mode=help`, which runs the default path of a script that has no help handler. It now proxies only existing `zen_dojotools_`, `zen_stack_`, `zen_sutra_` and `zen_codex_` tools and refuses anything else with a `guarded:` error.
 - **Cabinet schema upgrade now runs.** SystemTools sent the cabinet admin tool an operation field it does not read, so the upgrade never started.

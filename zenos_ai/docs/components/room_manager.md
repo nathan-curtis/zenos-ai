@@ -1,6 +1,8 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.14.0
+**Version:** 5.18.0
+
+> **2026.11.0 (5.18.0):** the seed mode `home_overview` carries the read cert `zenos.presence.read` (level 1, stages `is`). Under `seed_cert_mode` enforce, a background summary seeded from it (Security Manager's) needs that cert with stage `s`. See [Read certs and parity](../getting_started/security_certification_manual.md#66-read-certs-and-parity).
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 

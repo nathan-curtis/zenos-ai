@@ -1,6 +1,20 @@
 ###############################################################################
 # ZenOS-AI DojoTools: AdminTools
-# Version: 5.9.0
+# Version: 5.13.0
+# v5.13.0: prompt_loader 45.7: the seed_cert_mode enforce parity ask uses
+#   stages ise (the bundle may hold emit certs).
+# v5.12.0: prompt_loader 45.6 declares mcp_exposed=false and never_expose: it
+#   holds the lock switches (fc_acl_mode, seed_cert_mode) and the cortex, so it
+#   must never be exposed to the agent. Anything that exposes entities must
+#   refuse a tool that carries never_expose (no self escalation).
+# v5.11.0: prompt_loader 45.5: seed_cert_mode enforce stamps the kata of each
+#   summary whose read cert is missing (cert_audit parity_components), so its
+#   last data leaves the prompt at once, not at its next scheduled run.
+# v5.10.0: prompt_loader 45.4: mode=seed_cert_mode, the read-cert switch for
+#   background summaries (missing = audit, so an upgraded install changes
+#   nothing). status reads it with the parity certs still missing; audit /
+#   enforce need a console session. Enforce also asks for the
+#   zenos_agent_parity bundle when any of it is missing.
 # v5.9.0: reset_template 5.2.0 (KF6): kfc_template schema 1.5.0, so existing
 #   installs re-press it. Its meta.requires note gives the real rule (the
 #   Ninja enforces it, stage s), and suggested_act_event names the emit-stage
@@ -2431,6 +2445,8 @@ script:
                 value: cert_bypass
               - label: fc_acl_mode - FileCabinet lock, audit or enforce
                 value: fc_acl_mode
+              - label: seed_cert_mode - read certs on background summaries, audit or enforce
+                value: seed_cert_mode
               - label: tool_manifest — UMP self-description
                 value: tool_manifest
       cortex_version:
@@ -2526,7 +2542,7 @@ script:
                 summary='Admin: load purpose, directives, and cortex into the prompt',
                 display_name='Prompt Loader — Cortex + Directives + Purpose',
                 tier='admintools',
-                version='45.3',
+                version='45.7',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['admintools'],
                 optional_labels=[],
@@ -2535,12 +2551,14 @@ script:
                 failure_policy='hard',
                 dependencies=[{'tool': 'zen_dojotools_scribe', 'required': true, 'uses': 'new_thought + formalize_scroll + publish_kfc to ship the default zen_system and alert_manager KFC drawers'}],
                 modes={'load': 'load', 'whitelist': 'whitelist',
-                       'lens_registry': 'lens_registry', 'codex_registry': 'codex_registry', 'cert_bypass': 'cert_bypass', 'fc_acl_mode': 'fc_acl_mode',
+                       'lens_registry': 'lens_registry', 'codex_registry': 'codex_registry', 'cert_bypass': 'cert_bypass', 'fc_acl_mode': 'fc_acl_mode', 'seed_cert_mode': 'seed_cert_mode',
                        'manifest': 'tool_manifest'},
                 icon='mdi:brain',
                 color='deep-orange',
+                mcp_exposed=false,
                 caller_token=caller_token | default('')
-              ) | from_json -}}
+              ) | from_json | combine({'never_expose': true,
+                  'never_expose_reason': 'Holds the lock switches (fc_acl_mode, seed_cert_mode) and the cortex. Never expose it to the agent; anything that exposes entities must refuse a tool that carries never_expose (no self escalation).'}) -}}
         # Bare call (no mode, no input) = help from this manifest, never an action.
         - if: "{{ (mode | default('', true) | string | trim) == '' and (action_type | default('', true) | string | trim) == '' and (item | default('', true) | string | trim) == '' and (payload_json | default('', true) | string | trim) == '' and (cortex_version | default('', true) | string | trim) == '' }}"
           then:
@@ -3260,6 +3278,146 @@ script:
                 status: error
                 action_type: "{{- _cb_action -}}"
                 message: "Unknown cert_bypass action_type. Valid: whoami, status, enable, disable."
+                caller_token: "{{- caller_token -}}"
+
+    # ── SEED_CERT_MODE MODE ────────────────────────────────────────────────────
+    # The read-cert switch for background summaries: the system cabinet's
+    # seed_cert_mode drawer (ID.seed_cert_mode; missing = audit). status is a
+    # plain read with the parity certs still missing. audit / enforce need a
+    # console session. Enforce also starts one ask for the parity bundle when
+    # any of it is missing, so the summaries keep running after one approval.
+    - if: "{{- result is not defined and _mode == 'seed_cert_mode' -}}"
+      then:
+        - variables:
+            _sm_action: "{{- action_type | default('status', true) | lower | trim -}}"
+            _sm_console_user: "{{- ((context.user_id if context is defined else '') or '') | trim -}}"
+            _sm_mode: >-
+              {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+              {{- ID.seed_cert_mode() | trim -}}
+        - action: script.zen_dojotools_manifest
+          continue_on_error: true
+          response_variable: _sm_ca_raw
+          data:
+            mode: cert_audit
+        - variables:
+            _sm_parity: >-
+              {%- set _ca = _sm_ca_raw if _sm_ca_raw is mapping else {} -%}
+              {%- set _ca = _ca.get('result', _ca) if _ca.get('result') is mapping else _ca -%}
+              {%- set _b = (_ca.get('bundles', {}) or {}).get('zenos_agent_parity', []) -%}
+              {{ _b if _b is sequence and _b is not string else [] }}
+            _sm_components: >-
+              {%- set _ca = _sm_ca_raw if _sm_ca_raw is mapping else {} -%}
+              {%- set _ca = _ca.get('result', _ca) if _ca.get('result') is mapping else _ca -%}
+              {%- set _pc = _ca.get('parity_components', {}) -%}
+              {{ _pc if _pc is mapping else {} }}
+            _sm_missing: >-
+              {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+              {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+              {%- set ns = namespace(m=[]) -%}
+              {%- for c in _sm_parity | default([], true) if not ((ID.caller(c, 1, _hh, 's') | from_json({})).get('cert_ok', false)) -%}
+                {%- set ns.m = ns.m + [c] -%}
+              {%- endfor -%}
+              {{ ns.m }}
+        - if: "{{- _sm_action == 'status' -}}"
+          then:
+          - variables:
+              result:
+                status: success
+                action_type: status
+                seed_cert_mode: "{{- _sm_mode -}}"
+                parity_bundle: zenos_agent_parity
+                parity_certs: "{{ _sm_parity }}"
+                parity_missing: "{{ _sm_missing }}"
+                message: >-
+                  {{- ('Enforced. ' if _sm_mode == 'enforce' else 'Audit: missing read certs are recorded (zen_event seed_cert_audit), not enforced. ')
+                      ~ (('Missing for stage s: ' ~ (_sm_missing | join(', ')) ~ '.') if _sm_missing | count > 0 else 'Every read cert the summaries need is held.') -}}
+                caller_token: "{{- caller_token -}}"
+        - if: "{{- result is not defined and _sm_action in ['audit', 'enforce'] and _sm_console_user == '' -}}"
+          then:
+          - variables:
+              result:
+                status: error
+                action_type: "{{- _sm_action -}}"
+                message: >-
+                  guarded: seed_cert_mode audit/enforce requires a live console
+                  invocation. It is not available through automation,
+                  script, or agent calls.
+                caller_token: "{{- caller_token -}}"
+        - if: "{{- result is not defined and _sm_action in ['audit', 'enforce'] -}}"
+          then:
+          - action: script.zen_admintools_cabinet_writer
+            data:
+              mode: set
+              volume_entity: "{{ states('sensor.zen_system_cabinet_resolved') }}"
+              key: seed_cert_mode
+              value:
+                mode: "{{- _sm_action -}}"
+                set_by: "{{- _sm_console_user -}}"
+                set_at: "{{ now().isoformat() }}"
+                note: >-
+                  Read certs on background summaries. Managed only through
+                  zen_admintools_prompt_loader mode=seed_cert_mode (Flynn sets
+                  enforce on a fresh install). Missing means audit.
+              caller: zen_admintools_prompt_loader
+              reason: "prompt_loader seed_cert_mode {{ _sm_action }}"
+          # Stamp the kata of each summary whose read cert is missing, so its
+          # last data leaves the prompt now (the Ninja stamps on its next run).
+          - if: "{{ _sm_action == 'enforce' and _sm_missing | count > 0 }}"
+            then:
+            - repeat:
+                for_each: >-
+                  {%- set _kv = state_attr(states('sensor.zen_kata_cabinet_resolved'), 'variables') or {} -%}
+                  {%- set ns = namespace(l=[]) -%}
+                  {%- for _ck, _r in _sm_components.items() if _r is mapping and _r.get('cert') in _sm_missing and _ck in _kv -%}
+                    {%- set ns.l = ns.l + [{'key': _ck, 'req': {'cert': _r.get('cert'), 'level': _r.get('level', 1) | int(1)}}] -%}
+                  {%- endfor -%}
+                  {{ ns.l }}
+                sequence:
+                  - action: script.zen_sutra_filecabinet
+                    continue_on_error: true
+                    data:
+                      action_type: upsert
+                      write_mode: merge
+                      show_hidden_volumes: false
+                      volume_entity_id:
+                        - "{{ states('sensor.zen_kata_cabinet_resolved') }}"
+                      path: "{{ repeat.item.key }}"
+                      value: "{{ {'seed_requires': repeat.item.req} }}"
+          - if: "{{ _sm_action == 'enforce' and _sm_missing | count > 0 }}"
+            then:
+            - action: script.turn_on
+              continue_on_error: true
+              target:
+                entity_id: script.zen_dojotools_persona_editor
+              data:
+                variables:
+                  mode: cert_req_grant
+                  cert_bundle: zenos_agent_parity
+                  cert_level: 1
+                  cert_stages: ise
+          - variables:
+              _sm_after: >-
+                {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                {{- ID.seed_cert_mode() | trim -}}
+          - variables:
+              result:
+                status: "{{- 'success' if _sm_after == _sm_action else 'error' -}}"
+                action_type: "{{- _sm_action -}}"
+                seed_cert_mode: "{{- _sm_after -}}"
+                was: "{{- _sm_mode -}}"
+                parity_missing: "{{ _sm_missing }}"
+                parity_asked: "{{ _sm_action == 'enforce' and _sm_missing | count > 0 }}"
+                message: >-
+                  {{- ('Enforced. The summaries that need ' ~ (_sm_missing | join(', ')) ~ ' stop until the zenos_agent_parity request is approved.')
+                      if (_sm_action == 'enforce' and _sm_missing | count > 0) else ('Set to ' ~ _sm_after ~ '.') -}}
+                console_user: "{{- _sm_console_user -}}"
+                caller_token: "{{- caller_token -}}"
+        - if: "{{- result is not defined -}}"
+          then:
+          - variables:
+              result:
+                status: error
+                message: "Unknown seed_cert_mode action_type. Valid: status, audit, enforce."
                 caller_token: "{{- caller_token -}}"
 
     # ── FC_ACL_MODE MODE ───────────────────────────────────────────────────────

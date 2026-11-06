@@ -108,6 +108,8 @@ Every certification has a short plain `description`, written for the phone appro
 | `zenos.comms.teams_control` | Change your Teams status |
 | `zenos.comms.todo_control` | Add and edit to-do items; level 2 also deletes |
 | `zenos.finance.account_control` | Delete finance accounts |
+| `zenos.finance.read` | Read your budget, bills and net worth for the background summary |
+| `zenos.health.read` | Read your medication reminders for the background summary |
 | `zenos.helper.boolean_edit` | Flip on/off switches and toggles |
 | `zenos.helper.datetime_edit` | Change date and time settings |
 | `zenos.helper.number_edit` | Change number settings |
@@ -126,12 +128,15 @@ Every certification has a short plain `description`, written for the phone appro
 | `zenos.media.generate` | Create AI images (costs money each time) |
 | `zenos.media.playback_control` | Play music and control the TVs and speakers |
 | `zenos.media.prefs_edit` | Change audio and TV preferences |
+| `zenos.pipeline.chain` | Let one background summary start another one it names |
 | `zenos.plant.auto_shutoff_config_edit` | Turn on automatic water shutoff for leaks |
+| `zenos.presence.read` | Read who is home and which rooms are in use for the background summary |
 | `zenos.registry.label_lifecycle_control` | Create and edit labels; level 2 also deletes |
 | `zenos.registry.lifecycle_control` | Hide, rename and organize devices; level 2 also disables or removes |
 | `zenos.registry.purge` | Remove dead devices from the system |
 | `zenos.room.behavior_control` | Change how rooms react on their own |
 | `zenos.room.control_override` | Take a room out of Paused |
+| `zenos.security.camera_scan` | Scan the cameras on a schedule on its own (exterior always, interior only when away) |
 | `zenos.spatial.household_config_edit` | Set your home's compass direction and doorways |
 | `zenos.spatial.room_topology_edit` | Change your home's rooms and floors; level 2 also deletes |
 | `zenos.system.cabinet_admin` | Make protected system changes (asks you each time); level 2 also changes cabinet labels |
@@ -165,7 +170,8 @@ A narrower grant held at the same or a lower level than the broader one it sits 
 - `zenos_agent_basic`: the backstage pass and everyday control (lights, scenes, covers, climate, water heater, displays, media playback, helper edits, timers, todo delete). Requested when Flynn's OOBE starts.
 - `zenos_agent_steward`: running the house model, granted at level 1. Room Manager topology and behavior (`zenos.spatial.room_topology_edit`, `zenos.room.behavior_control`), label create/update (`zenos.registry.label_lifecycle_control`), registry cosmetics and area assignment (`zenos.registry.lifecycle_control`), Grocy schema and locations (`zenos.knowledge.inventory_schema_edit`), house settings (`zenos.system.home_config_write`), profiles (`zenos.identity.profile_write`), zones (`zenos.helper.zones_edit`) and alert policy (`zenos.alerts.policy_edit`). At level 1 it cannot delete areas, labels, registry objects or Grocy structure.
 - `zenos_agent_advanced`: physical security. `zenos.actuation.lock_control`, `zenos.actuation.security_control`, `zenos.room.control_override` (clearing a room out of Paused) and `zenos.alerts.camera_policy_edit`. The bundle grants the ability only: every live acknowledgement these certifications require still goes to a phone.
-- `zenos_agent_autonomous` (2026.11.0): every cert whose tool allows the Ninja emit stage, which today is `zenos.comms.dispatch`. It is derived, not hand-kept, so a tool that later allows that stage joins on its own. Granting it adds the interactive and Ninja emit stages (`ie`), so the agent can send the summarizer's routine notifications in the background. See [Stages](#64-stages).
+- `zenos_agent_parity` (2026.11.0): one approval that keeps an upgraded install running as before. `cert_audit` builds it from what actually runs: the read certs your enabled summaries need, plus the emit cert of any act still carried by the 11 act bridge. Granted with stages `ise` by default, and each member gets only the stages its tool allows. See [Read certs](#66-read-certs-and-parity).
+- `zenos_agent_autonomous` (2026.11.0): every cert whose tool allows the Ninja emit stage: `zenos.comms.dispatch`, `zenos.security.camera_scan` and `zenos.pipeline.chain`. It is derived, not hand-kept, so a tool that later allows that stage joins on its own. Granting it adds the interactive and Ninja emit stages (`ie`), so the agent can send the summarizer's routine notifications in the background. See [Stages](#64-stages).
 - Admin certifications (cabinets, reload/restart, infrastructure, finance, registry purge, plant auto-shutoff, KFC publish, PII whitelist) are never bundled.
 
 ---
@@ -317,6 +323,56 @@ flowchart TD
 ```
 
 A `deny` scope entry (Section 6) short-circuits before the live-ack step ever runs — it is a hard block, not a slower path to the same answer. An `allow` scope entry skips the live-ack step entirely for that target. Everything else asks fresh, every time, per Section 4.
+
+---
+
+## 6.6 READ CERTS AND PARITY
+
+*(2026.11.0)* Some summaries read private data in the background: your finances, your medication reminders, who is home. A tool says which cert reads each of those seed modes, and the background summary may read them only while the agent holds that cert with the Ninja seed stage (`s`). Asking in conversation isn't gated.
+
+| Cert | What it reads |
+|---|---|
+| `zenos.finance.read` | Finance summaries: budget, bills, net worth, rollup |
+| `zenos.health.read` | The medication summary (`taskmaster_meds`) |
+| `zenos.presence.read` | Room Manager's `home_overview`, which the Security Manager summary reads |
+
+**The switch is `seed_cert_mode`,** read from the system cabinet and set from a console session, like the FileCabinet lock:
+
+```
+zen_admintools_prompt_loader mode=seed_cert_mode action_type=status   # what's missing for parity
+zen_admintools_prompt_loader mode=seed_cert_mode action_type=enforce
+zen_admintools_prompt_loader mode=seed_cert_mode action_type=audit
+```
+
+- **Audit** is the default, and where every upgrade lands. A missing read cert logs `seed_cert_audit` and changes nothing.
+- **Enforce** is where a fresh install starts (Flynn's first `complete` writes it). A missing read cert refuses the run (`seed_cert_required`), and that summary's data leaves the prompt until the cert is granted. Switching to enforce asks for parity once if anything is missing.
+
+**One approval for parity.** Grant `zenos_agent_parity` and every summary you already run keeps running:
+
+```yaml
+action: script.zen_admintools_certadmin
+data:
+  mode: cert_req_grant
+  cert_bundle: zenos_agent_parity
+```
+
+No phone? The console override stands in for the approval, the same as any other grant (Section 4).
+
+**Turning a component on asks for its own certs.** Scribe's `enable` lists what the component will need and requests anything missing for the agent that will run it. `zen_dojotools_manifest mode=component_certs` shows every component and what it's still missing.
+
+---
+
+## 6.7 THE ADMIN PLANE
+
+*(2026.11.0)* Admin tools are never exposed to the agent.
+
+- **`zen_admintools_prompt_loader` is never exposed.** It holds the lock switches and the cortex. It declares `never_expose`, and anything that exposes entities must refuse a tool that carries it.
+- **Flynn's admin plane guard** removes the admin plane from Assist (and so MCP), Alexa and Google at start, hourly at :07, and on request (`zen_event` kind `admin_plane_guard`). It asks no one, because it only tightens. It needs Spook.
+  - **`all`** (no drawer, the production default): every `script.zen_admintools_*`, plus anything listed.
+  - **`listed`** (a test server): only what the system cabinet's `admin_plane_guard` drawer lists in `entities`.
+  - Either way, `prompt_loader` and anything labeled `zen_never_expose` are always removed.
+- **Ectoplasm `entity_expose` always refuses the admin plane,** before it reads any cert, whatever the caller holds. `entity_unexpose` only tightens, so it needs less (`zenos.registry.lifecycle_control` level 1; expose needs level 2).
+- **`zen_dojotools_manifest mode=mcp_sync` answers `critical`** (`forbidden_exposed`) if any admin tool shows up in the agent's tool list.
 
 ---
 

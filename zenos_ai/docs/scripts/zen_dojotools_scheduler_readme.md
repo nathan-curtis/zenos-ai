@@ -1,4 +1,6 @@
-# Zen DojoTools Scheduler — v5.2.7
+# Zen DojoTools Scheduler — v5.3.0
+
+> **2026.11.0:** The trigger registry: the system cabinet drawer `zen_trigger_registry` lists every trigger a KFC can subscribe to, and only the scheduler writes it. A pack registers with `zen_event` kind `trigger_pack_register` from automation context (a user or agent call is ignored); the core pack registers at start and after an automation reload. Five label triggers, idle until an entity carries the label: `zen_leak`, `zen_smoke`, `zen_door`, `zen_power`, `zen_appliance`. The group-based `door_opens_or_closes`, `window_opens_or_closes`, `lock_changes` and `garage_door` are legacy; prefer `zen_door`. See [Triggers](../kung_fu/building_a_kfc.md#triggers).
 
 *Automation — no `tool_manifest`, so the file header version is canonical.*
 

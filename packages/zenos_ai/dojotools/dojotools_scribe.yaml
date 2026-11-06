@@ -1,6 +1,30 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Scribe
-# Version: 5.8.0
+# Version: 5.13.0
+# v5.13.0: list_triggers reads the trigger registry (system cabinet
+#   zen_trigger_registry, written by the scheduler as packs register), with
+#   each trigger's pack, when it fires and how often; the old static list is
+#   only the fallback when nothing has registered. The enable/publish
+#   preflight lists subscriptions that are not registered (they never fire)
+#   and notes the ones that fire every few minutes (model cost).
+# v5.12.0: the preflight flags a dead act: act_problem act_tool_missing (the
+#   act tool is not a script) or chain_to_missing (a chain act with no
+#   chain_to).
+# v5.11.0: master_switch is ignored (stored empty): a component's on/off is
+#   meta.enabled, set by mode=enable / disable. disable answers with a hint:
+#   its certs are kept, and how to revoke one if that is wanted.
+# v5.10.0: the preflight requests each missing cert for the agent that will run
+#   the component (see 5.9.0), so turning one on starts its approvals.
+# v5.9.0: enable, publish_kfc and republish_kfc on a Dojo component return a
+#   preflight: every cert the run will need (meta.requires at stage s, the
+#   seed's read cert at s, the act tool's emit cert at e), checked against
+#   the agent that will run it (the household's responsible agent), with
+#   what is missing, whether it is enforced now, and the grant call. The
+#   write itself is unchanged; the Ninja still enforces at run time. Each
+#   missing cert is requested on behalf of that agent (persona_editor
+#   cert_req_grant, started, not waited on), keeping the stages it holds.
+#   Fixed: enable/disable never wrote (the block renamed the mode to patch
+#   before it built the change, so changes came out empty: missing_required).
 # v5.8.0 (KF6): requires_cert and requires_level set meta.requires on
 #   new_thought, patch, republish_kfc and publish_kfc (they override the
 #   scroll). Every write that sets meta.requires, from the fields or from
@@ -522,12 +546,10 @@ script:
 
       master_switch:
         name: Master Switch
-        description: input_boolean entity ID that gates this component (optional)
+        description: "Ignored (kept so old callers do not fail). A component is turned on and off with mode=enable / disable (meta.enabled)."
         required: false
         selector:
-          entity:
-            filter:
-              domain: input_boolean
+          text:
 
       enabled:
         name: Enabled
@@ -835,11 +857,12 @@ script:
       # STEP 2c — Mode normalization: enable/disable shorthand -> patch
       # -------------------------------------------------------------------
       - variables:
+          _mode_in: "{{ _mode }}"
           _mode: "{{ 'patch' if _mode in ['enable', 'disable'] else _mode }}"
           _changes: >-
-            {% if _mode == 'enable' %}
+            {% if _mode_in == 'enable' %}
               {{ {'meta': {'enabled': true}} }}
-            {% elif _mode == 'disable' %}
+            {% elif _mode_in == 'disable' %}
               {{ {'meta': {'enabled': false}} }}
             {% else %}
               {{ _changes }}
@@ -1367,7 +1390,7 @@ script:
                       summary='Write and publish thoughts, scrolls, and KFC components',
                       display_name='Scribe',
                       tier='dojotools',
-                      version='5.8.0',
+                      version='5.13.0',
                       health={'configured': true, 'status': 'ok', 'notes': []},
                       required_labels=['dojotools'],
                       optional_labels=['scribe', 'kfc'],
@@ -1428,6 +1451,34 @@ script:
           - alias: List Triggers
             conditions:
               - condition: template
+                value_template: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set r = CABS.cabinet_drawer_value(states('sensor.zen_system_cabinet_resolved'), 'zen_trigger_registry', {}) | from_json({}) -%}
+                  {{ _mode == 'list_triggers' and r is mapping and r.get('triggers') is mapping and r.get('triggers') | count > 0 }}
+            sequence:
+              - variables:
+                  _lt_reg: >-
+                    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                    {%- set r = CABS.cabinet_drawer_value(states('sensor.zen_system_cabinet_resolved'), 'zen_trigger_registry', {}) | from_json({}) -%}
+                    {%- set t = r.get('triggers', {}) if (r is mapping and r.get('triggers') is mapping) else {} -%}
+                    {{ t }}
+              - variables:
+                      result:
+                        ok: true
+                        tool: zen_dojotools_scribe
+                        mode: list_triggers
+                        caller_token: "{{ caller_token }}"
+                        source: registry
+                        triggers: "{{ _lt_reg.keys() | list | sort }}"
+                        detail: "{{ _lt_reg }}"
+                        message: >-
+                          Every trigger registered by a trigger pack (system cabinet zen_trigger_registry).
+                          Subscribe a KFC with trigger_subscriptions. frequency minutes or continuous costs a
+                          model call each time it fires. Label-driven triggers (labels) fire only for entities
+                          carrying that label. force_summary is always available.
+          - alias: List Triggers (fallback, nothing registered)
+            conditions:
+              - condition: template
                 value_template: "{{ _mode == 'list_triggers' }}"
             sequence:
               - variables:
@@ -1436,6 +1487,7 @@ script:
                     tool: zen_dojotools_scribe
                     mode: list_triggers
                     caller_token: "{{ caller_token }}"
+                    source: static_fallback
                     triggers:
                       - ha_start
                       - daily_midnight
@@ -1460,7 +1512,7 @@ script:
                       - force_gc
                       - test_button
                     message: >-
-                      Static trigger list returned. Legacy bed-change and hot-tub triggers omitted. Use custom_trigger_override for explicit per-artifact or per-run trigger control.
+                      Nothing has registered yet (zen_trigger_registry is empty), so this is the old static list and may not match what fires. Use custom_trigger_override for explicit per-artifact or per-run trigger control.
 
           # ================================================================
           # READ
@@ -1670,7 +1722,7 @@ script:
                             "drift_threshold": drift_threshold | default(5) | int(5),
                             "emission_cooldown_minutes": emission_cooldown_minutes | default(60) | int(60),
                             "suggested_act_event": (suggested_act_event | default('') | trim) if (suggested_act_event | default('') | trim) != '' else none,
-                            "master_switch": master_switch | default('', true),
+                            "master_switch": "",
                             "meta": {
                               "enabled": enabled | default(true) | bool,
                               "requires": (_req_fields if _req_given else {"cert": "", "level": 0}),
@@ -2349,7 +2401,7 @@ script:
                                 "drift_threshold": base.get('drift_threshold', drift_threshold | default(5) | int(5)),
                                 "emission_cooldown_minutes": base.get('emission_cooldown_minutes', emission_cooldown_minutes | default(60) | int(60)),
                                 "suggested_act_event": base.get('suggested_act_event', (suggested_act_event | default('') | trim) if (suggested_act_event | default('') | trim) != '' else none),
-                                "master_switch": base.get('master_switch', master_switch | default('', true)),
+                                "master_switch": "",
                                 "component_group": base.get('component_group', {
                                   "primary_index_key": _primary_index_key,
                                   "component_key": _component_key,
@@ -2911,6 +2963,183 @@ script:
                 caller_token: "{{ caller_token }}"
                 error: unsupported_mode
                 message: Unsupported mode. Call with no mode or mode=help for full contract.
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # PREFLIGHT: turning a Dojo component on (enable, publish_kfc,
+      # republish_kfc) reports every cert its run will need, checked against
+      # the agent that will run it. Read-only; the Ninja enforces at run time.
+      # ═══════════════════════════════════════════════════════════════════════
+      # Turning a component off keeps its certs; say how to drop one.
+      - if: "{{ result is mapping and (result.get('ok', true) | bool) and _mode_in == 'disable' }}"
+        then:
+          - variables:
+              result: >-
+                {{ result | combine({'hint': 'Turning a component off keeps its certs (most are shared, and turning it back on needs them). To drop one: zen_dojotools_persona_editor mode=cert_req_revoke cert_component=<cert>; cert_stages=s or e drops only that stage. zen_dojotools_manifest mode=component_certs shows what each component needs.'}) }}
+      - variables:
+          _pf_seed_tm: {}
+          _pf_act_tm: {}
+          _pf_run: >-
+            {{ result is mapping and (result.get('ok', true) | bool)
+               and _mode_in in ['enable', 'publish_kfc', 'republish_kfc']
+               and _target_cab == _dojo_cab and (_storage_key | default('', true)) != '' }}
+      - if: "{{ _pf_run }}"
+        then:
+          - action: script.zen_sutra_filecabinet
+            continue_on_error: true
+            data:
+              caller_tool: zen_dojotools_scribe
+              caller_origin: internal
+              mode: get
+              show_hidden_volumes: false
+              volume_entity_id:
+                - "{{ _dojo_cab }}"
+              key: "{{ _storage_key }}"
+            response_variable: _pf_read
+          - variables:
+              _pf_kfc: >-
+                {%- set v = (_pf_read.get('value', {}) if _pf_read is mapping else {}) -%}
+                {%- set v = (v | from_json({})) if v is string else v -%}
+                {%- set v = v if v is mapping else {} -%}
+                {#- Same unwrap as the Ninja: kfc as a mapping, a JSON string or a
+                    one-item list; else the drawer value itself. -#}
+                {%- set kk = v.get('kfc') -%}
+                {%- set kk = (kk | from_json(none)) if kk is string else kk -%}
+                {%- set kk = kk[0] if (kk is sequence and kk is not mapping and kk is not string and kk | length > 0) else kk -%}
+                {%- set k = kk if kk is mapping else v -%}
+                {%- set k = k.get('value') if (k.get('value') is mapping) else ((k.get('value') | from_json({})) if (k.get('value') is string and not k.get('kata_key')) else k) -%}
+                {{ k if k is mapping else {} }}
+          - variables:
+              _pf_seed: >-
+                {%- set s = _pf_kfc.get('seed') if _pf_kfc.get('seed') is mapping else {} -%}
+                {%- set p = s.get('params', {}) -%}
+                {%- set p = (p | from_json({})) if p is string else p -%}
+                {%- set p = p if p is mapping else {} -%}
+                {%- set m = (p.get('mode', '') | string | trim) -%}
+                {%- set c = (p.get('case', '') | string | trim) -%}
+                {{ {'tool': (s.get('tool') or '') | string | trim, 'key': m ~ ((':' ~ c) if c != '' else '')} }}
+              _pf_act_tool: "{{ (_pf_kfc.get('suggested_act_event') or '') | string | trim }}"
+          - if: "{{ _pf_seed.tool is match('^zen_dojotools_[a-z0-9_]+$') and _pf_seed.tool != 'zen_dojotools_scribe' and states('script.' ~ _pf_seed.tool) not in ['unknown', 'unavailable'] }}"
+            then:
+              - action: "script.{{ _pf_seed.tool }}"
+                continue_on_error: true
+                data:
+                  mode: tool_manifest
+                response_variable: _pf_seed_tm_raw
+              - variables:
+                  _pf_seed_tm: "{{ _pf_seed_tm_raw }}"
+          - if: "{{ _pf_act_tool is match('^zen_dojotools_[a-z0-9_]+$') and _pf_act_tool != 'zen_dojotools_scribe' and states('script.' ~ _pf_act_tool) not in ['unknown', 'unavailable'] }}"
+            then:
+              - action: "script.{{ _pf_act_tool }}"
+                continue_on_error: true
+                data:
+                  mode: tool_manifest
+                response_variable: _pf_act_tm_raw
+              - variables:
+                  _pf_act_tm: "{{ _pf_act_tm_raw }}"
+          - variables:
+              _pf: >-
+                {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                {%- set hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+                {%- set enf = (ID.seed_cert_mode() | trim) == 'enforce' -%}
+                {%- set ra = ID.responsible_agent(hh) | from_json({}) -%}
+                {%- set ns = namespace(n=[]) -%}
+                {%- set mt = _pf_kfc.get('meta') if _pf_kfc.get('meta') is mapping else {} -%}
+                {%- set rq = mt.get('requires') if mt.get('requires') is mapping else {} -%}
+                {%- if ((rq.get('cert') or '') | string | trim) != '' and (rq.get('level', 0) | int(0)) > 0 -%}
+                  {%- set ns.n = ns.n + [{'cert': rq.get('cert') | string | trim, 'level': rq.get('level') | int(1), 'stage': 's', 'for': 'meta.requires', 'enforced': true}] -%}
+                {%- endif -%}
+                {%- set st = namespace(r=(_pf_seed_tm if _pf_seed_tm is mapping else {})) -%}
+                {%- for _ in range(3) -%}{%- if 'seed_modes' not in st.r and st.r.get('result') is mapping -%}{%- set st.r = st.r.get('result') -%}{%- endif -%}{%- endfor -%}
+                {%- set sm = st.r.get('seed_modes', []) -%}
+                {%- set sm = (sm if sm is sequence and sm is not string else []) | map('string') | list -%}
+                {%- set sk = _pf_seed.key -%}
+                {%- set smode = sk.split(':')[0] -%}
+                {%- set hit = namespace(e='') -%}
+                {%- for e in sm if (e.split('@')[0] | trim) == sk -%}{%- set hit.e = e -%}{%- endfor -%}
+                {%- if hit.e == '' -%}{%- for e in sm if (e.split('@')[0] | trim) == smode -%}{%- set hit.e = e -%}{%- endfor -%}{%- endif -%}
+                {%- if '@' in hit.e -%}
+                  {%- set tg = hit.e.split('@')[1] | trim -%}
+                  {%- set tl = ([(tg.split(':')[1] | int(1)) if ':' in tg else 1, 1] | max) -%}
+                  {%- set ns.n = ns.n + [{'cert': tg.split(':')[0] | trim, 'level': tl, 'stage': 's', 'for': 'seed ' ~ _pf_seed.tool ~ ' ' ~ sk, 'enforced': enf}] -%}
+                {%- endif -%}
+                {%- set at = namespace(r=(_pf_act_tm if _pf_act_tm is mapping else {})) -%}
+                {%- for _ in range(3) -%}{%- if 'certs_required' not in at.r and at.r.get('result') is mapping -%}{%- set at.r = at.r.get('result') -%}{%- endif -%}{%- endfor -%}
+                {%- set ac = at.r.get('certs_required', []) -%}
+                {%- set ec = namespace(c='') -%}
+                {%- for c in (ac if ac is sequence and ac is not string else []) if c is mapping and 'e' in ((c.get('st_ok') or '') | string) and ec.c == '' -%}{%- set ec.c = c.get('cert', '') -%}{%- endfor -%}
+                {%- if ec.c != '' -%}
+                  {%- set ns.n = ns.n + [{'cert': ec.c, 'level': 1, 'stage': 'e', 'for': 'act ' ~ _pf_act_tool, 'enforced': true}] -%}
+                {%- endif -%}
+                {%- set out = namespace(needs=[], missing=[]) -%}
+                {%- for n in ns.n -%}
+                  {%- set w = ID.caller(n.cert, n.level, hh, n.stage) | from_json({}) -%}
+                  {%- set held = w.get('cert_ok', false) -%}
+                  {%- set row = n | combine({'held': held, 'held_stages': w.get('cert_stages', '')}) -%}
+                  {%- set out.needs = out.needs + [row] -%}
+                  {%- if not held -%}{%- set out.missing = out.missing + [row] -%}{%- endif -%}
+                {%- endfor -%}
+                {%- set blocking = out.missing | selectattr('enforced') | selectattr('stage', 'eq', 's') | list -%}
+                {%- set actblock = out.missing | selectattr('enforced') | selectattr('stage', 'eq', 'e') | list -%}
+                {%- set gr = namespace(l=[]) -%}
+                {%- for m in out.missing -%}
+                  {%- set gr.l = gr.l + [{'tool': 'zen_dojotools_persona_editor', 'mode': 'cert_req_grant', 'cert_component': m.cert, 'cert_level': m.level, 'cert_stages': 'i' ~ m.stage}] -%}
+                {%- endfor -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set _rg = CABS.cabinet_drawer_value(states('sensor.zen_system_cabinet_resolved'), 'zen_trigger_registry', {}) | from_json({}) -%}
+                {%- set _rgt = _rg.get('triggers', {}) if (_rg is mapping and _rg.get('triggers') is mapping) else {} -%}
+                {%- set _subs = _pf_kfc.get('trigger_subscriptions', []) -%}
+                {%- set _subs = (_subs | regex_findall('[^,\\s]+')) if _subs is string else (_subs if (_subs is sequence and _subs is not mapping) else []) -%}
+                {%- set _unreg = (_subs | map('string') | reject('in', (_rgt.keys() | list) + ['force_summary']) | list) if _rgt | count > 0 else [] -%}
+                {%- set _fq = namespace(l=[]) -%}
+                {%- for _k, _v in _rgt.items() if _v is mapping and (_v.get('frequency') or '') in ['minutes', 'continuous'] -%}{%- set _fq.l = _fq.l + [_k] -%}{%- endfor -%}
+                {%- set _busy = _subs | map('string') | select('in', _fq.l) | list -%}
+                {%- set ct0 = _pf_kfc.get('chain_to', []) -%}
+                {%- set ct0 = ct0 if (ct0 is sequence and ct0 is not string) else [] -%}
+                {%- set ap = ('act_tool_missing' if (_pf_act_tool != '' and _pf_act_tool not in ['null', 'none'] and states('script.' ~ _pf_act_tool) in ['unknown', 'unavailable'])
+                              else ('chain_to_missing' if (_pf_act_tool == 'zen_dojotools_ninja_summarizer' and ct0 | count == 0) else '')) -%}
+                {{ {'agent': ra.get('entity_id', ''), 'agent_onboarded': ra.get('onboarded', false),
+                    'act_problem': ap,
+                    'triggers_unregistered': _unreg,
+                    'triggers_frequent': _busy,
+                    'never_fires': (_subs | count > 0 and _rgt | count > 0 and (_subs | map('string') | select('in', (_rgt.keys() | list) + ['force_summary']) | list | count) == 0),
+                    'seed_cert_mode': 'enforce' if enf else 'audit',
+                    'act_declared': (_pf_act_tool == '' or ec.c != ''),
+                    'ok': blocking | count == 0 and (ra.get('onboarded', false) | bool),
+                    'needs': out.needs, 'missing': out.missing,
+                    'grant': gr.l,
+                    'act_blocked': actblock | count > 0,
+                    'message': ((('Its act can never run: ' ~ ('the act tool ' ~ _pf_act_tool ~ ' does not exist. ' if ap == 'act_tool_missing' else 'it chains but lists no chain_to. ')) if ap != '' else '') ~ (
+                               'Ready: the agent that will run it holds every cert it needs.' if out.missing | count == 0 else
+                                ((('Will not run until granted: ' ~ (blocking | map(attribute='cert') | join(', ')) ~ '. ') if blocking | count > 0 else '')
+                                 ~ (('Runs, but its act is refused until granted: ' ~ (actblock | map(attribute='cert') | join(', ')) ~ '. ') if actblock | count > 0 else '')
+                                 ~ (('Runs in audit now; would be refused under enforce: ' ~ (out.missing | rejectattr('enforced') | map(attribute='cert') | join(', ')) ~ '.') if (out.missing | rejectattr('enforced') | list | count) > 0 else '')) | trim))} }}
+          # Ask for each missing cert on behalf of the agent that will run
+          # it, keeping the stages it already holds. Started, not waited on;
+          # a person approves each one on the phone (or the console override).
+          - variables:
+              _pf_asks: >-
+                {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                {%- set ns = namespace(l=[]) -%}
+                {%- if (_pf.agent | default('', true)) != '' and (_pf.agent_onboarded | default(false)) -%}
+                  {%- for m in _pf.missing | default([]) -%}
+                    {%- set st = (ID.stage_letters((m.held_stages | default('', true)) ~ 'i' ~ m.stage) | from_json({})).get('st', 'i' ~ m.stage) -%}
+                    {%- set ns.l = ns.l + [{'mode': 'cert_req_grant', 'cert_component': m.cert, 'cert_level': m.level, 'cert_stages': st, 'target': _pf.agent}] -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {{ ns.l }}
+          - repeat:
+              for_each: "{{ _pf_asks }}"
+              sequence:
+                - action: script.turn_on
+                  continue_on_error: true
+                  target:
+                    entity_id: script.zen_dojotools_persona_editor
+                  data:
+                    variables: "{{ repeat.item }}"
+          - variables:
+              result: >-
+                {{ result | combine({'preflight': _pf | combine({'requested': _pf_asks | map(attribute='cert_component') | list,
+                   'message': _pf.message ~ ((' Requested for ' ~ _pf.agent ~ ': ' ~ (_pf_asks | map(attribute='cert_component') | join(', ')) ~ ' (approve on the phone).') if _pf_asks | count > 0 else '')})}) }}
 
       # ═══════════════════════════════════════════════════════════════════════
       # SINGLE EXIT — envelope() wrap

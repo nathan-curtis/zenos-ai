@@ -1,4 +1,4 @@
-# Zen DojoTools Summarizers — Ninja Summarizer v4.8.0 · SuperSummary v4.8.0
+# Zen DojoTools Summarizers — Ninja Summarizer v5.4.0 · SuperSummary v4.9.0
 
 *Ninja Summarizer + SuperSummary — the KF6 action pipeline — MCP-exposed*
 
@@ -307,6 +307,9 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 | Empty or malformed output | Check inference server logs for context length errors. Models under ~4B parameters are not reliable as summarization backends. |
 | Component not included in SuperSummary | Check `meta.enabled` in its Dojo drawer. Also verify `kata_key` is set and a matching drawer exists in Kata cabinet. |
 | Run stops with `seed_tool_not_authorized` | The seed tool doesn't declare that mode in its `tool_manifest` `seed_modes`. Declare it in the tool (the old seed whitelist only carries a tool that declares none, until 2026.12). |
+| Run stops with `seed_cert_required` | `seed_cert_mode` is enforce and the agent lacks the read cert for this seed (with stage `s`). Grant `zenos_agent_parity`, or the cert named in the message. In audit the run goes on and logs `seed_cert_audit`. |
+| `act_blocked`: `no_act_declared`, `act_args_invalid` | The act's tool declares no `act`, or the model returned args the declaration doesn't allow (`args_errors` lists them). A target outside `chain_to` is `act_args_invalid` too. |
+| `act_blocked`: `chain_loop`, `chain_depth` | A chained summary tried to start one already on its path, or the chain reached 3. |
 | Run stops with `kfc_cert_required` | The component's `meta.requires` isn't met: the agent doesn't hold the cert, holds it at a lower level, or holds it without stage `s`. The message says which. Grant it with `cert_stages` including `s`. |
 | Summaries paused / `agent_not_onboarded` | The household's prime agent (else the default agent) isn't onboarded. Onboard it through Flynn. |
 | SuperSummary `monk_failure` | The model call failed or came back empty; the last good summary is kept. Check `input_text.zenos_ai_task_entity` names a working AI task entity, and the inference server's logs. |
@@ -350,6 +353,7 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| Ninja v5.4.0 / SuperSummary v4.9.0 | Declared acts (`suggested_act_args`; `no_act_declared`, `act_args_invalid`) and chaining (`run`, `chain_to`, `zenos.pipeline.chain`; `chain_loop`, `chain_depth`). Read certs on seeds: a `seed_modes` entry tagged `@cert:level` needs that cert with stage `s` under `seed_cert_mode` enforce (`seed_cert_required`, kata stamped `seed_requires`, dropped from every prompt feed); audit logs `seed_cert_audit` and changes nothing. A refusal under enforce starts one `zenos_agent_parity` ask. See [the KF6 spec](../kung_fu/building_a_kfc.md#kf6-acts-chains-read-certs-and-triggers-2026110). |
 | SuperSummary v4.8.0 / Ninja v4.8.0 | KF6 component minimum level: `meta.requires` is enforced on the responsible agent with stage `s` (`kfc_cert_required`). A disabled or unmet component stays out of SuperSummary's feed and the `kata_tier` seed. |
 | Ninja v4.7.2 | The context cap measures the prompt in characters (it counted the prompt's keys, so it never tripped). A run over `max_context_tokens` stops with `ninja_context_overflow`. |
 | SuperSummary v4.7.1 / Ninja v4.7.1 | SuperSummary ends a failed model call with `monk_failure` and keeps the last good summary. `prompt_size_chars` counts characters on both. |

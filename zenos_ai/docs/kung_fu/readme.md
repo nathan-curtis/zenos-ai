@@ -79,7 +79,8 @@ Run with `mode=schema` to get the live `kfc_template` from the Dojo cabinet.
 | `emission_cooldown_minutes` | no | Minimum minutes between emissions for this component. Prevents notification spam on rapid-fire triggers. |
 | `drift_threshold` | no | Minimum urgency delta required to consider a kata change "significant" for emission gating. |
 | `suggested_act_event` | no | Slug of the action the AI should suggest in kata output (e.g. `zen_dojotools_notification_router`). `null` = no action. The act runs only if the household's agent holds the target tool's emit cert with stage `e`; otherwise the kata records `act_blocked`. |
-| `master_switch` | deprecated | Legacy `input_boolean` gate. Replaced by `meta.enabled`. Honored by the Scheduler if present but no longer written by the KFC writer. |
+| `chain_to` | no | Components this one may start through the Ninja's `run` act. A target outside the list is refused; the chain stops 3 deep and never loops. Needs `zenos.pipeline.chain` with stage `e`. |
+| `master_switch` | removed | Ignored and stored empty since 2026.11.0. On and off is `meta.enabled` (Scribe `enable` / `disable`). |
 
 ### Pipeline Tier Values
 
@@ -107,10 +108,13 @@ Omit `pipeline_tier` for standard components — `keeper` is the default.
 | `home_occupancy_change` | `zone.home` count changes |
 | `alarm_panel` | Alarm panel state change |
 | `force_summary` | Targeted force via zen_event |
+| `zen_leak` | A sensor labeled `zen_leak` detects water |
+| `zen_smoke` | A sensor labeled `zen_smoke` detects smoke, CO or gas |
+| `zen_door` | A door or window labeled `zen_door` opens or closes |
+| `zen_power` | A power sensor labeled `zen_power` stays below 1 W for 30 s |
+| `zen_appliance` | A power sensor labeled `zen_appliance` starts (above 10 W) or finishes (below 3 W for 2 minutes) |
 
-For custom triggers: create a user automation that fires a `zen_event` with your
-custom event kind, then add a 5-line `zen_event` trigger to the Scheduler stem.
-The Dojo loop picks up any subscriber registered to that trigger ID automatically.
+The live list is the registry: `zen_dojotools_scribe mode=list_triggers`. A subscription nobody registers never fires. The label triggers sit idle until an entity carries the label. For your own triggers, register a pack; see [Triggers](building_a_kfc.md#triggers).
 
 ---
 

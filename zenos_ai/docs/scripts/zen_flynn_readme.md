@@ -1,4 +1,6 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.3.4
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.4.0
+
+> **2026.11.0:** Flynn 5.4.0 adds the automation "Flynn: Admin plane guard": at start, hourly at :07, and on `zen_admin_plane_guard` (or a `zen_event` of kind `admin_plane_guard`) it unexposes the admin plane from Assist, Alexa and Google through Spook. Mode `all` (no drawer, the default) covers every `script.zen_admintools_*`; `listed` (a test server, set in the system cabinet's `admin_plane_guard` drawer) covers only its `entities`. `prompt_loader` and anything labeled `zen_never_expose` are always covered. OOBE 5.4.1: a first-time `complete` writes `seed_cert_mode` enforce, so a fresh install starts locked, and asks for whatever `zenos_agent_parity` is missing (stages `ise`). See [The admin plane](../getting_started/security_certification_manual.md#67-the-admin-plane).
 
 *ZenOS-AI's boot guard, initializer, and onboarding driver*
 

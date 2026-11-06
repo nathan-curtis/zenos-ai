@@ -1,4 +1,4 @@
-# Zen DojoTools Scribe — v5.8.0
+# Zen DojoTools Scribe — v5.13.0
 
 *Guided authoring and lifecycle management for KF6 artifacts — MCP-exposed*
 
@@ -326,6 +326,11 @@ Scribe is non-destructive by default:
 
 | Version | Change |
 |---------|--------|
+| v5.13.0 | `list_triggers` reads the trigger registry (`source: registry`, with each trigger's pack, `fires`, frequency and labels; the static list is only a fallback). The preflight adds `triggers_unregistered`, `triggers_frequent` and `never_fires`. An unregistered trigger never refuses a write. |
+| v5.12.0 | The preflight reports `act_problem`. |
+| v5.11.0 | `master_switch` is ignored and stored empty: on and off is `meta.enabled` only. `disable` keeps the component's certs and says how to revoke one. |
+| v5.10.0 | Turning a component on requests each missing cert for the agent that will run it (you approve each on your phone). Off and on again retries. |
+| v5.9.0 | Preflight on `enable`, `publish_kfc` and `republish_kfc`: every cert the run needs (`requires` and the seed's read cert at `s`, the act's emit cert and the chain cert at `e`), checked against the runner agent. `enable` and `disable` write again; they always answered `missing_required`. |
 | v5.8.0 | KF6: `requires_cert` and `requires_level` set `meta.requires` on `new_thought`, `patch`, `republish_kfc` and `publish_kfc`. One check covers every write that sets it, before any live ack; `republish_kfc` and a `patch` on a published KFC used to set it unchecked. |
 | v5.7.0 | KF6: `publish_kfc` checks `meta.requires` against the cert catalog (`kfc_requires_invalid`). The help and descriptions say KF6. |
 | v1.8.0 | `republish_kfc` mode — edit-and-republish path that bypasses the formal scroll gate; merges changes and runs full trim block including label sync. `component_size` feedback on `publish_kfc`/`republish_kfc` responses — reports component_instructions chars, token estimate (~chars/4), % of 16KB FileCabinet drawer limit, and size_tier (ok/advisory/warning/danger). `schedules_summary` field on read responses (count + kata_keys). Patch mode merges `schedules[]` by `kata_key` (upsert) instead of replacing the full array. `publish_kfc` preserves schedules array. `repair` mode — detect and flatten wrapper-accumulated drawer corruption up to 5 levels deep (dry_run default). |

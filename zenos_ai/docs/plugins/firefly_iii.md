@@ -1,6 +1,6 @@
 # ZenOS-AI Firefly III Finance Component
 
-**Version:** 2.6.1 (`zen_dojotools_finance`)  
+**Version:** 2.9.0 (`zen_dojotools_finance`)  
 **Package:** `packages/zenos_ai/plugins/firefly_iii/firefly_iii.yaml`  
 **Primary script:** `zen_dojotools_finance`  
 **Internal REST dispatcher:** `zen_root_firefly` (renamed from `zen_sutra_firefly` in 2.3.0)  
@@ -278,6 +278,7 @@ The YAML notes a planned n8n integration for bank feed → Firefly sync. n8n pus
 
 | Version | Change |
 |---------|--------|
+| v2.9.0 | 2026.11.0: the four seed cases (`run:budget_summary`, `run:bills_list`, `run:net_worth_snapshot`, `run:finance_rollup`) carry the read cert `zenos.finance.read` (level 1, stages `is`). Under `seed_cert_mode` enforce, the finance summaries need it with stage `s`. See [Read certs and parity](../getting_started/security_certification_manual.md#66-read-certs-and-parity). |
 | v2.6.1 | 2026.10.1: `transaction_add` refuses a named source or destination account that matches no Firefly account (`status: error`, `reason: guarded: ...`) before any preview or post. |
 | v2.6.0 | 2026.10.1: `transaction_add` previews unless `confirm=true` (`dry_run` always previews); `external_ref` makes a re-sent post refuse as a duplicate. `budget_summary` reads the `budget-limits` endpoint. |
 | v2.3.0 | Codex tier introduced: `zen_codex_finance_depreciation` (asset depreciation) and `zen_codex_finance_cogs` (COGS auto-posting), dispatched via new `index`/`inspect`/`bootstrap_codices`/`report`/`kfc_manifest` cases. New cases: `transaction_get`, `budget_summary`, `finance_rollup`, `category_create`. `account_create` sets `account_role: defaultAsset` on asset accounts. `transaction_link` is now confirm-gated. `bill_status`/`bills_list`/`spend_summary` guard against Firefly returning literal `None`/`none` strings. `transactions_search` supports tag-based queries. REST dispatcher renamed `zen_sutra_firefly` → `zen_root_firefly`. |

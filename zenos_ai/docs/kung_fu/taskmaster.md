@@ -1,6 +1,8 @@
 # Taskmaster — KFC Guide
 
-> **dojotools 0.8.2** | ZenOS-AI 2026.11.0 'This Is Spinal Tap'
+> **dojotools 0.9.0** | ZenOS-AI 2026.11.0 'This Is Spinal Tap'
+
+> **Meds have their own summary (0.9.0).** `briefing` takes `case`: `household` (everything but medications), `medications` (only medications), or none (everything, as before). The `taskmaster` summary seeds `household`, and the new `taskmaster_meds` summary seeds `medications`, which carries the read cert `zenos.health.read`. Bare `briefing` is no longer a seed mode. Under `seed_cert_mode` enforce, meds reach a background summary only while that cert is granted with stage `s`.
 
 Taskmaster is ZenOS-AI's cross-backend task orchestration layer: household chores, tickets, calendar, and medications, urgency-scored and surfaced through one briefing call. As of 2026.8.0 it's a full dojotools script (`zen_dojotools_taskmaster`) with real modes, self-registering via KF5 — not a label-driven Ninja Summarizer component like earlier KF4 versions. If you're looking for the old conductor-pattern / label-graph docs, that architecture no longer exists; this page describes the current tool.
 

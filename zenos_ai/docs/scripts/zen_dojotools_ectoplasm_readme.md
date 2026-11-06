@@ -1,4 +1,6 @@
-# Zen DojoTools Ectoplasm — v6.5.2
+# Zen DojoTools Ectoplasm — v6.6.0
+
+> **2026.11.0:** `entity_expose` (Assist; `zenos.registry.lifecycle_control` level 2) and `entity_unexpose` (Assist, Alexa and Google; level 1, it only tightens) wrap Spook's expose actions. Both preview without `confirm_action`. `entity_expose` always refuses the admin plane (any `script.zen_admintools_*`, `prompt_loader`, anything labeled `zen_never_expose`) before it reads a cert, and emits `ectoplasm_expose_refused`. See [The admin plane](../getting_started/security_certification_manual.md#67-the-admin-plane).
 
 *Spook/HA extended surface wrapper — repairs, areas, floors, entity lifecycle, labels, integrations*
 
