@@ -1,6 +1,16 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Security Manager
-# Version: 5.9.0
+# Version: 5.9.2
+# v5.9.2: zone.home going unknown or unavailable no longer reads as an
+#   empty house. The watcher ignores a change to unknown/unavailable, and
+#   auto-arm reads an unreadable count as -1, so it neither arms Away nor
+#   runs the arrival path (HALMark FG-43). The Night-Late and Away
+#   triggers ignore zen_home_mode coming back from unknown/unavailable, so
+#   a template reload no longer re-runs night arm or mode-away arm.
+# v5.9.1: auto_arm_check is refused from a user or agent session. Only
+#   the auto-arm automations (no user in context) may call it; a caller
+#   could name auto_arm_trigger lock_unlocked and disarm an armed_home
+#   panel without the disarm cert or live ack.
 # v5.9.0: security_perimeter, security_panel and security_cameras are cache
 #   slots (role: cache, no triggers): a trigger pack writes their kata keys
 #   and the security_manager rollup reads them (panel_cache, perimeter_cache,
@@ -905,7 +915,19 @@ script:
                     _aa_vac_override: "{{ _aa_cfg.get('vac_arm_override_enabled', false) | bool(false) }}"
                     _aa_vac_flag: "{{ _aa_cfg.get('vacuum_alarm_mode_active', false) | bool(false) }}"
                     _aa_trigger: "{{ _auto_arm_trigger | default('occupancy', true) | lower | trim }}"
+                    _aa_user: "{{ (context.user_id if context is defined else '') or '' }}"
                 - choose:
+                    # Internal only: the auto-arm automations call this with no
+                    # user in their context. A user or agent session (MCP,
+                    # conversation) could otherwise name any auto_arm_trigger,
+                    # e.g. lock_unlocked, and disarm without the disarm checks.
+                    - conditions: "{{ _aa_user != '' }}"
+                      sequence:
+                        - variables:
+                            result:
+                              status: error
+                              action: auto_arm_check
+                              reason: "guarded: auto_arm_check is internal; only the auto-arm automations call it. Use mode=arm or mode=disarm."
                     - conditions: "{{ not _aa_enabled }}"
                       sequence:
                         - variables:
@@ -925,7 +947,11 @@ script:
                           {%- endfor -%}
                           {{ ns.found }}
                         _aa_vac_ent: "{{ label_entities('autovac') | select('match', 'vacuum\\.') | list | first | default('') }}"
-                        _aa_home_count: "{{ states('zone.home') | int(0) }}"
+                        # zone.home that is unknown or unavailable reads -1, not 0:
+                        # a count nobody can read is never "the house is empty"
+                        # (arm) or "someone came home" (arrival). Every recheck
+                        # below reads it the same way.
+                        _aa_home_count: "{{ states('zone.home') | int(-1) }}"
                     - choose:
                         # -- vacuum docked: don't trust it -- Roborock ejects/washes the
                         # mop and re-docks mid-run before the real run continues, so an
@@ -943,7 +969,7 @@ script:
                                     minutes: "{{ _aa_cfg.get('vac_downgrade_dock_wait_min', 5) | int(5) }}"
                                 - variables:
                                     _aa_vac_state_recheck: "{{ states(_aa_vac_ent) if _aa_vac_ent != '' else '' }}"
-                                    _aa_home_recheck: "{{ states('zone.home') | int(0) }}"
+                                    _aa_home_recheck: "{{ states('zone.home') | int(-1) }}"
                                 - if: "{{ _aa_vac_state_recheck not in ['cleaning', 'returning'] }}"
                                   then:
                                     - if: "{{ _aa_home_recheck == 0 and _aa_panel_entity != '' }}"
@@ -1210,7 +1236,7 @@ script:
                                     - delay:
                                         minutes: 1
                                     - variables:
-                                        _aa_recheck1: "{{ states('zone.home') | int(0) }}"
+                                        _aa_recheck1: "{{ states('zone.home') | int(-1) }}"
                                     - if: "{{ _aa_recheck1 == 0 and _aa_panel_entity != '' }}"
                                       then:
                                         - action: script.zen_dojotools_postman
@@ -1233,7 +1259,7 @@ script:
                                         _aa_departure_cancelled: >-
                                           {{ _aa_departure_notify is defined and _aa_departure_notify is mapping
                                              and _aa_departure_notify.get('ack_action', '') == 'cancel' }}
-                                        _aa_recheck2: "{{ states('zone.home') | int(0) }}"
+                                        _aa_recheck2: "{{ states('zone.home') | int(-1) }}"
                                     - if: "{{ not _aa_departure_cancelled and _aa_recheck1 == 0 and _aa_recheck2 == 0 and _aa_panel_entity != '' }}"
                                       then:
                                         - action: script.zen_dojotools_postman
@@ -1255,7 +1281,7 @@ script:
                                             _aa_final_cancelled: >-
                                               {{ _aa_final_notify is defined and _aa_final_notify is mapping
                                                  and _aa_final_notify.get('ack_action', '') == 'cancel' }}
-                                            _aa_recheck3: "{{ states('zone.home') | int(0) }}"
+                                            _aa_recheck3: "{{ states('zone.home') | int(-1) }}"
                                         # LOCAL PRESENCE OVERRIDE: the whole
                                         # departure/arm cancellation path above
                                         # depends entirely on zone.home --
@@ -1912,6 +1938,9 @@ automation:
         not_from:
         - unknown
         - unavailable
+        not_to:
+        - unknown
+        - unavailable
         id: occupancy
       # target is REQUIRED by this trigger platform. Purpose-trigger
       # target supports label_id directly -- labeled to autovac, no
@@ -1930,10 +1959,18 @@ automation:
       - trigger: state
         entity_id: sensor.zen_home_mode
         to: "Night-Late"
+        # A template reload re-creates zen_home_mode (unavailable, then its
+        # state again); that is not entering Night-Late or Away.
+        not_from:
+        - unknown
+        - unavailable
         id: night_late
       - trigger: state
         entity_id: sensor.zen_home_mode
         to: "Away"
+        not_from:
+        - unknown
+        - unavailable
         id: mode_away
       # Purpose triggers for the alarm panel -- target supports label_id
       # directly (every alarm_control_panel entity sharing the alarm_panel

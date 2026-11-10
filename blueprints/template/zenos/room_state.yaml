@@ -1,8 +1,9 @@
 blueprint:
   name: "ZenOS Room Manager v3: Room State"
   description: >-
-    Resolves a room's state (emergency > manual override > asleep > engaged >
-    child-engaged > hold > occupied > vacant) purely from
+    Resolves a room's state (emergency > child paused > manual override >
+    asleep > hold > engaged > occupied (incl. any active child) > vacant;
+    hold is a superset of engaged, so it ranks higher) purely from
     label-intersection truthiness. NOTHING IS CREATED: every helper —
     timers, latch booleans, duration input_numbers — is entirely
     OPTIONAL and discovered by label, same as every signal class in this
@@ -213,9 +214,11 @@ blueprint:
         THIS room's state (e.g. master_bedroom would list
         sensor.master_bathroom_room_state here). CHILD LINK, DEFAULT ON
         (2026-08-06, ported from legacy's "parent = Hold whenever child
-        Occupied-or-higher" design): a child resolved to Engaged
-        promotes the parent to Engaged; a child in ANY OTHER state
-        except Vacant/Checking/Paused holds the parent at (at least)
+        Occupied-or-higher" design): a child in any real state except
+        Vacant/Paused (Engaged included; unknown/unavailable excluded,
+        #10662) holds the parent at Occupied, never higher (a busy
+        ensuite does not make the bedroom Engaged); Paused and
+        Emergency cascade as themselves. That holds the parent at
         Occupied — indefinitely, for as long as the child stays active,
         no timer needed. EXCEPT the parent's own DIRECT resolution
         already being Asleep wins outright — using the ensuite
@@ -456,7 +459,15 @@ variables:
   # room_topology entry -- same cabinet object room_control already lives
   # on, no new drawer, no helper entity of any kind. The timer.* entity
   # itself is untouched; only the class tag moved.
-  _room_timer_class: "{{ _room_topology.get(room, {}).get('room_timer_class', '') if _room_topology is mapping else '' }}"
+  # #10666: room_timer_class/<room> is its own key now (no whole-topology
+  # writes to race); the topology field is the fallback for a room whose
+  # class was last set before the move.
+  _room_timer_class_cab: >-
+    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+    {{ CABS.cabinet_drawer_value_mounted(_hh_cab, 'room_timer_class/' ~ room, none) if _hh_cab != '' else 'null' }}
+  _room_timer_class: >-
+    {%- set _pk = _room_timer_class_cab | from_json(_room_timer_class_cab) if _room_timer_class_cab is string else _room_timer_class_cab -%}
+    {{ _pk if _pk is string else (_room_topology.get(room, {}).get('room_timer_class', '') if _room_topology is mapping else '') }}
   _asleep_minutes_ent: "{{ (label_entities('asleep_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
   _nap_minutes_ent: "{{ (label_entities('nap_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
   _hold_ents: "{{ label_entities('hold') | intersect(_room_ents) | list }}"
@@ -828,9 +839,18 @@ variables:
   # it finds itself by that, not by a name (HA plans to drop friendly_name).
   # The name slug is only the first-render fallback, before that attribute
   # exists.
+  # #10659: a commissioned room finds itself from labels already in hand
+  # (its own room label + zen_room_state), so the hot path walks no
+  # states.sensor at all. The attribute scan below is only the fallback:
+  # first render (labels not synced yet) or more than one labeled sensor.
   _self_entity_id: >-
-    {%- set _mine = states.sensor | selectattr('attributes.room_state_room', 'defined') | selectattr('attributes.room_state_room', 'eq', room) | map(attribute='entity_id') | list -%}
-    {{- _mine | first if _mine | count > 0 else 'sensor.' ~ (friendly_name | slugify) -}}
+    {%- set _lab = label_entities('zen_room_state') | intersect(_room_ents) | select('match', 'sensor\.') | list -%}
+    {%- if _lab | count == 1 -%}
+      {{- _lab[0] -}}
+    {%- else -%}
+      {%- set _mine = states.sensor | selectattr('attributes.room_state_room', 'defined') | selectattr('attributes.room_state_room', 'eq', room) | map(attribute='entity_id') | list -%}
+      {{- _mine | first if _mine | count > 0 else 'sensor.' ~ (friendly_name | slugify) -}}
+    {%- endif -%}
   # Every state change carries context.id/parent_id/user_id, which
   # together tell you whether it came from a person/dashboard, an
   # automation, or a physical device. Only available at the exact render
@@ -921,9 +941,9 @@ variables:
   # working. Retag to 'presence_hold' when convenient; no rush.
   _presence_hold_ent: "{{ ((label_entities('presence_hold') + label_entities('presence')) | unique | list | intersect(_room_ents) | list | first) | default('', true) }}"
   _presence_hold_hi: "{{ _presence_hold_ent != '' and is_state(_presence_hold_ent, 'on') }}"
-  # CHILD LINK: a parent holds at the child's state (net effect: an
-  # engaged-or-higher child holds the parent indefinitely until it
-  # releases, for any state except Paused/Vacant). Default on — opt out per
+  # CHILD LINK: a child in any real state except Paused/Vacant holds the
+  # parent at Occupied, never higher, until it releases (see CASCADE-UP
+  # DESIGN below; Paused and Emergency cascade as themselves). Default on — opt out per
   # room by tagging ONE input_boolean 'child_link_disable' + this
   # room's label. No timer needed: this is naturally "indefinite until
   # released" because it re-evaluates the CHILD's own live state on
@@ -1004,9 +1024,11 @@ variables:
     {%- if not _child_link_disabled -%}
       {%- for c in child_rooms | default([], true) -%}
         {%- set _cs = states(c) -%}
-        {%- if _cs not in ['vacant', 'paused'] -%}
+        {#- #10662: unknown, unavailable or a missing child entity is not
+            occupancy; only a real non-vacant tier holds the parent. -#}
+        {%- if _cs not in ['vacant', 'paused', 'unknown', 'unavailable', 'none', ''] -%}
           {%- set ns.found = true -%}
-        {%- elif c in states and (as_timestamp(now()) - as_timestamp(states[c].last_changed)) < _bridge_s -%}
+        {%- elif states(c) not in ['unknown', 'unavailable'] and (as_timestamp(now()) - as_timestamp(states[c].last_changed, 0)) < _bridge_s -%}
           {%- set ns.found = true -%}
         {%- endif -%}
       {%- endfor -%}
@@ -1192,13 +1214,10 @@ action:
   # new value is written, so states.sensor still holds the OLD value at
   # this point.
   - variables:
-      _prev_state: >-
-        {%- set _mine = states.sensor | selectattr('attributes.room_state_room', 'defined') | selectattr('attributes.room_state_room', 'eq', room) | map(attribute='state') | list -%}
-        {%- if _mine | count == 0 -%}
-          {#- First render only: room_state_room is not written yet. -#}
-          {%- set _mine = states.sensor | selectattr('attributes.friendly_name', 'defined') | selectattr('attributes.friendly_name', 'eq', friendly_name) | map(attribute='state') | list -%}
-        {%- endif -%}
-        {{- (_mine | first) | default('', true) -}}
+      # #10659: reuse _self_entity_id (resolved once above) instead of a
+      # second and third states.sensor walk. A sensor that does not exist
+      # yet reads 'unknown', which the transition check below ignores.
+      _prev_state: "{{ states(_self_entity_id) }}"
   - if: "{{ _prev_state not in ['', 'unknown', 'unavailable'] and _prev_state != _resolved_state }}"
     then:
       # 2026-08-06 fix: raw event.fire isn't a registered service on this

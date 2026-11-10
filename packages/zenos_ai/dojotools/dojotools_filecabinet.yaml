@@ -1,7 +1,29 @@
 ###############################################################################
 # ZenOS-AI: FileCabinet DojoTool + FileCabinet Sutra
 # File: dojotools_filecabinet.yaml
-# Version: 6.36.3 -- the FileCabinet sutra takes a JSON list string for
+# Version: 6.37.1
+# v6.37.1: move and copy carry the drawer ACL, and copy carries meta
+#   (expiry etc.), for the drawer and every child. A copy or move never
+#   declassifies a drawer.
+# v6.37.0 also: weave and weave_preview check r on every source drawer and
+#   nested definition for the caller, the same check a get runs.
+#   Denied sources go to fc_acl_audit; with fc_acl_mode enforce their
+#   content is never read (acl_denied in errors).
+# v6.37.0: live drawers. One canonical tool name (tool, else action_type)
+#   for the whitelist and the dispatch; a drawer whose tool and action_type
+#   name two different scripts is refused. Stage l cert check: a
+#   gated mode (matched against the tool's short-form certs_required) needs
+#   its cert held with stage l by the responsible agent. seed_cert_mode
+#   decides: audit (default) logs zen_event live_cert_audit would_deny and
+#   runs; enforce refuses with live_cert_required. Manifest/help modes and
+#   a bare call skip the lookup.
+# v6.36.4 also: copy answers write_unverified (status error) when the
+#   destination never confirms, and then skips its labels and children;
+#   a cross-cabinet copy writes the children into the destination cabinet
+#   (they went to the source).
+# v6.36.4: a live drawer digest returns only the fields it names; each
+#   field held the whole response (the path walk was lost in its loop).
+# v6.36.3 -- the FileCabinet sutra takes a JSON list string for
 # v6.36.3: HA naming (2026.11): name outputs carry entity_name and device_name
 #   next to the legacy friendly_name (kept while HA still sets it), and
 #   composed names are built from those parts, so they survive HA dropping
@@ -21,7 +43,7 @@
 #   deeper path that expand_drawer refuses). The refusal now names a step
 #   that works.
 # 6.35.0 -- mode is the action field on the agent-facing wrapper too
-#   (#10259, option A); write_mode (merge|replace) says how a write lands,
+#   (#10259); write_mode (merge|replace) says how a write lands,
 #   on the wrapper and the engine. action_type and the legacy mode:
 #   merge|replace stay as aliases, so existing callers keep working (the
 #   caller sweep is future work). Every FileCabinet call in this file now
@@ -1615,7 +1637,14 @@ script:
                 {%- set _syscab_wl = (_wl_val.get('allowed_action_types', []) if _wl_val is mapping else []) -%}
                 {%- set _allowed = (_hard_wl + _syscab_wl) | unique | list -%}
                 {%- set _fa = _t0.get('fc_args') -%}
-                {%- set _act = (_fa.get('action_type') or _fa.get('tool', '')) if _fa is mapping else '' -%}
+                {#- One canonical name, the same one execution
+                    uses below (tool first, else action_type). A drawer whose
+                    tool and action_type name two different scripts is refused:
+                    it could pass the whitelist as one and run as the other. -#}
+                {%- set _fa_tool = ((_fa.get('tool') or '') | string | trim) if _fa is mapping else '' -%}
+                {%- set _fa_at = ((_fa.get('action_type') or '') | string | trim) if _fa is mapping else '' -%}
+                {%- set _fa_conflict = _fa_tool != '' and _fa_at != '' and _fa_tool != _fa_at -%}
+                {%- set _act = _fa_tool or _fa_at -%}
                 {%- set _call_mode = ((_fa.get('params') or {}).get('mode', '') if _fa is mapping else '') | lower | trim -%}
                 {%- set ns_wl = namespace(ok=false) -%}
                 {%- for entry in _allowed -%}
@@ -1625,8 +1654,9 @@ script:
                   {%- elif entry == _act -%}{%- set ns_wl.ok = true -%}
                   {%- endif -%}
                 {%- endfor -%}
+                {%- set ns_wl.ok = ns_wl.ok and not _fa_conflict -%}
                 {{- {'status': 'tool_call_required' if ns_wl.ok else 'tool_call_blocked',
-                     'reason': '' if ns_wl.ok else ('action_type not in fc_mount_callout_whitelist — blocked by: ' ~ ('system_cabinet_whitelist' if _wl_val is mapping and _wl_val.get('allowed_action_types') else 'hardcode_default') ~ ' (missing: ' ~ _act ~ ((':' ~ _call_mode) if _call_mode != '' else '') ~ ')'),
+                     'reason': '' if ns_wl.ok else ('fc_args names two different tools (tool=' ~ _fa_tool ~ ', action_type=' ~ _fa_at ~ '); use one' if _fa_conflict else 'action_type not in fc_mount_callout_whitelist — blocked by: ' ~ ('system_cabinet_whitelist' if _wl_val is mapping and _wl_val.get('allowed_action_types') else 'hardcode_default') ~ ' (missing: ' ~ _act ~ ((':' ~ _call_mode) if _call_mode != '' else '') ~ ')'),
                      'entry': _t0.get('entry'), 'fc_args': _fa if ns_wl.ok else none, 'depth': _t0.get('depth', 0),
                      'visited': _t0.get('visited', []), 'entity': _t0.get('vol', _vol), 'loop_at': ''} -}}
               {%- else -%}
@@ -1802,6 +1832,87 @@ script:
                           tool: "{{ _tc_tool }}"
                         trace:
                           caller_token: "{{ _caller_token }}"
+              # STAGE l (live drawer) CERT CHECK. The drawer's tool runs as the
+              # responsible agent (prime, else default), so a gated mode needs
+              # its cert held with stage l. Manifest/help modes and a bare call
+              # (help) are ungated and skip the lookup. Mode match uses the
+              # tool's short-form certs_required ({cert, level, modes}).
+              # seed_cert_mode decides: audit (default, missing drawer) logs
+              # live_cert_audit would_deny and still runs; enforce refuses.
+              - if: "{{ result is not defined }}"
+                then:
+                - variables:
+                    _tc_mode: "{{ ((_tc_params if _tc_params is mapping else {}).get('mode') or '') | string | lower | trim }}"
+                - if: "{{ _tc_mode not in ['', 'kfc_manifest', 'tool_manifest', 'help'] }}"
+                  then:
+                  - action: "script.{{ _tc_tool }}"
+                    data:
+                      mode: tool_manifest
+                    continue_on_error: true
+                    response_variable: _tc_tm
+                  - variables:
+                      _tc_req: >-
+                        {%- set ns = namespace(r=(_tc_tm if _tc_tm is mapping else {})) -%}
+                        {%- for _ in range(3) -%}
+                          {%- if 'certs_required' not in ns.r and ns.r.get('result') is mapping -%}{%- set ns.r = ns.r.get('result') -%}{%- endif -%}
+                        {%- endfor -%}
+                        {%- set _cr = ns.r.get('certs_required', []) -%}
+                        {%- set hit = namespace(r={}) -%}
+                        {%- for c in (_cr if _cr is sequence and _cr is not string else []) -%}
+                          {%- set _ms = c.get('modes') if (c is mapping and c.get('modes') is sequence and c.get('modes') is not string) else [] -%}
+                          {%- if hit.r | count == 0 and _tc_mode in (_ms | map('string') | map('lower') | list) -%}
+                            {%- set hit.r = {'cert': (c.get('cert') or '') | string, 'level': ([c.get('level') | int(1), 1] | max)} -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ hit.r }}
+                  - variables:
+                      _tc_who: >-
+                        {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                        {%- if _tc_req is mapping and _tc_req.get('cert', '') != '' -%}
+                          {{- ID.caller(_tc_req.cert, _tc_req.level, states('sensor.zen_default_household_cabinet_resolved'), 'l') | from_json -}}
+                        {%- else -%}{{- {'cert_ok': true} -}}{%- endif -%}
+                      _tc_enforce: >-
+                        {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                        {{ (ID.seed_cert_mode() | trim) == 'enforce' }}
+                  - if: "{{ not (_tc_who.cert_ok | default(false) | bool) }}"
+                    then:
+                    - event: zen_event
+                      event_data:
+                        event:
+                          kind: live_cert_audit
+                          component: filecabinet
+                          reason: "{{ 'denied' if _tc_enforce else 'would_deny' }}"
+                          tool: "{{ _tc_tool }}"
+                          mode: "{{ _tc_mode }}"
+                          cert: "{{ _tc_req.cert }}"
+                          level: "{{ _tc_req.level }}"
+                          stage: l
+                          drawer: "{{ _vol }}/{{ _key }}"
+                          severity: "{{ 'warn' if _tc_enforce else 'info' }}"
+                    - if: "{{ _tc_enforce }}"
+                      then:
+                      - action: script.zen_sutra_filecabinet
+                        data:
+                          mode: delete
+                          volume_entity_id: "{{ _vol }}"
+                          path: "{{ _tc_guard_key }}"
+                        continue_on_error: true
+                      - variables:
+                          result:
+                            status: error
+                            tool: zen_sutra_filecabinet
+                            action: get
+                            key: "{{ _key }}"
+                            volume: "{{ _vol }}"
+                            error: live_cert_required
+                            reason: "guarded: live drawer {{ _tc_tool }} mode={{ _tc_mode }} needs {{ _tc_req.cert }} (level {{ _tc_req.level }}) held with stage l by the agent the drawer runs as"
+                            mount_traversal:
+                              status: live_cert_required
+                              tool: "{{ _tc_tool }}"
+                              cert: "{{ _tc_req.cert }}"
+                              stage: l
+                            trace:
+                              caller_token: "{{ _caller_token }}"
               - if: "{{ result is not defined }}"
                 then:
                 - action: "script.{{ _tc_tool }}"
@@ -1834,9 +1945,9 @@ script:
                           {%- set ns = namespace(d={}) -%}
                           {%- for _f in _fields -%}
                             {%- set _parts = _f.split('.') -%}
-                            {%- set _v = _tc_unwrapped -%}
-                            {%- for _p in _parts -%}{%- set _v = (_v if _v is mapping else {}).get(_p) -%}{%- endfor -%}
-                            {%- set ns.d = ns.d | combine({_f: _v}) -%}
+                            {%- set _vn = namespace(v=_tc_unwrapped) -%}
+                            {%- for _p in _parts -%}{%- set _vn.v = (_vn.v if _vn.v is mapping else {}).get(_p) -%}{%- endfor -%}
+                            {%- set ns.d = ns.d | combine({_f: _vn.v}) -%}
                           {%- endfor -%}
                           {{ ns.d }}
                         {%- endif -%}
@@ -2812,6 +2923,8 @@ script:
                   key: "{{- _dest -}}"
                   value: "{{- _mov_val -}}"
                   meta: "{{ (_mov_raw.get('meta') if _mov_raw is mapping else none) or {} }}"
+                  # The drawer's own ACL moves with it.
+                  acl: "{{ (_mov_raw.get('acl') if (_mov_raw is mapping and _mov_raw.get('acl') is mapping and _mov_raw.get('acl') | count > 0) else '') }}"
                   volume_entity: "{{- _dest_vol if _dest_vol != '' else _vol -}}"
                   set_timestamp: true
               - wait_template: >-
@@ -2978,10 +3091,13 @@ script:
                     - variables:
                         _child_dest_mov: "{{ repeat.item | replace(_key ~ '/', _dest ~ '/', 1) }}"
                         _child_val_mov: "{{ ((state_attr(_vol, 'variables') or {}).get(repeat.item) or {}).get('value') }}"
+                        _child_raw_mov: "{{ (state_attr(_vol, 'variables') or {}).get(repeat.item) or {} }}"
                     - event: set_variable_legacy
                       event_data:
                         key: "{{ _child_dest_mov }}"
                         value: "{{ _child_val_mov }}"
+                        meta: "{{ (_child_raw_mov.get('meta') if _child_raw_mov is mapping else none) or {} }}"
+                        acl: "{{ (_child_raw_mov.get('acl') if (_child_raw_mov is mapping and _child_raw_mov.get('acl') is mapping and _child_raw_mov.get('acl') | count > 0) else '') }}"
                         volume_entity: "{{ _dest_vol if _dest_vol != '' else _vol }}"
                         set_timestamp: true
                     - wait_template: >-
@@ -3075,6 +3191,10 @@ script:
                 event_data:
                   key: "{{- _dest -}}"
                   value: "{{- _cpy_val -}}"
+                  # A copy keeps the source's meta
+                  # (expiry etc.) and its drawer ACL; a copy never declassifies.
+                  meta: "{{ (_cpy_raw.get('meta') if _cpy_raw is mapping else none) or {} }}"
+                  acl: "{{ (_cpy_raw.get('acl') if (_cpy_raw is mapping and _cpy_raw.get('acl') is mapping and _cpy_raw.get('acl') | count > 0) else '') }}"
                   volume_entity: "{{- _cpy_dest_vol -}}"
                   set_timestamp: true
               - wait_template: >-
@@ -3127,7 +3247,7 @@ script:
               - choose:
                 - conditions:
                   - condition: template
-                    value_template: "{{ _tags_for_index | length > 0 }}"
+                    value_template: "{{ _write_verified and _tags_for_index | length > 0 }}"
                   sequence:
                   - event: set_variable_legacy
                     event_data:
@@ -3143,7 +3263,7 @@ script:
                       {%- if _lbl not in _all -%}{%- set _ns.d = _ns.d + [_lbl] -%}{%- endif -%}
                     {%- endfor -%}
                     {{ _ns.d }}
-              - if: "{{ _create_label and _tags_dropped | length > 0 }}"
+              - if: "{{ _write_verified and _create_label and _tags_dropped | length > 0 }}"
                 then:
                   - repeat:
                       for_each: "{{ _tags_dropped }}"
@@ -3153,13 +3273,15 @@ script:
                             name: "{{ repeat.item }}"
               - variables:
                   result:
-                    status: success
+                    status: "{{ 'success' if _write_verified else 'error' }}"
                     tool: zen_sutra_filecabinet
                     action: copy
                     from_key: "{{ _key }}"
                     to_key: "{{ _dest }}"
                     volume: "{{ _vol }}"
                     write_verified: "{{ _write_verified }}"
+                    code: "{{ '' if _write_verified else 'write_unverified' }}"
+                    message: "{{ '' if _write_verified else 'The cabinet did not confirm the copy within 30s (full, blocked or not running); the destination may be unchanged, and its labels and children were not copied.' }}"
                     tags_dropped: "{{ [] if _create_label else _tags_dropped }}"
                     labels_created: "{{ _tags_dropped if _create_label else [] }}"
                     trace:
@@ -3176,16 +3298,19 @@ script:
                     {%- endfor -%}
                     {{ _ns.keys }}
               - repeat:
-                  for_each: "{{ _child_keys_cpy }}"
+                  for_each: "{{ _child_keys_cpy if _write_verified else [] }}"
                   sequence:
                   - variables:
                       _child_dest_cpy: "{{ repeat.item | replace(_key ~ '/', _dest ~ '/', 1) }}"
                       _child_val_cpy: "{{ ((state_attr(_vol, 'variables') or {}).get(repeat.item) or {}).get('value') }}"
+                      _child_raw_cpy: "{{ (state_attr(_vol, 'variables') or {}).get(repeat.item) or {} }}"
                   - event: set_variable_legacy
                     event_data:
                       key: "{{ _child_dest_cpy }}"
                       value: "{{ _child_val_cpy }}"
-                      volume_entity: "{{ _vol }}"
+                      meta: "{{ (_child_raw_cpy.get('meta') if _child_raw_cpy is mapping else none) or {} }}"
+                      acl: "{{ (_child_raw_cpy.get('acl') if (_child_raw_cpy is mapping and _child_raw_cpy.get('acl') is mapping and _child_raw_cpy.get('acl') | count > 0) else '') }}"
+                      volume_entity: "{{ _cpy_dest_vol }}"
                       set_timestamp: true
     - choose:
       - conditions:
@@ -6490,13 +6615,32 @@ script:
             - variables:
                 _w_compiled: >-
                   {%- set _def = _w_def -%}
+                  {#- Every source drawer weave reads needs r for the
+                      caller, the same check the ACL gate runs for a get. Denied
+                      sources are recorded (fc_acl_audit after the compile); with
+                      fc_acl_mode enforce their content is never read. -#}
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as WCABS -%}
+                  {%- import 'zenos_ai/zen_identity.jinja' as WID -%}
+                  {%- set _w_enf = (WCABS.acl_enforce_mode() | trim) == 'enforce' -%}
+                  {%- macro _wacl(cab, drw) -%}
+                    {%- set _acl = WCABS.acl_for(cab, drw) | from_json -%}
+                    {%- set _rule = _acl.ops['r'] -%}
+                    {%- set _cert = (_rule.get('cert') or '') | string | trim -%}
+                    {%- set _need = ('*' not in (_rule.get('who') or [])) or _cert != '' -%}
+                    {%- set _cname = _cert | regex_replace(':[0-9]+$', '') -%}
+                    {%- set _clvl = (_cert | regex_findall(':([0-9]+)$') | first | default('1')) | int(1) -%}
+                    {%- set _who = (WID.caller(_cname, _clvl) | from_json) if _need else {'guid': '', 'cert_ok': true} -%}
+                    {%- set _chk = WCABS.acl_check(_acl, 'r', {'guid': _who.guid, 'origin': _origin,
+                                                               'tool': '' if _origin == 'agent' else (caller_tool | default('', true) | string | trim)}) | from_json -%}
+                    {{- 'deny' if ((not _chk.who_ok) or (_chk.cert != '' and not _who.cert_ok)) else 'ok' -}}
+                  {%- endmacro -%}
                   {%- set _max_d = _w_max_depth | int -%}
                   {%- set _all_cabs = label_entities('Zen Cabinet') | select('match', 'sensor\\.') | list -%}
 
                   {#- Helper macro-substitute: resolve one leaf source dict → {key: data} or error dict #}
                   {#- Inline as a sub-loop below for each pass #}
 
-                  {%- set ns = namespace(compiled={}, queue=[], visited=[_w_drawer], errors=[]) -%}
+                  {%- set ns = namespace(compiled={}, queue=[], visited=[_w_drawer], errors=[], acl=[]) -%}
 
                   {#- PASS 0: leaves from root definition #}
                   {%- for src in (_def.get('sources', []) or []) -%}
@@ -6504,7 +6648,7 @@ script:
                       {%- set ns.queue = ns.queue + [{'src': src, 'parent_key': none}] -%}
                     {%- elif src.get('key') and src.get('cabinet') and src.get('drawer') -%}
                       {%- set _cv = state_attr(src['cabinet'], 'variables') | default({}, true) -%}
-                      {%- set _entry = (_cv or {}).get(src['drawer'].split('/') | map('lower') | map('slugify') | join('/'), {}) -%}
+                      {%- set _entry = (_cv or {}).get(src['drawer'].split('/') | map('lower') | map('slugify') | join('/'), {}) -%}{%- set _dk = src['drawer'].split('/') | map('lower') | map('slugify') | join('/') -%}{%- if (_wacl(src['cabinet'], _dk) | trim) == 'deny' -%}{%- set ns.acl = ns.acl + [{'cabinet': src['cabinet'], 'drawer': _dk}] -%}{%- if _w_enf -%}{%- set _entry = {} -%}{%- set ns.errors = ns.errors + [{'code': 'acl_denied', 'cabinet': src['cabinet'], 'drawer': _dk}] -%}{%- endif -%}{%- endif -%}
                       {%- set _raw = (_entry.get('value') if _entry is mapping else none) -%}
                       {%- set _raw = _raw.get('content', _raw) if (_raw is mapping and _raw.get('v') == 1) else _raw -%}
                       {%- set _raw = (_raw | from_json(none)) if (_raw is string and _raw | trim not in ['', 'null', 'None']) else _raw -%}
@@ -6541,7 +6685,7 @@ script:
                       {%- for _ce in _sub_cabs -%}
                         {%- if _sub_ns.sub_def is none -%}
                           {%- set _cv = state_attr(_ce, 'variables') | default({}, true) -%}
-                          {%- set _entry = (_cv or {}).get(_wname.split('/') | map('lower') | map('slugify') | join('/'), {}) -%}
+                          {%- set _entry = (_cv or {}).get(_wname.split('/') | map('lower') | map('slugify') | join('/'), {}) -%}{%- set _dk = _wname.split('/') | map('lower') | map('slugify') | join('/') -%}{%- if _entry and (_wacl(_ce, _dk) | trim) == 'deny' -%}{%- set ns.acl = ns.acl + [{'cabinet': _ce, 'drawer': _dk}] -%}{%- if _w_enf -%}{%- set _entry = {} -%}{%- endif -%}{%- endif -%}
                           {%- set _val = (_entry.get('value') if _entry is mapping else none) -%}
                           {%- set _val = _val.get('content', _val) if (_val is mapping and _val.get('v') == 1) else _val -%}
                           {%- set _val = (_val | from_json(none)) if (_val is string and _val | trim not in ['', 'null', 'None']) else _val -%}
@@ -6561,7 +6705,7 @@ script:
                             {%- set ns.queue = ns.queue + [{'src': _ss, 'parent_key': src['key']}] -%}
                           {%- elif _ss.get('key') and _ss.get('cabinet') and _ss.get('drawer') -%}
                             {%- set _cv2 = state_attr(_ss['cabinet'], 'variables') | default({}, true) -%}
-                            {%- set _entry2 = (_cv2 or {}).get(_ss['drawer'].split('/') | map('lower') | map('slugify') | join('/'), {}) -%}
+                            {%- set _entry2 = (_cv2 or {}).get(_ss['drawer'].split('/') | map('lower') | map('slugify') | join('/'), {}) -%}{%- set _dk = _ss['drawer'].split('/') | map('lower') | map('slugify') | join('/') -%}{%- if (_wacl(_ss['cabinet'], _dk) | trim) == 'deny' -%}{%- set ns.acl = ns.acl + [{'cabinet': _ss['cabinet'], 'drawer': _dk}] -%}{%- if _w_enf -%}{%- set _entry2 = {} -%}{%- set ns.errors = ns.errors + [{'code': 'acl_denied', 'cabinet': _ss['cabinet'], 'drawer': _dk}] -%}{%- endif -%}{%- endif -%}
                             {%- set _raw2 = (_entry2.get('value') if _entry2 is mapping else none) -%}
                             {%- set _raw2 = _raw2.get('content', _raw2) if (_raw2 is mapping and _raw2.get('v') == 1) else _raw2 -%}
                             {%- set _raw2 = (_raw2 | from_json(none)) if (_raw2 is string and _raw2 | trim not in ['', 'null', 'None']) else _raw2 -%}
@@ -6603,7 +6747,7 @@ script:
                       {%- for _ce in _sub_cabs2 -%}
                         {%- if _sub_ns2.sub_def is none -%}
                           {%- set _cv = state_attr(_ce, 'variables') | default({}, true) -%}
-                          {%- set _entry = (_cv or {}).get(_wname.split('/') | map('lower') | map('slugify') | join('/'), {}) -%}
+                          {%- set _entry = (_cv or {}).get(_wname.split('/') | map('lower') | map('slugify') | join('/'), {}) -%}{%- set _dk = _wname.split('/') | map('lower') | map('slugify') | join('/') -%}{%- if _entry and (_wacl(_ce, _dk) | trim) == 'deny' -%}{%- set ns.acl = ns.acl + [{'cabinet': _ce, 'drawer': _dk}] -%}{%- if _w_enf -%}{%- set _entry = {} -%}{%- endif -%}{%- endif -%}
                           {%- set _val = (_entry.get('value') if _entry is mapping else none) -%}
                           {%- set _val = _val.get('content', _val) if (_val is mapping and _val.get('v') == 1) else _val -%}
                           {%- set _val = (_val | from_json(none)) if (_val is string and _val | trim not in ['', 'null', 'None']) else _val -%}
@@ -6621,7 +6765,7 @@ script:
                             {%- set ns.errors = ns.errors + [{'code': 'depth_exceeded', 'weave': _ss['weave'], 'at_depth': 3, 'message': 'max_depth reached — increase weave_max_depth (max 3) or flatten this definition'}] -%}
                           {%- elif _ss.get('key') and _ss.get('cabinet') and _ss.get('drawer') -%}
                             {%- set _cv3 = state_attr(_ss['cabinet'], 'variables') | default({}, true) -%}
-                            {%- set _entry3 = (_cv3 or {}).get(_ss['drawer'].split('/') | map('lower') | map('slugify') | join('/'), {}) -%}
+                            {%- set _entry3 = (_cv3 or {}).get(_ss['drawer'].split('/') | map('lower') | map('slugify') | join('/'), {}) -%}{%- set _dk = _ss['drawer'].split('/') | map('lower') | map('slugify') | join('/') -%}{%- if (_wacl(_ss['cabinet'], _dk) | trim) == 'deny' -%}{%- set ns.acl = ns.acl + [{'cabinet': _ss['cabinet'], 'drawer': _dk}] -%}{%- if _w_enf -%}{%- set _entry3 = {} -%}{%- set ns.errors = ns.errors + [{'code': 'acl_denied', 'cabinet': _ss['cabinet'], 'drawer': _dk}] -%}{%- endif -%}{%- endif -%}
                             {%- set _raw3 = (_entry3.get('value') if _entry3 is mapping else none) -%}
                             {%- set _raw3 = _raw3.get('content', _raw3) if (_raw3 is mapping and _raw3.get('v') == 1) else _raw3 -%}
                             {%- set _raw3 = (_raw3 | from_json(none)) if (_raw3 is string and _raw3 | trim not in ['', 'null', 'None']) else _raw3 -%}
@@ -6651,8 +6795,28 @@ script:
                     {%- endif -%}
                   {%- endfor -%}
 
-                  {{ {'compiled': ns.compiled, 'errors': ns.errors} | tojson }}
+                  {{ {'compiled': ns.compiled, 'errors': ns.errors, 'acl': ns.acl} | tojson }}
 
+            # Denied weave sources are logged like any other ACL decision.
+            - variables:
+                _w_acl: >-
+                  {%- set _cr = _w_compiled if _w_compiled is mapping else (_w_compiled | from_json({})) -%}
+                  {{ _cr.get('acl', []) if _cr is mapping else [] }}
+            - if: "{{ _w_acl | count > 0 }}"
+              then:
+                - event: zen_event
+                  event_data:
+                    event:
+                      timestamp: "{{ now().isoformat() }}"
+                      component: zen_sutra_filecabinet
+                      severity: warning
+                      kind: fc_acl_audit
+                      summary: "{{ _action }} {{ _w_drawer }}: {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}{{ 'denied' if (CABS.acl_enforce_mode() | trim) == 'enforce' else 'would deny' }} r on {{ _w_acl | count }} source drawer(s)"
+                      metadata:
+                        action: "{{ _action }}"
+                        weave: "{{ _w_drawer }}"
+                        origin: "{{ _origin }}"
+                        denied_sources: "{{ _w_acl }}"
             # Size check + VirtualDrawer hint + final result
             - variables:
                 _w_result: >-

@@ -1,6 +1,16 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Calendar
-# Version: 5.4.0
+# Version: 5.4.1
+# v5.4.1: create and update make one write. A successful MS365 create no
+#   longer also runs the generic create, and a successful MS365 update no
+#   longer also deletes and recreates. The delete+recreate update runs
+#   only with both start and end given (otherwise default dates moved the
+#   event) and only after its delete succeeded or found nothing. The
+#   provided and all-day flags read the raw input, so a summary-only
+#   update keeps its dates and YYYY-MM-DD makes an all-day event. A date
+#   that does not parse is a guarded error before any write. An omitted
+#   end follows start (one day all-day, one hour timed), so a future
+#   event without an end is accepted.
 # v5.4.0: HA naming (2026.11): name outputs carry entity_name and device_name
 #   next to the legacy friendly_name (kept while HA still sets it), and
 #   composed names are built from those parts, so they survive HA dropping
@@ -107,21 +117,28 @@ script:
         calendar_entity_exists: '{{ calendar_entity_resolved in valid_calendar_entities
           }}'
         is_ms365_cal: '{{ calendar_entity_resolved in integration_entities(''ms365'') }}'
-        start: "{% set raw = start if (start is defined and start | string | trim != '') else now().replace(hour=0,\
-          \ minute=0, second=0) %} {% if raw is string %}\n  {% set dt = as_datetime(raw)\
-          \ if ('T' in raw or ':' in raw) else strptime(raw, \"%Y-%m-%d\") %}\n{% else %}\n  {% set\
-          \ dt = raw %}\n{% endif %} {{ dt | as_local | as_timestamp | timestamp_custom(\"\
-          %Y-%m-%dT%H:%M:%S%:z\", false) }}"
-        end: "{% set raw = end if (end is defined and end | string | trim != '') else (now().replace(hour=0, minute=0,\
-          \ second=0) + timedelta(days=1)) %} {% if raw is string %}\n  {% set dt\
-          \ = as_datetime(raw) if ('T' in raw or ':' in raw) else strptime(raw, \"%Y-%m-%d\") %}\n\
-          {% else %}\n  {% set dt = raw %}\n{% endif %} {{ dt | as_local | as_timestamp\
-          \ | timestamp_custom(\"%Y-%m-%dT%H:%M:%S%:z\", false) }}"
-        event_id: '{{ event_id | default('''') }}'
+        # Flags first, from the raw input: start and end are normalized below,
+        # after which every value looks provided and timed.
         start_provided: "{{ start is defined and start | string | trim not in ['', 'None', 'none'] }}"
         end_provided: "{{ end is defined and end | string | trim not in ['', 'None', 'none'] }}"
-        start_is_all_day: "{{ start is defined and start | string | trim not in ['', 'None', 'none'] and 'T' not in (start | string) }}"
-        end_is_all_day: "{{ end is defined and end | string | trim not in ['', 'None', 'none'] and 'T' not in (end | string) }}"
+        start_is_all_day: "{{ start is defined and start is string and start | trim not in ['', 'None', 'none'] and 'T' not in start and ':' not in start }}"
+        end_is_all_day: "{{ end is defined and end is string and end | trim not in ['', 'None', 'none'] and 'T' not in end and ':' not in end }}"
+        # A date that does not parse becomes 'invalid'; create and update refuse it.
+        start: >-
+          {%- set raw = start if (start is defined and start | string | trim not in ['', 'None', 'none']) else now().replace(hour=0, minute=0, second=0, microsecond=0) -%}
+          {%- if raw is string -%}
+            {%- set dt = as_datetime(raw | trim, none) if ('T' in raw or ':' in raw) else strptime(raw | trim, '%Y-%m-%d', none) -%}
+          {%- else -%}{%- set dt = raw -%}{%- endif -%}
+          {%- if dt is none -%}invalid{%- else -%}{{ dt | as_local | as_timestamp | timestamp_custom('%Y-%m-%dT%H:%M:%S%:z', false) }}{%- endif -%}
+        end: >-
+          {%- set _sdt = as_datetime(start, none) if start != 'invalid' else none -%}
+          {%- set _dflt = (_sdt + (timedelta(days=1) if start_is_all_day else timedelta(hours=1))) if _sdt is not none else (now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)) -%}
+          {%- set raw = end if (end is defined and end | string | trim not in ['', 'None', 'none']) else _dflt -%}
+          {%- if raw is string -%}
+            {%- set dt = as_datetime(raw | trim, none) if ('T' in raw or ':' in raw) else strptime(raw | trim, '%Y-%m-%d', none) -%}
+          {%- else -%}{%- set dt = raw -%}{%- endif -%}
+          {%- if dt is none -%}invalid{%- else -%}{{ dt | as_local | as_timestamp | timestamp_custom('%Y-%m-%dT%H:%M:%S%:z', false) }}{%- endif -%}
+        event_id: '{{ event_id | default('''') }}'
         _label_targets_raw: "{{ label_targets | default('', true) }}"
         label_targets: "{{\n  (\n    _label_targets_raw\n    if _label_targets_raw\
           \ is iterable and _label_targets_raw is not string\n    else _label_targets_raw.splitlines()\
@@ -237,6 +254,14 @@ script:
       - choose:
         - conditions:
           - condition: template
+            value_template: "{{ action_type in ['create', 'update'] and (start == 'invalid' or end == 'invalid') }}"
+          sequence:
+          - variables:
+              final_response: "{{ {'status': 'error', 'reason': 'guarded: start or end is not a date (use YYYY-MM-DD or an ISO 8601 date and time)', 'caller_token': caller_token | default('')} | tojson }}"
+          - set_conversation_response: '{{ final_response }}'
+          alias: invalid date error
+        - conditions:
+          - condition: template
             value_template: '{{ action_type in [''create'',''update'',''delete''] and
               target_is_multi }}'
           sequence:
@@ -287,7 +312,9 @@ script:
                 \ available calendar entities.\",\n      \"help\": \"Returns\
                 \ this help response.\"\n    },\n    \"defaults\": {\n      \"start\"\
                 : \"Defaults to today at 00:00 local time.\",\n      \"end\": \"Defaults\
-                \ to tomorrow at 00:00 local time.\",\n      \"timestamp_normalization\"\
+                \ to one day after an all-day (YYYY-MM-DD) start, one hour after a timed\
+                \ start, tomorrow 00:00 when start is omitted too. An update without a\
+                \ native provider update needs both start and end.\",\n      \"timestamp_normalization\"\
                 : \"Calendar providers return timestamps in varying formats (UTC or local\
                 \ offset). Normalize externally during UAT.\"\n    },\n    \"notes\"\
                 : [\n      \"Use '*' or blank for 'calendar_name' to list all calendars.\"\
@@ -439,8 +466,8 @@ script:
                     value_template: '{{ is_ms365_cal }}'
                   sequence:
                   - variables:
-                      ms365_create_data: "{% set is_all_day = not 'T' in start and not\
-                        \ 'T' in end %}\n{% set d = {'subject': summary | default('Untitled\
+                      ms365_create_data: "{% set is_all_day = start_is_all_day and (end_is_all_day\
+                        \ or not end_provided) %}\n{% set d = {'subject': summary | default('Untitled\
                         \ Event')} %}\n{% if is_all_day %}\n  {% set d = dict(d, start=start.split('T')[0],\
                         \ end=end.split('T')[0]) %}\n{% else %}\n  {% set d = dict(d,\
                         \ start=start, end=end) %}\n{% endif %}\n{% if description %}{%\
@@ -462,30 +489,31 @@ script:
                   - variables:
                       final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
                   - set_conversation_response: '{{ final_response }}'
-              - variables:
-                  create_data: "{% set is_all_day = not 'T' in start and not 'T' in\
-                    \ end %} {% set d = {\n  'summary': summary | default(\"Untitled Event\")\n\
-                    } %} {% if is_all_day %}\n  {% set d = dict(d,\n    start_date=start.split('T')[0],\n\
-                    \    end_date=end.split('T')[0]\n  ) %}\n{% else %}\n  {% set d = dict(d,\n\
-                    \    start_date_time=start,\n    end_date_time=end\n  ) %}\n{% endif\
-                    \ %} {% if description %}\n  {% set d = dict(d, description=description)\
-                    \ %}\n{% endif %} {% if location %}\n  {% set d = dict(d, location=location)\
-                    \ %}\n{% endif %} {% if attendees %}\n  {% set attendee_list = attendees.split(',')\
-                    \ | map('trim') | list %}\n  {% set d = dict(d, attendees=attendee_list)\
-                    \ %}\n{% endif %} {{ d }}"
-              - data: '{{ create_data }}'
-                target:
-                  entity_id: '{{ calendar_entity_resolved if calendar_entity_exists else label_target_entities[0] }}'
-                action: calendar.create_event
-              - variables:
-                  final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\"\
-                    : \"Created calendar event '\" ~ create_data.summary ~ \"' on calendar\
-                    \ '\" ~ (\n      (label_target_entities[0] if (label_target_entities\
-                    \ | length > 0) else calendar_entity_resolved)\n    ) ~ \"'.\",\n\
-                    \    \"event\": create_data\n  } | tojson\n}}"
-              - variables:
-                  final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
-              - set_conversation_response: '{{ final_response }}'
+                default:
+                  - variables:
+                      create_data: "{% set is_all_day = start_is_all_day and (end_is_all_day or not\
+                        \ end_provided) %} {% set d = {\n  'summary': summary | default(\"Untitled Event\")\n\
+                        } %} {% if is_all_day %}\n  {% set d = dict(d,\n    start_date=start.split('T')[0],\n\
+                        \    end_date=end.split('T')[0]\n  ) %}\n{% else %}\n  {% set d = dict(d,\n\
+                        \    start_date_time=start,\n    end_date_time=end\n  ) %}\n{% endif\
+                        \ %} {% if description %}\n  {% set d = dict(d, description=description)\
+                        \ %}\n{% endif %} {% if location %}\n  {% set d = dict(d, location=location)\
+                        \ %}\n{% endif %} {% if attendees %}\n  {% set attendee_list = attendees.split(',')\
+                        \ | map('trim') | list %}\n  {% set d = dict(d, attendees=attendee_list)\
+                        \ %}\n{% endif %} {{ d }}"
+                  - data: '{{ create_data }}'
+                    target:
+                      entity_id: '{{ calendar_entity_resolved if calendar_entity_exists else label_target_entities[0] }}'
+                    action: calendar.create_event
+                  - variables:
+                      final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\"\
+                        : \"Created calendar event '\" ~ create_data.summary ~ \"' on calendar\
+                        \ '\" ~ (\n      (label_target_entities[0] if (label_target_entities\
+                        \ | length > 0) else calendar_entity_resolved)\n    ) ~ \"'.\",\n\
+                        \    \"event\": create_data\n  } | tojson\n}}"
+                  - variables:
+                      final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+                  - set_conversation_response: '{{ final_response }}'
             - conditions:
               - condition: template
                 value_template: '{{ start >= end }}'
@@ -530,69 +558,79 @@ script:
                 action: ms365_calendar.modify_calendar_event
               - variables:
                   final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\"\
-                    : \"Updated MS365 event '\" ~ ms365_modify_data.subject ~ \"'.\"\
+                    : \"Updated MS365 event '\" ~ ms365_modify_data.get('subject', event_id) ~ \"'.\"\
                     ,\n    \"event\": ms365_modify_data\n  } | tojson\n}}"
               - variables:
                   final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
               - set_conversation_response: '{{ final_response }}'
-          - variables:
-              delete_data: "{{\n  {\n    'entity_id': (calendar_entity_resolved if calendar_entity_exists\
-                \ else label_target_entities[0]),\n    'summary': summary,\n    'event_id':\
-                \ event_id,\n    'start_date_time': start,\n    'end_date_time': end\n\
-                \  }\n}}\n"
-          - action: script.zen_dojotools_calendar
-            data:
-              action_type: delete
-              event_id: '{{ event_id }}'
-              calendar_name: '{{ calendar_entity_resolved }}'
-            response_variable: zen_delete_response
-          - variables:
-              zen_delete_response: "{{ zen_delete_response.get('result', zen_delete_response) if zen_delete_response is mapping else zen_delete_response }}"
-          - choose:
-            - conditions:
-              - condition: template
-                value_template: '{{ zen_delete_response.status == ''error'' }}'
-              sequence:
-              - variables:
-                  final_response: '{{ zen_delete_response }}'
-              - variables:
-                  final_response: "{{ final_response | combine({'caller_token': caller_token | default('')}) if final_response is mapping else final_response }}"
-            - conditions:
-              - condition: template
-                value_template: '{{ zen_delete_response.status == ''not_found'' }}'
-              sequence:
-              - variables:
-                  warn_msg: No existing event matched. Creating new event.
-            - conditions:
-              - condition: template
-                value_template: '{{ zen_delete_response.status == ''success'' }}'
-              sequence:
-              - variables:
-                  warn_msg: ''
-          - variables:
-              create_data: "{% set is_all_day = not 'T' in start and not 'T' in end\
-                \ %} {% set d = {\n  'summary': summary | default(\"Untitled Event\")\n\
-                } %} {% if is_all_day %}\n  {% set d = dict(d,\n    start_date=start.split('T')[0],\n\
-                \    end_date=end.split('T')[0]\n  ) %}\n{% else %}\n  {% set d = dict(d,\n\
-                \    start_date_time=start,\n    end_date_time=end\n  ) %}\n{% endif\
-                \ %} {% if description %}\n  {% set d = dict(d, description=description)\
-                \ %}\n{% endif %} {% if location %}\n  {% set d = dict(d, location=location)\
-                \ %}\n{% endif %} {% if attendees %}\n  {% set attendee_list = attendees.split(',')\
-                \ | map('trim') | list %}\n  {% set d = dict(d, attendees=attendee_list)\
-                \ %}\n{% endif %} {{ d }}"
-          - data: '{{ create_data }}'
-            target:
-              entity_id: '{{ calendar_entity_resolved if calendar_entity_exists else label_target_entities[0] }}'
-            action: calendar.create_event
-          - variables:
-              final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\"\
-                : \"Updated event via delete+create on calendar '\" ~ (\n      (label_target_entities[0]\
-                \ if (label_target_entities | length > 0) else calendar_entity_resolved)\n\
-                \    ) ~ \"'. \" ~ (warn_msg | default(\"\")),\n    \"event\": create_data\n\
-                \  } | tojson\n}}"
-          - variables:
-              final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
-          - set_conversation_response: '{{ final_response }}'
+            default:
+              - choose:
+                - conditions: "{{ not (start_provided and end_provided) }}"
+                  sequence:
+                  - variables:
+                      final_response: "{{ {'status': 'error', 'reason': 'guarded: this calendar has no native update; update deletes and recreates the event, so pass both start and end (its full times) or the event would move', 'caller_token': caller_token | default('')} | tojson }}"
+                  - set_conversation_response: '{{ final_response }}'
+                default:
+                  - variables:
+                      delete_data: "{{\n  {\n    'entity_id': (calendar_entity_resolved if calendar_entity_exists\
+                        \ else label_target_entities[0]),\n    'summary': summary,\n    'event_id':\
+                        \ event_id,\n    'start_date_time': start,\n    'end_date_time': end\n\
+                        \  }\n}}\n"
+                  - action: script.zen_dojotools_calendar
+                    data:
+                      action_type: delete
+                      event_id: '{{ event_id }}'
+                      calendar_name: '{{ calendar_entity_resolved }}'
+                    response_variable: zen_delete_response
+                  - variables:
+                      zen_delete_response: "{{ zen_delete_response.get('result', zen_delete_response) if zen_delete_response is mapping else zen_delete_response }}"
+                  - choose:
+                    - conditions:
+                      - condition: template
+                        value_template: '{{ zen_delete_response.status == ''error'' }}'
+                      sequence:
+                      - variables:
+                          final_response: '{{ zen_delete_response }}'
+                      - variables:
+                          final_response: "{{ final_response | combine({'caller_token': caller_token | default('')}) if final_response is mapping else final_response }}"
+                    - conditions:
+                      - condition: template
+                        value_template: '{{ zen_delete_response.status == ''not_found'' }}'
+                      sequence:
+                      - variables:
+                          warn_msg: No existing event matched. Creating new event.
+                    - conditions:
+                      - condition: template
+                        value_template: '{{ zen_delete_response.status == ''success'' }}'
+                      sequence:
+                      - variables:
+                          warn_msg: ''
+                  - if: "{{ zen_delete_response.status in ['success', 'not_found'] }}"
+                    then:
+                      - variables:
+                          create_data: "{% set is_all_day = start_is_all_day and (end_is_all_day or not end_provided)\
+                            \ %} {% set d = {\n  'summary': summary | default(\"Untitled Event\")\n\
+                            } %} {% if is_all_day %}\n  {% set d = dict(d,\n    start_date=start.split('T')[0],\n\
+                            \    end_date=end.split('T')[0]\n  ) %}\n{% else %}\n  {% set d = dict(d,\n\
+                            \    start_date_time=start,\n    end_date_time=end\n  ) %}\n{% endif\
+                            \ %} {% if description %}\n  {% set d = dict(d, description=description)\
+                            \ %}\n{% endif %} {% if location %}\n  {% set d = dict(d, location=location)\
+                            \ %}\n{% endif %} {% if attendees %}\n  {% set attendee_list = attendees.split(',')\
+                            \ | map('trim') | list %}\n  {% set d = dict(d, attendees=attendee_list)\
+                            \ %}\n{% endif %} {{ d }}"
+                      - data: '{{ create_data }}'
+                        target:
+                          entity_id: '{{ calendar_entity_resolved if calendar_entity_exists else label_target_entities[0] }}'
+                        action: calendar.create_event
+                      - variables:
+                          final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\"\
+                            : \"Updated event via delete+create on calendar '\" ~ (\n      (label_target_entities[0]\
+                            \ if (label_target_entities | length > 0) else calendar_entity_resolved)\n\
+                            \    ) ~ \"'. \" ~ (warn_msg | default(\"\")),\n    \"event\": create_data\n\
+                            \  } | tojson\n}}"
+                      - variables:
+                          final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) | tojson }}"
+                      - set_conversation_response: '{{ final_response }}'
           alias: update calendar event
         - conditions:
           - condition: template

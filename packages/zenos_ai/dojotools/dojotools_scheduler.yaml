@@ -1,6 +1,12 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Scheduler
-# Version: 5.3.0
+# Version: 5.3.1
+# v5.3.1: the trigger registry heals itself. The core pack also registers
+#   on the quarter-hour tick when the registry has no zenos_core entry: a
+#   fresh install registers at start before Flynn has built the system
+#   cabinet, and a cabinet reset empties it, and either one left the
+#   registry empty until the next restart. A registration that arrives
+#   while the system cabinet is not resolved is logged, not written.
 # v5.3.0: trigger registry (C). The system cabinet drawer zen_trigger_registry
 #   lists every trigger a KFC can subscribe to: {packs, triggers: {id: {pack,
 #   fires, frequency, labels, dispatch}}}. A pack registers by firing zen_event
@@ -348,16 +354,26 @@ automation:
         _run_start_ts: "{{ now().isoformat() }}"
 
     # ── Trigger registry (C) ─────────────────────────────────────────────────
-    # The core pack registers at start and after an automation reload. The
-    # list sits here, next to the triggers it describes.
-    - if: "{{ trigger.id in ['ha_start', 'trigger_registry_refresh'] }}"
+    # The core pack registers at start and after an automation reload, and
+    # on the quarter-hour tick whenever the registry has no zenos_core entry
+    # (fresh install, cabinet reset). The list sits here, next to the
+    # triggers it describes.
+    - if: >-
+        {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+        {%- if trigger.id in ['ha_start', 'trigger_registry_refresh'] -%}true
+        {%- elif trigger.id == 'quarter_hour' -%}
+          {%- set _sc = states('sensor.zen_system_cabinet_resolved') -%}
+          {%- set r = CABS.cabinet_drawer_value(_sc, 'zen_trigger_registry', {}) | from_json({}) if _sc.startswith('sensor.') else {} -%}
+          {%- set packs = r.get('packs', {}) if r is mapping and r.get('packs') is mapping else {} -%}
+          {{- _sc.startswith('sensor.') and 'zenos_core' not in packs -}}
+        {%- else -%}false{%- endif -%}
       then:
         - event: zen_event
           event_data:
             event:
               kind: trigger_pack_register
               pack: zenos_core
-              version: "5.3.0"
+              version: "5.3.1"
               triggers:
                 daily_midnight: {fires: "every day at 00:01", frequency: daily}
                 daily_noon: {fires: "every day at 12:00", frequency: daily}
@@ -394,12 +410,13 @@ automation:
         - variables:
             _tr_ev: "{{ trigger.event.data.get('event', {}) if trigger.event.data is mapping else {} }}"
             _tr_from_automation: "{{ (trigger.event.context.user_id | default(none)) is none }}"
+            _tr_cab: "{{ states('sensor.zen_system_cabinet_resolved') }}"
         - variables:
             _tr_pack: "{{ (_tr_ev.get('pack') or '') | string | slugify }}"
             _tr_new: >-
               {%- set t = _tr_ev.get('triggers', {}) -%}
               {{ t if t is mapping else {} }}
-        - if: "{{ _tr_from_automation and _tr_pack != '' and _tr_new | count > 0 }}"
+        - if: "{{ _tr_from_automation and _tr_pack != '' and _tr_new | count > 0 and _tr_cab.startswith('sensor.') }}"
           then:
             - variables:
                 _tr_reg: >-
@@ -440,7 +457,9 @@ automation:
                 logger: zen_dojotools_scheduler
                 message: >-
                   Trigger registry: ignored a registration (pack '{{ _tr_pack }}',
-                  {{ _tr_new | count }} triggers): {{ 'not from automation context' if not _tr_from_automation else 'no pack name or no triggers' }}.
+                  {{ _tr_new | count }} triggers): {{ 'not from automation context' if not _tr_from_automation
+                  else ('the system cabinet is not resolved yet; the quarter-hour tick retries' if not _tr_cab.startswith('sensor.')
+                  else 'no pack name or no triggers') }}.
         - stop: trigger_pack_registered
 
     # Stuck-run guard: a model backend that stops answering mid-call leaves
