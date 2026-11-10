@@ -10,15 +10,17 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention. Each new month starts at `.0`. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
 
-**2026.11.0 'This Is Spinal Tap' — In development (beta), ETA Saturday, November 14, 2026**
+**2026.11.0 'This Is Spinal Tap' — Release candidate 3, ETA Saturday, November 14, 2026**
 
-It goes to 11. The intended scope is FileCabinet: its full cadillac pass (single exit, the canonical response envelope) and its cert-gate, built on a dedicated security-class design. FileCabinet is the one tool everything else depends on at boot, so this gets the whole month, done carefully enough that it doesn't break running installs.
+Security goes to eleven: the backstage pass on every agent-facing tool, locks on the cabinets (ACL v2, enforced on a fresh install), certs renamed and readable, consent for background work (KF6), and Home Assistant's naming model.
 
-Display Surface stays beta here and finishes in 2026.12.0, which adds the YAML-mode dashboard for its shared display view.
+Display Surface stays beta here and finishes in 2026.12.0.
+
+See: [Release Notes — This Is Spinal Tap](releases/spinal_tap.md)
 
 ---
 
-**2026.10.0 'Tron' — Shipped, current Stable**
+**2026.10.0 'Tron' (incl. 2026.10.1 and the 2026.10.2 security patch) — Shipped, current Stable**
 
 Shore up the Grid: admission certification, the administrative plane, a platform-wide cert-gate audit, and the cadillac pass (one exit, one envelope) across the rest of the platform. FileCabinet's own cert-gate moves to Spinal Tap.
 
@@ -26,7 +28,7 @@ See: [Release Notes — Tron](releases/tron.md)
 
 ---
 
-**2026.9.0 'Steel Magnolia' (incl. 2026.9.1 patch) — Shipped, previous Stable**
+**2026.9.0 'Steel Magnolia' (incl. 2026.9.1 patch) — Shipped, legacy line**
 
 Room Manager v3's state cascade and REFLEX (autonomous scene-firing on state change) reach their fullest form, plus the hospitality lifecycle (guest arrival through checkout) and cert-gated permission tightening across the board.
 

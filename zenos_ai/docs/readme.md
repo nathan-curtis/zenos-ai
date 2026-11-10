@@ -1,76 +1,29 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) | Previous: 2026.8.1 'Chef' | **Last Updated:** Sep 2026 | **License:** MIT
+> **Release candidate 3:** 2026.11.0 'This Is Spinal Tap' | **Current stable:** 2026.10.2 'Tron' | **Legacy line:** 2026.9.1 'Steel Magnolia' and 2026.8.1 'Chef' | **License:** MIT
 >
-> *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.7.0` is the July release 'Neo'. A new month resets to `.0`.*
->
-> **2026.8.1 is the last release that doesn't require Steel Magnolia's identity-gate/cert-scope security architecture.** Anything built past this point that needs those safeguards to run safely won't be backported to that legacy line on principle. See [Chef's release notes](releases/chef.md#202681--the-last-release-before-identity-gates) for the full reasoning.
+> *Public releases follow Home Assistant's `YYYY.M.patch` convention: `2026.11.0` is the November release. A new month resets to `.0`.*
 
-→ [Project Overview & Install](../../README.md)
+→ [Project Overview](../../README.md) · [2026 in Review](../../README.md#2026-in-review) · [Install Guide](getting_started/install.md)
 
 → [The Book of Friday, Volume 2](architecture/00_preface.md): how ZenOS is built, and why ([contents](architecture/00_toc.md))
 
 ---
 
-> ### 2026.9.1 'Steel Magnolia' — Previous Stable
->
-> Bugfix-only patch backported from 2026.10.0 'Tron' — see the [2026.9.1 patch notes](releases/steel_magnolia.md#202691--patch) for the full fix list. No new features, no schema changes.
->
-> ### 2026.9.0 'Steel Magnolia'
->
-> Room Manager v3's live state engine and REFLEX (autonomous scene-firing) reach their fullest form yet, plus the hospitality lifecycle (guest arrival/checkout) and cert-gated permission tightening. See root **[README](../../README.md)** (the "What's in Steel Magnolia" section near the top) and the **[Room Manager v3 & REFLEX operator's manual](getting_started/room_manager_operators_manual.md)** for the full picture — this hub's own body below this banner had drifted behind the top-line version; treat the root README and the getting_started docs as the current source of truth for anything not yet reflected here.
->
-> → [Full Release Notes — Steel Magnolia](releases/steel_magnolia.md)
+## Releases
 
----
-
-> ### 2026.10.0 'Tron' — Current Stable
->
-> Branch `feat/2026.10.0`. **Breaking:** Room Manager room state is opt-in and off means off; rooms hold still until you opt in with `room_manager mode=roomstate_enable` (see [the relnote](releases/tron.md#breaking-room-state-is-opt-in)). Also breaking: `sensor.zen_priority_context` is removed (see [the relnote](releases/tron.md#breaking-sensorzen_priority_context-is-gone)). Admission certification, phase 1 (the `zenos.agent.basic` badge, requested at onboarding; enforcement follows in 2026.11.0), an administrative certification plane above normal participation (in planning), a platform-wide cert-gate audit closing a dozen real authorization gaps (including a shared PII-disclosure cert on mail/Teams/task/todo/calendar writes), real dependency declarations rolled out system-wide, Room Manager/Media/Lighting/Display convergence on one shared vocabulary, and Display Surface as a beta (finishes in 2026.12.0). ZenZork 2.0 (Prologue + Episodes; Episode 1 "DEAD AIR" is released).
->
-> New in this release: [The Book of Friday, Volume 2](architecture/00_preface.md), the architecture record rewritten from the ground up.
->
-> → [Release Notes — Tron](releases/tron.md)
-
----
-
-> ### 2026.8.1 'Chef'
->
-> Taskmaster, the SP1 identity gate, Portainer container control, Kitchen's fulfillment/costing layer, Twenty CRM, Room Manager's guest/occupant-prefs lookup, full Reset Test hardening pass.
->
-> → [Full Release Notes — Chef](releases/chef.md)
-
----
-
-> ### 2026.7.1 — Patch
->
-> **1. KF5 — Self-Registering Tools.** Tools declare their own KFC dojo-drawer contract via `mode=kfc_manifest`; `zen_dojotools_manifest mode=bootstrap_kfc` discovers and mounts them automatically. 5 dojotools files adopted it (Room Manager, AlertManager, Camera, Security Manager, SystemTools).
->
-> **2. Firefly III — Codex Tier.** `zen_dojotools_finance` v2.3.0 gains sibling codex modules: `zen_codex_finance_depreciation` (asset depreciation) and `zen_codex_finance_cogs` (COGS auto-posting from Grocy).
->
-> **3. Grocy v5.3.1.** `stock_entry_update` fix (was silently sending empty PUT payloads on entry-id-only calls). Perishable Storage Coaching, COGS Coaching, battery-stock tracking, tax/depreciable-asset userfields.
->
-> **4. Battery Notes — new Lens Bus provider.** `zen_stack_battery` v1.2.1, HALMark PASS — first stack provider sourced from a HACS integration (`ha-battery-notes`) rather than a self-hosted backend.
->
-> **5. Postman `direct_dispatch`.** Authority-stack bypass mode, migration path for the retired `zen_dojotools_notification_router`.
->
-> → [Full Patch Notes — 2026.7.1](releases/neo.md#202671-patch)
-
----
-
-> ### 2026.7.0 'Neo' — Released 2026-06-27
->
-> **1. CabCeption — FileCabinet v6.2.0.** Nested drawer trees via `/` path separator. VirtualDrawer (softlink), LiveDrawer (KF4 schema absorbed into a drawer — fires a tool call on read, warm/cold cache, never empty). Every drawer is a node with meta, labels, and children.
->
-> **2. Cortex 43 — Rule Zero.** DojoTools supersede all HA built-ins. Not preference — authority. Domain routing table in directives. Successor to v42 'The Answer'.
->
-> **3. Tool Manifest + Lens Bus.** `zenos_manifest.jinja` + `MF.tool_manifest()`. Manifest broker v6.0.0 discovers tools by namespace. Library v5.5.0 `stack=` routing. `zen_stack_radar` v1.0.0 wires Zammad as a Lens provider.
->
-> **4. ZenZork v1.6.0.** Text adventure engine on live RM topology. Narrator styles (zork/dungeon/straight). DUNGEONMIND — "Primal AI, IBM AT 5170, binding active since 1984." Item commands (take/drop/inventory/put/push/pull/open/close/use). Navigation additions (face/turn, again/g). Character sheet in AI user cabinet. Landmark survey wizard. `game_mode`, `harassment_freq`, `difficulty` session fields. Post-game RM quality report on stop. Quest system. Portal disambiguation.
->
-> **5. Media Manager v6.0.0 (NyxMau5) — Lens provider surface.** `stacks_by_anchor` maps anchors (label/person/area/mood/activity) to ranked evidence leaves with `playback_hint`. `now_playing` mode feeds Room Manager `+media` context slice with full playback fidelity (provider, search_metadata, lyrics_hint). `media_source_prefs` — preferred sources float, excluded sources stripped — applied on every Lens call automatically. `discovered_sources` returned on every search. Set once, use many: discover sources with `health`, save prefs in Profile Editor, done. Area anchors inject `room_context` only — semantic anchors drive the query. `zen_stack_media` proxy. Profile Editor v5.3.0 adds `media_prefs` to all three profile targets.
->
-> → [Full Release Notes — Neo](releases/neo.md) | [ZenZork](scripts/zen_dojotools_zenzork_readme.md)
+| Release | Notes |
+|---|---|
+| 2026.11.0 'This Is Spinal Tap' | [Release notes](releases/spinal_tap.md) · [Read this before upgrading](releases/spinal_tap.md#read-this-before-upgrading) |
+| 2026.10 'Tron' (10.0, 10.1, 10.2) | [Release notes](releases/tron.md) |
+| 2026.9 'Steel Magnolia' (9.0, 9.1) | [Release notes](releases/steel_magnolia.md) |
+| 2026.8 'Chef' (8.0, 8.1) | [Release notes](releases/chef.md). 2026.8.1 is the last line without Steel Magnolia's identity gates; [why](releases/chef.md#202681--the-last-release-before-identity-gates). |
+| 2026.7 'Neo' (7.0, 7.1) | [Release notes](releases/neo.md) |
+| 2026.6.0 'Clue' | [Release notes](releases/clue.md) |
+| 2026.5.0 "Fry's Grandpa" | [Release notes](releases/frys_grandpa.md) |
+| 2026.4 'Ectoplasm' (4.0 to 4.3) | [4.0](releases/ectoplasm.md) · [4.1](releases/action_jackson.md) · [4.2](releases/action_jackson_2.md) · [4.3](releases/lights_camera_action.md) |
+| 2026.3 'Ready Player Two' (3.0, 3.1) | [3.0](releases/ready_player_two.md) · [3.1](releases/patch_4_5_6.md) |
+| Meridian | [Release notes](releases/meridian.md) |
 
 ---
 
