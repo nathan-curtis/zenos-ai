@@ -415,6 +415,7 @@ Flynn rebuilds the install as a fresh one, schemas, templates and the FileCabine
 |---|---|
 | Not sure what's wrong | `script.zen_dojotools_systemtools tool: zen_health_report` |
 | Your AI won't wake up | `sensor.zen_agent_health` → `roster` attr |
+| Boot is all green, but the agent never answers | Flynn checks that the conversation agent entity exists and isn't unavailable; it doesn't send the model a test prompt. A misconfigured or offline model passes boot and fails on the first conversation. Check the agent in Settings → Voice assistants and your inference server's log. |
 | `zen_agent_health` not `ok` on fresh install | Read its `reason` attribute. The summarizers do not affect this sensor. `error` usually means the conversation agent helper is unset or unavailable, or the default AI cabinet is not assigned yet; `warn` means a label problem (see `zen_label_health`). |
 | `monastery: disabled` on fresh install | Kill switches ship off. Enable in Settings → Helpers: `zen_summarizers_enabled` (master), `zen_ninja_summarizer_enabled`, `zen_supersummarizer_enabled`. |
 | Summaries stopped | Run `script.zen_dojotools_systemtools tool: pipeline`, then check kill switches |

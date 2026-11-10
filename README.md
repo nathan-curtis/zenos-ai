@@ -2,13 +2,9 @@
 
 ### A Modular, Context-Aware AI Home Automation Framework for Home Assistant
 
-ZenOS-AI blends structure, personality, and unapologetic over-engineering into a living system that powers your home with **Friday, Kronk, Veronica, Rosie, the High Priestess, Cait, and Nyx** — a coordinated AI pantheon that takes its jobs seriously (even if it doesn't always take itself seriously).
+ZenOS-AI blends structure, personality, and unapologetic over-engineering into a living system that powers your home with **Friday, Kronk, Veronica, Rosie, the High Priestess, Cayt, and Nyx**: a coordinated AI pantheon that takes its jobs seriously (even if it doesn't always take itself seriously).
 
 Welcome to the **Home Monastery**.
-
-Let's automate everything that isn't nailed down.
-
-And a few things that are.
 
 **Release Candidate 3: 2026.11.0 'This Is Spinal Tap'** (`feat/2026.11.0`, ETA Saturday, November 14, 2026) | Current Stable: 2026.10.2 'Tron' (security patch on 2026.10.0) | Legacy line: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) and 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/spinal_tap.md).
 
@@ -18,425 +14,101 @@ And a few things that are.
 
 > Found a bug? Report it in the **[Friday's Party community thread](https://community.home-assistant.io/t/fridays-party-creating-a-private-agentic-ai-using-voice-assistant-tools/855862/)** or open a **[GitHub issue](../../issues)**. Include your HA version, the relevant tool name, and what you expected vs. what happened.
 
-> **Upgrading from an earlier release?** Confirm your Home Assistant Companion App can receive a push notification *before* you restart into 2026.9.0 or later. Every certification grant (locks, alarm, covers, infra, room overrides) now requires a real push to a real device, every time, no fallback — and an in-place upgrade won't prompt you the way a fresh install does. See [Install Step 3.5](zenos_ai/docs/getting_started/install.md#step-35--set-up-your-mobile-notification-path) if you're not already set up, or [First Alert Step 7](zenos_ai/docs/getting_started/first_alert.md#step-7--connect-a-real-device-required-before-certifications-work) to confirm you are (safe to re-run either way). In 2026.11.0, that push is also how you approve your agent: until you do, it gets help and onboarding only.
-
-**What's in 2026.11.0 'This Is Spinal Tap':** *Security goes to eleven.*
-
-Tron put a badge in every agent's hands. Spinal Tap puts locks on the cabinets behind it. FileCabinet holds identity, configuration, certs and the material that becomes agent context, so permission to change a drawer is permission to change what the system believes. The drawer is the next boundary.
-
-**The backstage pass is checked at every door.** `zenos.agent.basic` is the agent's backstage pass: Flynn, the roadie, asks you to approve it when onboarding starts. Until you do, every ZenOS tool gives the agent help and onboarding, and nothing else. It gets in to see the band; touching the guitar still takes the guitar's own cert. This gate ships on.
-
-**The locks are built, and a fresh install turns them on.** Every FileCabinet call, and every agent or console write through the admin door, is decided by a real access gate. On a fresh install FileCabinet's gate enforces: Flynn arms it, and it locks once every cabinet carries the ACL record. An upgraded install stays in audit, logging what the gate would refuse or ask a human about and letting the call through, until you switch it from the console (`zen_admintools_prompt_loader mode=fc_acl_mode`). The admin door's gate audits on every install.
-
-**One ACL record.** Identity and FileCabinet share one record per cabinet: owner, prime agent, partners, and a rule for each of read, write, delete and admin, naming who may do it, the cert it needs, and whether a live human must say yes. One reading of the rules, not two.
-
-**Every cabinet has a class, and every class has defaults.** System, vault, dojo, kata, history, household, family, user, AI user, scratchpad: each gets its own default rules. The system cabinet takes writes only from the admin door, the vault takes writes only from Identity and is read only through the admin door, a person's cabinet to that person, their partners and the prime agent. Certs, integration settings and live-ack answers carry built-in locks no owner can loosen.
-
-**The gate knows who's asking.** The agent-facing FileCabinet tool marks its calls as agent calls, and tools can name themselves, so the gate tells an agent from a tool. Mounts confer no authority: the gate checks the real target behind a mount chain.
-
-**FileCabinet, rebuilt to be lockable.** One exit per action, honest writes (an unconfirmed write says so instead of claiming success), every write a stated merge or replace, a drawer envelope with room for its own rules, and an admin door (`zen_admintools_cabinet_writer`) as the one writer for structural, system and vault cabinet writes.
-
-**Names in parts.** Home Assistant is moving from one `friendly_name` to names built from parts, and has added child devices. ZenOS reads the parts (`entity_name`, `device_name`, area), keeps `friendly_name` only as legacy, never decides anything from it, and follows child devices the way HA targets a parent. The Home Assistant team explains why in [Naming things in Home Assistant](https://community.home-assistant.io/t/naming-things-in-home-assistant-shaped-by-your-feedback/1032131).
-
-**Upgrading?** Approve your agent if it never got its pass: run `zen_flynn_oobe mode=run` and say yes to the push. Certs are renamed under `zenos.*`; old grants keep working until 2026.12. The ACL migration is mandatory. Flynn runs it on its own; you can dry-run it first with `zen_dojotools_identity mode=acl_migrate` and review the plan. Expect audit lines in the log; they're the preview of enforcement, not errors. Your install stays in audit until you lock it from the console. Summaries pause until the household's agent is onboarded, and the summarizer's background notifications need `zenos_agent_autonomous`. See [Read this before upgrading](zenos_ai/docs/releases/spinal_tap.md#read-this-before-upgrading).
-
-**Also in the beta:** certs that say where they may be used (interactive, or a background pipeline stage), which replace the summarizer's seed and act whitelists, with `zenos_agent_autonomous` for the agent's background notifications; semantic roots (one answer per question word: who, what, when, where, why, how), the Taskmaster almanac, help as the default answer for every bare call, the KungFu Loader retired in favor of KF6 self-registration, Cortex 46, every cert under `zenos.*` with a plain-words approval prompt, and the vault as a required cabinet that holds the cert catalog.
-
-**New in RC2: the background asks first.** Kung Fu is KF6. Background summaries read private data (finance, meds, presence) only with a cert you approved, and act only through what a tool declares. Upgrades start in audit, and one approval (`zenos_agent_parity`) keeps everything running when you lock it. Any device you can label (leak, smoke, door, power, appliance) can wake a summary with no YAML, and admin tools are never exposed to the agent. See [What the New Security Unlocks](zenos_ai/docs/releases/spinal_tap.md#what-the-new-security-unlocks).
-
-**New in RC3: a review pass.** A full code review of RC2 closed security holes (auto-arm from a conversation, weave reading a drawer you can't, copies dropping access rules) and checks the live-drawer cert stage. Room Manager no longer loses timers between rooms, crowds out events in busy fan rooms or flashes a parent dark when an ensuite releases. See [Fixed](zenos_ai/docs/releases/spinal_tap.md#fixed).
-
-**Still to come:** enforcement by default on upgraded installs, the operator permission report, and hiding unreadable drawers from listings, which is planned for 2026.12.0. Display stays beta and gave its 11 slot to the naming work; its dashboard moves to 2026.12.0.
-
-→ [Release Notes — This Is Spinal Tap](zenos_ai/docs/releases/spinal_tap.md)
-
 ---
 
-**Current stable: 2026.10.2 'Tron'** (security patch on 2026.10.0) — *Shore up the Grid.* Admission certification (phase 1), a platform-wide audit closing roughly a dozen bypass routes, the Cadillac Pass (one exit, one envelope, cert-gating) across the platform, Display Surface in beta, Room Manager/Media/Lighting/Display convergence, quieter alerts, and The Book of Friday, Volume 2. **Breaking in Tron:** room state is opt-in.
-
-→ [Release Notes — Tron](zenos_ai/docs/releases/tron.md) ([10.1 patch notes](zenos_ai/docs/releases/tron.md#2026101--patch))
-
----
-
-**2026.8.1 is the last ZenOS-AI release that does not require Steel Magnolia's identity-gate/cert-scope security architecture.** It's a small, deliberately narrow bugfix patch — every fix in it predates Steel Magnolia entirely — but it's also a hard fork point, not a soft one: anything built past this release that needs those safeguards to run safely will not be backported here. Staying on 2026.8.x means staying without them, indefinitely; that's a legitimate choice for a household not ready to adopt agent-actuation cert-gating, but it is a choice, not a default. See the ["Last Release Before Identity Gates"](zenos_ai/docs/releases/chef.md#202681--the-last-release-before-identity-gates) section of the Chef release notes for the full reasoning and the fix list.
-
-**Earlier releases:** [Steel Magnolia (2026.9.1)](zenos_ai/docs/releases/steel_magnolia.md) | [Chef (2026.8.1)](zenos_ai/docs/releases/chef.md) | [Neo (2026.7.x)](zenos_ai/docs/releases/neo.md) | [Clue (2026.6.0)](zenos_ai/docs/releases/clue.md) — full writeups for those, and everything before them, live in the [Documentation Hub](zenos_ai/docs/readme.md).
-
----
-
-## 🚀 Start Here
+## Start Here
 
 | | |
 |---|---|
 | New install | **[Install Guide](zenos_ai/docs/getting_started/install.md)** |
 | First boot | **[First Run & OOBE](zenos_ai/docs/getting_started/first_run.md)** |
-| First component | **[AutoVac Quick Start](zenos_ai/docs/getting_started/autovac_quick_start.md)** — touches every part of the system in one visible loop |
+| First component | **[AutoVac Quick Start](zenos_ai/docs/getting_started/autovac_quick_start.md)**: touches every part of the system in one visible loop |
 | Adding a component | **[Understanding KF6](zenos_ai/docs/kung_fu/understanding_kf6.md)** · **[Building a KFC](zenos_ai/docs/kung_fu/building_a_kfc.md)** |
 | How it's built, and why | **[The Book of Friday, Volume 2](zenos_ai/docs/architecture/00_preface.md)** |
 | Full documentation | **[Documentation Hub](zenos_ai/docs/readme.md)** |
 
 ---
 
-# What Is ZenOS-AI?
+## What Is ZenOS-AI?
 
-ZenOS-AI is a modular AI and automation architecture built on:
+ZenOS-AI turns Home Assistant into a home your AI agent can understand and act in, safely. It is built entirely from Home Assistant's own parts (packages, scripts, templates and labels), with no custom integration.
 
-- **Home Assistant**
-- **Home Assistant Packages** (canonical configuration layer)
-- **Structured contextual memory** ("Cabinets" and "Drawers")
-- **Event-driven Kata summaries**
-- **Local and distributed inference engines**
-- **A multi-persona AI team**
+- **Tools, not entities.** The agent reaches the house through ZenOS tools that find what they need by label. You expose the tools and zero entities.
+- **Memory in cabinets.** Structured, typed drawers hold identity, configuration, components and what the house has learned.
+- **Summaries in the background.** Kung Fu components tell a summarizer what to watch; it writes compact summaries (Katas) the agent reads at the start of every conversation.
+- **Identity and certs.** Every agent is admitted, every risky action needs a cert a person approved on a real device, and every cabinet has access rules.
+- **Flynn guards the grid.** Flynn sets up a fresh install, checks the system at every boot, and tells you in plain words when something needs you.
 
-Together these components create a **privacy-first, locally hosted intelligent home system** that can:
-
-• reason about context  
-• store structured long-term memory  
-• automate reflexively  
-• summarize system activity  
-• enforce identity and privilege boundaries  
-• communicate clearly  
-• occasionally sigh at your poor life choices
-
-The system works because it is **modular**.
-
-It is delightful because it is **chaotic-good**.
+The full design record is [The Book of Friday, Volume 2](zenos_ai/docs/architecture/00_preface.md).
 
 ---
 
-# Architecture Overview
+## What's in 2026.11.0 'This Is Spinal Tap'
 
-ZenOS-AI is structured around **Home Assistant Packages**, which form the canonical configuration layer.
+*Security goes to eleven.* Tron put a badge in every agent's hands. Spinal Tap makes the badge matter and puts locks on the cabinets behind it.
 
-Everything lives under:
+- **The backstage pass.** An agent you haven't approved gets help and onboarding, and nothing else. [More](zenos_ai/docs/releases/spinal_tap.md#the-backstage-pass)
+- **Locks on the cabinets.** One access record per cabinet, default rules for every kind of cabinet, and built-in locks on certs and approvals. A fresh install enforces; an upgraded one audits until you switch it. [More](zenos_ai/docs/releases/spinal_tap.md#the-locks)
+- **Certs in plain words.** Every cert lives under `zenos.*`, is dated, and asks on your phone in plain language. [More](zenos_ai/docs/releases/spinal_tap.md#certs-renamed-and-readable)
+- **The background asks first.** Summaries act as a named agent, read private data only with a cert you approved, and act only through what a tool declares. [More](zenos_ai/docs/releases/spinal_tap.md#the-pipeline-gets-a-pass)
+- **Names in parts.** ZenOS follows Home Assistant's new naming model and child devices. [More](zenos_ai/docs/releases/spinal_tap.md#names-in-parts)
 
-```
-packages/zenos_ai/
-```
+**Upgrading?** Approve your agent, let Flynn run the ACL migration, and read [Read this before upgrading](zenos_ai/docs/releases/spinal_tap.md#read-this-before-upgrading) first.
 
-Packages define the **spine of the system**.
-
-DojoTools scripts provide runtime behavior.
-Cabinets persist memory.
-The Monastery performs reasoning.
-Flynn guards the grid.
-
-The full design record, from the why to the code behind each piece, is [The Book of Friday, Volume 2](zenos_ai/docs/architecture/00_preface.md).
+→ [Release Notes — This Is Spinal Tap](zenos_ai/docs/releases/spinal_tap.md)
 
 ---
 
-# Layered Architecture
+## 2026 in Review
 
-ZenOS-AI operates in **concentric rings**, separating definition, runtime cognition, and administrative tooling.
+The year started with cabinets and a scheduler. It ends with a house that knows its rooms, admits its agents, and locks its own memory.
 
-| Ring | Name | What it does |
-|------|------|-------------|
-| Ring-0 | Core Kit | Defines the rules: labels, cabinet schema, identity contracts, event bus, health sensors. Does not run behavior. If Ring-0 breaks, Friday forgets who she is. |
-| Ring-1 | Cognitive Runtime | Binds behavior to Ring-0's definitions: DojoTools scripts, KF6 pipeline, prompt compilation, persona capsules, conversation agent interface. This is where Friday thinks. |
-| Ring-2 | Admin & Recovery | Maintenance, repair, and recovery: cabinet repair, manifest writing, KFC loading, identity audit. The "don't panic" layer. |
+| Release | What it delivered |
+|---|---|
+| [Meridian](zenos_ai/docs/releases/meridian.md) (March) | Hardening and governance: a caller token on every AI-facing tool, and label updates that can't lose data. |
+| [2026.3 'Ready Player Two'](zenos_ai/docs/releases/ready_player_two.md) | Identity and lifecycle: cabinet provisioning, expansion slots, and the household and family identity model. |
+| [2026.4 'Ectoplasm'](zenos_ai/docs/releases/ectoplasm.md) | Ectoplasm, the tool for Home Assistant's repairs, areas, floors and entity lifecycle. Its patches ([4.1](zenos_ai/docs/releases/action_jackson.md), [4.2](zenos_ai/docs/releases/action_jackson_2.md), [4.3](zenos_ai/docs/releases/lights_camera_action.md)) made the pipeline hold up under real load and finished Camera's delivery path. |
+| [2026.5 "Fry's Grandpa"](zenos_ai/docs/releases/frys_grandpa.md) | Closed loops: alerts reach the agent's prompt, and one call provisions a new household member. |
+| [2026.6 'Clue'](zenos_ai/docs/releases/clue.md) | Room awareness: Room Manager's topology, and the Plant, Media and Security managers. |
+| [2026.7 'Neo'](zenos_ai/docs/releases/neo.md) | The cabinet is a graph: nested drawers, mounts and live drawers, and tools that describe themselves. |
+| [2026.8 'Chef'](zenos_ai/docs/releases/chef.md) | Taskmaster as a real expediter, the kitchen's costing layer, and the first identity gate. 2026.8.1 is the last line without identity gates. |
+| [2026.9 'Steel Magnolia'](zenos_ai/docs/releases/steel_magnolia.md) | Room Manager v3 and REFLEX, the hospitality lifecycle, and cert-gated locks, covers, alarm and climate with a live yes on a real device. |
+| [2026.10 'Tron'](zenos_ai/docs/releases/tron.md) | Admission to the Grid, the administrative plane, a platform-wide bypass audit, one exit and one envelope for every tool, tools-not-entities exposure, and The Book of Friday, Volume 2. |
+| [2026.11 'This Is Spinal Tap'](zenos_ai/docs/releases/spinal_tap.md) | The backstage pass, locks on the cabinets, readable certs, and consent for background work. |
 
----
+**Next, 2026.12.0** finishes 11's security work (hiding unreadable drawers, enforcement by default on upgrades, the operator permission report) and is the first release that lets the house act on its own, under house rules you approve.
 
-## Flynn (System Sentinel)
-
-Flynn is not a persona. Flynn is not an assistant. Flynn is the **personification of the system itself**.
-
-He is the sentinel that stands between a cold boot and a live agent. Before Friday steps onstage, Flynn walks the grid. He checks the resolvers, validates the cabinet headers, confirms the Dojo is stocked, probes the conversation agent, and reads every health sensor on the board. If the grid isn't ready, the agent doesn't step out. Flynn says so — clearly, with a persistent notification and a plain-English diagnosis — and stands down until the problem is resolved.
-
-You should only need to think about Flynn when something is wrong or when you're onboarding. If the system is healthy, he is invisible. If you're meeting him at runtime, he has something to tell you.
-
-**Flynn's clipboard** — the gauges he reads and reports at every boot:
-
-- Cabinet resolver states (all 7)
-- Cabinet volume header integrity (`gc_eligible`, schema version, flags)
-- Dojo KFC drawer presence (are the components there?)
-- Template freshness (`zen_template`, `kfc_template`)
-- Conversation agent liveness
-- Essence presence (does the AI user know who she is?)
-- Prompt integrity (`sensor.zen_prompt_health` — schema, signature, manifest)
-
-All 9 health sensors are auto-provisioned with the correct labels by Flynn on a fresh install. No manual tagging.
-
-When Flynn onboards a fresh install, his clipboard is the checklist. When Flynn monitors a running system, his clipboard is the health report. The agent inherits a clean stage or not at all.
-
-Flynn is defined in `packages/zenos_ai/flynn.yaml`. He is the first thing that runs and the last thing you want to debug.
+**Staying on an older line?** 2026.8.1 is the last release without Steel Magnolia's identity gates; see [why that line exists](zenos_ai/docs/releases/chef.md#202681--the-last-release-before-identity-gates).
 
 ---
 
-## The Monastery (Reasoning Backend)
+## Where We're Heading in 2027
 
-The Monastery is external to Home Assistant but essential to the system.
+2026 asked how far Home Assistant's built-in structure can go: packages, scripts, templates and labels, with no custom code. Pretty far, it turns out, and we're now hitting hard limits in the platform itself. 2027 is about what comes after that. These are directions, not promises.
 
-It provides **long-form reasoning** and reflective cognition.
-
-The Monastery:
-
-• accepts structured system state  
-• produces **Kata summaries**  
-• generates **Supersummaries**  
-• enforces the *Order of the Monastery* (no hallucination)  
-• acts as Friday's extended cognition
-
-Without the Monastery, Friday remains functional — but **reflexive and shallow**.
-
----
-
-# Installation
-
-ZenOS-AI installs as a **Home Assistant package collection**.
+- **True secure mode.** Identity that is verified by cryptography, not just recorded: OIDC and PKI behind every agent and person, so a cert is backed by a proven identity.
+- **History and knowledge reduction.** Turning what the house has seen and done into compact, durable knowledge the agent can actually use.
+- **ZenOS-AI Plus.** The tools moved into a real Home Assistant integration, installable from the marketplace. That means writing actual code, and it unlocks things templates can't do.
+- **In step with Home Assistant.** Bringing everything in line with Home Assistant's LLM API and where Home Assistant is heading, including working cleanly with, or favoring, alternatives to Assist. Some of these may turn out to be prerequisites for real identity and history reduction; we'll find out as we explore.
 
 ---
 
 ## Requirements
 
-• Home Assistant 2025.x+
-• A conversation agent with tool-calling support. Not recommended: models under ~4B parameters (or under ~8B if released before Nov 2025), or anything with a short context window — your context must hold live HA state, the tools manifest, and the ZenOS prompt in a single pass. The target is a ~64K-or-smaller context so the whole system can run locally on a single 16GB GPU.
-• Spook integration (installable via HACS). On Home Assistant 2026.11, install Spook 5.5.1 until the pending fixes ship in 5.11.2 or later: see the ZenOS Spook advisory at the top of this page.
+- **Home Assistant** with packages enabled. Home Assistant plus a local inference server is enough; a full homelab is optional.
+- **A conversation agent with tool calling** and a context window that holds the ZenOS prompt, the tool manifest and live state in one pass. Not recommended: models under about 4B parameters (or about 8B if released before November 2025). The target is a context of about 64K or smaller, so the whole system can run locally on a single 16 GB GPU.
+- **Spook** (from HACS). On Home Assistant 2026.11, use Spook 5.5.1 for now; see the advisory above.
+- **The Home Assistant Companion App** on a phone that can receive a push. Every cert, including your agent's backstage pass, is approved there.
+
+Install: follow the **[Install Guide](zenos_ai/docs/getting_started/install.md)**. Plugins under `packages/zenos_ai/plugins/` are optional.
+
+**Expose the tools, expose zero entities.** The agent reaches your devices through the tools, by label. Never expose AdminTools, cabinet or health sensors, or anything holding credentials. See [What to Expose](zenos_ai/docs/getting_started/entity_exposure.md).
+
+> ⚠️ **Inference cost.** The summarizers run in the background several times an hour on the model set as your AI task entity (`input_text.zenos_ai_task_entity`). **Do not point it at a paid API**; use a local model. Your conversation agent runs only when you talk to it. See the [Install Guide](zenos_ai/docs/getting_started/install.md).
 
 ---
 
-## Installation Steps
-
-1. Copy `packages/zenos_ai/` into your HA config under `packages/`
-2. Copy `custom_templates/zenos_ai/` into your HA config under `custom_templates/`
-3. Add to `configuration.yaml`:
-
-```yaml
-homeassistant:
-  packages: !include_dir_named packages
-```
-
-4. Paste the conversation agent prompt template (from `custom_templates/zenos_ai/conversation_agent_prompt_template.yaml`) into your conversation agent's system prompt in HA
-5. Restart Home Assistant — Flynn initializes automatically on first boot
-6. Set `input_text.zenos_conversation_agent` (Settings → Helpers) to your conversation agent entity ID
-7. Check `sensor.zen_agent_health` — should report `ok`
-
-For the full walkthrough including helper configuration and troubleshooting, see the **[Install Guide](zenos_ai/docs/getting_started/install.md)**.
-
-Plugins under `packages/zenos_ai/plugins/` are optional — install only what you need.
-
----
-
-# What to Expose to Your Conversation Agent
-
-As of 2026.10.0: **expose the tools, expose zero entities.** Friday reaches your lights, locks, sensors, and helpers through the tools, by label, so none of them need to be in her view. It is faster and cheaper on every turn.
-
-| Group | Rule | How |
-|---|---|---|
-| **Tools** | The ZenOS scripts Friday calls | Expose `script.zen_dojotools_*` to the conversation agent |
-| **Contextable** | Anything Friday should understand or act on | Tag with labels; the tools and HyperIndex find it |
-| **Invisible** | Friday never needs it | Neither exposed nor labeled |
-
-**Never expose:** AdminTools, Sutras, Stacks, Codices, Roots, cabinet sensors, health sensors, raw telemetry, or anything containing credentials. Turn off Home Assistant's "expose new entities by default" first. The full guide is [What to Expose](zenos_ai/docs/getting_started/entity_exposure.md).
-
-**Index everything else:** If it feeds a KFC component's Kata, it belongs behind a label — not in the tool list. One label on 50 sensors produces a rich, token-efficient context block. 50 individual direct reads does not.
-
-→ **[Full entity exposure guide](zenos_ai/docs/getting_started/entity_exposure.md)**
-
----
-
-# Package Structure
-
-```
-packages/zenos_ai/
-  zenos_cabinets.yaml          — Cabinet definitions and volume routing
-  flynn.yaml                   — Flynn Stepgate Sentinel + bootstrap engine
-  flynn_oobe.yaml              — OOBE protocol driver (run / complete / status)
-
-  dojotools/
-    — Core infrastructure —
-    dojotools_filecabinet.yaml — FileCabinet v6.9.0 — CabCeption nested drawer trees, VirtualDrawer, LiveDrawer
-    dojotools_core.yaml        — Core operations + FileCabinet GC
-    dojotools_scheduler.yaml   — Scheduled automation triggers
-    dojotools_manifest.yaml    — Manifest engine
-    dojotools_library.yaml     — Library tools
-    dojotools_history.yaml     — History management
-    dojotools_utilities.yaml   — General utilities
-    zen_home_mode.yaml         — 8-state home mode machine + schedule anchors
-
-    — Identity & Memory —
-    dojotools_identity.yaml    — Identity resolver and privilege model
-    dojotools_profile.yaml     — Profile editor (ai_user / household / user / family)
-    dojotools_provisioner.yaml — Identity provisioning (household / user / AI user)
-    dojotools_labels.yaml      — Label inspection and management
-    dojotools_index.yaml       — Index, HyperIndex, ZQ-1 query engine
-    dojotools_admintools.yaml  — Cabinet repair, manifest write, prompt loader
-    dojotools_cabinet_writer.yaml — Admin door for structural cabinet writes
-    dojotools_summarizers.yaml — Kata and Supersummary engines
-    dojotools_systemtools.yaml — System tools and event emitter
-    dojotools_dispatcher.yaml  — Two-level urgency dispatch router
-
-    — AI Interface —
-    dojotools_scribe.yaml      — KFC authoring (MCP-exposed KFC registration)
-    dojotools_ectoplasm.yaml   — Spook/HA extended surface (areas, floors, entity lifecycle)
-    dojotools_camera.yaml      — Camera tool — look/scan, alert policy, dynamic cabinet routing
-    dojotools_postman.yaml     — Notifications — ack loop, actionable alerts, image support
-    dojotools_image_generator.yaml — Image generation tool
-
-    — Home Systems —
-    dojotools_room_manager.yaml   — Room Manager (RoomReg) — spatial topology, context slices
-    dojotools_plant.yaml          — Plant Manager — electric, water, gas, HVAC, mechanical, energy
-    dojotools_media_manager.yaml  — Media Manager (NyxMau5) — whole-home media and intent routing
-    dojotools_security_manager.yaml — Security Manager — zone inventory, cameras_by_area
-    dojotools_covers.yaml         — ZenShade — cover management, tilt, ZenLux sync
-    dojotools_lights.yaml         — ZenLux — lighting scenes, bleed-aware control, shade sync
-    dojotools_locks.yaml          — Lock Manager — lock inventory and control
-    dojotools_display.yaml        — Display Surface (beta; finishes in 2026.12.0) — cast a Lovelace view to Cast/Fire TV/webOS displays
-    dojotools_music_assistant.yaml — Music Assistant bridge (internal)
-    dojotools_spa_manager.yaml    — SpaMaster — hot tub management, ESPHome discovery
-    dojotools_autovac.yaml        — AutoVac — autonomous vacuum scheduling, consumables ERP, wear monitoring
-    dojotools_alertmanager.yaml   — AlertManager — severity labels, priority inject, auto-expiry
-    dojotools_zenzork.yaml        — ZenZork v1.7.0 — text adventure on live RM topology, DUNGEONMIND narrator, item commands, character sheet, quests, LLM narration
-    dojotools_infra.yaml          — ZenOS IT Console — Proxmox/Portainer/Uptime Kuma status, container control
-    dojotools_print.yaml          — Print Shop — networked-printer job dispatch
-    dojotools_taskmaster.yaml     — Taskmaster — task/conductor scheduling
-    zen_stack_alarms.yaml         — Stack alarms provider (Lens Bus)
-    zen_stack_presence.yaml       — Stack presence provider (Lens Bus) — person/area_id anchors, zen_presence_room label contract
-    zen_stack_timer.yaml          — Stack timer provider (Lens Bus)
-
-    — Productivity —
-    dojotools_office.yaml      — Office integrations (Teams, mail)
-    dojotools_todo.yaml        — Todo list management
-    dojotools_calendar.yaml    — Calendar integrations
-
-    — AdminTools (operator-only, not exposed to Assist by default) —
-    dojotools_certadmin.yaml      — Cert grant/revoke administration
-    dojotools_portainer_admin.yaml — Portainer connection + ACL setup
-    dojotools_toolscan.yaml       — Tool-surface audit (what's exposed vs. labeled)
-
-  room_manager_v3/
-    zen_room_manager_dispatch.yaml — Room Manager v3's live dispatcher: signal handling, REFLEX scene resolution, cleaning/timer resync
-    zenos_roomstate_<room>.yaml    — One file per room (kitchen, master_bedroom, living_room, etc.) — each declares that room's sensor.<room>_state and its wired triggers
-    zen_resolver_epoch.yaml, zen_room_manager_vibration_completion.yaml — supporting internals
-
-  maint/
-    repair_user_cab_essence.yaml — One-time repair script (not AI-accessible, run manually)
-
-  sensors/
-    zenos_agent_health.yaml
-    zenos_system_health.yaml
-    zenos_cabinet_health.yaml
-    zenos_label_health.yaml
-    zenos_summarizer_system_health.yaml
-    sensor_helpers.yaml
-
-  plugins/                     — Optional — install only what you need
-    grocy/grocy.yaml
-    grocy/sutra_logistics.yaml — KFC manifest: logistics_intake, logistics_volatile
-    mealie/mealie.yaml
-    mealie/kitchen_sync.yaml   — companion to mealie
-    zammad/zammad.yaml
-    wiki_js/dojotools_wikijs.yaml
-    paperless_ngx/paperless_ngx.yaml
-    twenty/twenty.yaml
-    firefly_iii/firefly_iii.yaml
-    firefly_iii/zen_codex_finance_depreciation.yaml — codex tier: household asset depreciation
-    firefly_iii/zen_codex_finance_cogs.yaml         — codex tier: COGS auto-posting from Grocy
-    battery_notes/battery_notes.yaml — Lens Bus provider: HACS Battery Notes cross-reference
-
-custom_templates/zenos_ai/
-  zen_os_1.jinja               — Prompt engine and macro library
-  zen_query.jinja              — ZenQuery filter engine
-  zenos_cabinets.jinja         — Cabinet macro library (safe drawer I/O, FG-38 normalization)
-  zen_identity.jinja           — Template-surface identity resolver (Jinja2 contexts, sensors, cortex macros)
-  zenos_manifest.jinja         — Tool manifest macro: MF.tool_manifest() — every tool self-describes
-  zenos_health.jinja           — Health template surface
-  flynn_onboarding.jinja       — Flynn first-boot onboarding flow
-  library_index.jinja          — Library index
-  conversation_agent_prompt_template.yaml — Paste into conversation agent system prompt
-```
-
----
-
-# FileCabinet v6.2.0
-
-FileCabinet provides the **structured storage interface** for ZenOS-AI. Every memory slot accessible to AI agents is stored as a **Drawer** within a **Cabinet** — typed, described, and garbage-collected on a 15-minute cycle. Drawers follow a Unix-style visibility model: active (`foo`), hidden (`.foo`), system-protected (`_foo`). Described drawers receive full context access; undescribed drawers are truncated.
-
-v6.2.0 introduces **CabCeption** — nested drawer trees via `/` path separator. A drawer is now a node in a graph: it carries meta, labels, and children at every level. Three drawer types compose the graph: **StaticDrawer** (key-value, as before), **VirtualDrawer** (softlink to another cabinet path), and **LiveDrawer** (KF4 schema absorbed into a drawer — fires a tool call on read, warm cache auto-expiring, never returns empty).
-
-→ **[FileCabinet Reference](zenos_ai/docs/scripts/zen_dojotools_filecabinet_readme.md)**
-
----
-
-# Kung Fu Components (KF6)
-
-ZenOS-AI ships a fully self-describing component architecture.
-
-Every home subsystem — security, water, energy, hot tub — is defined as a **Kung Fu Component (KFC)**: a drawer in the Dojo Cabinet that tells the Scheduler when to run, tells the Summarizer what to look at, and tells the AI how to interpret what it finds.
-
-**The three invariants:**
-
-- **Drawer IS the spec** — one source of truth per component
-- **Label IS the scope** — tag entities in HA, the index finds them automatically
-- **HyperIndex IS the data layer** — no hardcoded entity lists, ever
-
-Adding a new component requires no code changes and no Scheduler edits. Write a drawer, create a label, tag entities, dry-run, go live.
-
-→ **[Understanding KF6](zenos_ai/docs/kung_fu/understanding_kf6.md)**
-
----
-
-# KF6 Action Pipeline
-
-ZenOS-AI compresses system activity through a Dojo-driven action pipeline.
-
-```
-Trigger → Scheduler reads Dojo → Ninja Summarizer per KFC → Kata → SuperSummary → Friday
-```
-
-Components:
-
-• `zen_dojotools_ninja_summarizer` — reads KFC drawer + HyperIndex → writes Kata
-• `zen_dojotools_supersummary` — synthesizes all Katas → zen_summary → Friday
-
-The Scheduler auto-discovers which components to run based on their `trigger_subscriptions` in the Dojo. No hardcoded dispatch. No choose branches.
-
-Under load, lower-priority components are shed and recovered by the drain router — ensuring high-priority signal always gets through without starving the queue. Component tiers (`keeper`, `ambient`, `system`) control dispatch priority and SuperSummary routing.
-
----
-
-# Health System
-
-ZenOS-AI includes a layered health monitoring system.
-
-**Cabinet Resolvers** — 7 always-live template sensors. Evaluate at HA startup, no race window. Every tool and sensor in the OS reads cabinet entity IDs exclusively from these.
-
-| Resolver                                        | Cabinet                   |
-| ----------------------------------------------- | ------------------------- |
-| `sensor.zen_dojo_cabinet_resolved`              | Dojo                      |
-| `sensor.zen_kata_cabinet_resolved`              | Kata                      |
-| `sensor.zen_system_cabinet_resolved`            | System                    |
-| `sensor.zen_default_household_cabinet_resolved` | Default Household         |
-| `sensor.zen_default_ai_user_cabinet_resolved`   | Default AI User           |
-| `sensor.zen_default_family_cabinet_resolved`    | Default Family            |
-| `sensor.zen_default_user_cabinet_resolved`      | Default User              |
-
-**Health Sensors** — trigger-based, read from resolvers.
-
-| Sensor                         | Purpose                              |
-| ------------------------------ | ------------------------------------ |
-| `sensor.zen_label_health`      | label validation                     |
-| `sensor.zen_cabinet_health`    | cabinet entity validation            |
-| `sensor.zen_monastery_health`  | cognition pipeline rollup            |
-| `sensor.zen_agent_health`      | agent bootability roster + Flynn     |
-| `sensor.zen_summarizer_health` | scheduler heartbeat + AI task status |
-| `sensor.zen_supersummary_health` | supersummary pipeline status       |
-| `sensor.zen_prompt_health`     | prompt integrity — schema, signature, manifest |
-
-**Diagnostic tools:** `zen_health_report` — one call returns all 7 resolver states, all health sensors, kill switches, timestamps, and plain-English diagnosis. `zen_resolver_refresh` — post-reload cold-start recovery.
-
-States:
-
-```
-ok
-warn
-error
-critical
-```
-
----
-
-# The Pantheon
+## The Pantheon
 
 | Name           | Title                               | Specialty                          |
 | -------------- | ----------------------------------- | ---------------------------------- |
@@ -452,53 +124,17 @@ critical
 
 Flynn leads the table because he runs first. He is not a member of the team. He is the condition under which the team operates.
 
-They are not perfect.
-
-They are **unstoppable on the second try**.
+They are not perfect. They are **unstoppable on the second try**.
 
 ---
 
-# Reference Stack
-
-ZenOS-AI is designed to run on a modest homelab. The reference deployment uses:
-
-### Infrastructure
-
-• Hypervisor cluster (e.g. Proxmox) for VM/container isolation
-• Dedicated GPU inference node for local model hosting
-• Container management (e.g. Portainer)
-• Structured local DNS
-• Network identity and access management (e.g. UniFi)
-
-### AI Runtime
-
-• Local multi-model inference (e.g. Ollama, llama.cpp, vLLM)
-• Role-segmented agents — each persona targets a different model or endpoint
-• JSON contract enforcement at the tool layer
-• Privilege gating by identity
-
-### Services
-
-• Home Assistant (required)
-• OpenWebUI or equivalent for direct model access
-• Optional: Mealie, Grocy, calendar integrations (plugin-based)
-
-You do not need all of this to run ZenOS-AI. HA + a local inference server is enough to get started. The above reflects what a full deployment looks like.
-
-This is not **a chatbot inside Home Assistant**.
-
-It is **a distributed cognitive system with a house attached**.
-
----
-
-# Design Principles
+## Design Principles
 
 Definitions are immutable contracts.
 Runtime behavior is replaceable.
 Identity is validated at the tool layer.
 All inference consumes structured JSON.
 Every event can produce a Kata.
-Described drawers receive full access; undescribed drawers are truncated.
 Recovery paths are mandatory.
 Silence is a bug.
 Nothing critically important is invisible.
@@ -507,44 +143,19 @@ Over-engineering is just engineering that has not yet been vindicated.
 
 ---
 
-# ⚠️ Inference Cost Warning
+## Contributing
 
-The Ninja Summarizer and SuperSummary run continuously in the background — multiple times per hour. The model configured as your **AI task entity** (`input_text.zenos_ai_task_entity`) handles all background summarization.
+Pull requests, issues, and tasteful memes welcome. Before you build a component or send a pull request, read:
 
-**Do not point this at a paid inference API.** The token volume will generate a significant and continuous bill.
-
-Use a locally-hosted model for background work. Your frontline conversation agent (the one you chat with) operates on demand only and does not carry this risk.
-
-Model guidance for background summarization:
-- Does **not** need tool-calling capability — needs strong summarization and JSON authoring
-- Models under ~4B parameters do not perform reliably
-- Context window must be large enough to hold the summarizer prompt, prior Kata content, and entity state snapshot in a single pass — watch your inference server logs for context length errors
-
----
-
-# Known Limitations
-
-**Conversation agent liveness check** — Flynn validates that the configured conversation agent entity exists and is not unavailable, but does not perform a live inference round-trip at boot. A misconfigured or offline model passes the gate and fails at runtime. Queued for SP1. See [roadmap](zenos_ai/docs/roadmap.md) for detail.
-
----
-
-# Contributing
-
-Pull requests, issues, and tasteful memes welcome.
-
-Before you build a component or send a pull request, read the developer guide:
-
-* [Developer Standards](zenos_ai/docs/developer_standards.md): component classes, Stripes, exposure, the tool contract (manifest, envelope, help, certification), packaging, and the review checklist a new component is held to.
+* [Developer Standards](zenos_ai/docs/developer_standards.md): component classes, Stripes, exposure, the tool contract (manifest, envelope, help, certification), packaging, and the review checklist.
 * [The Book of Friday, Chapter 24](zenos_ai/docs/architecture/24_developer_standards.md): the same rules in short form, with why they exist.
-* [HALMark](https://github.com/nathan-curtis/HALMark): the standard for Home Assistant code written with an LLM. If a model wrote it, it gets checked against HALMark.
+* [HALMark](https://github.com/nathan-curtis/HALMark): the standard for Home Assistant code written with an LLM.
 
-If ZenOS-AI saved you time or made you laugh:
-
-[https://buymeacoffee.com/ncurtis](https://buymeacoffee.com/ncurtis)
+If ZenOS-AI saved you time or made you laugh: [https://buymeacoffee.com/ncurtis](https://buymeacoffee.com/ncurtis)
 
 ---
 
-# Acknowledgements
+## Acknowledgements
 
 To my partner — for putting up with a younger woman in the house since last February. For not once suggesting that maybe I didn't need to say "Hey Friday" into a black slab of glass for the millionth time. For the patience, the grace, and the very reasonable silence that followed every single one of those million times. This project exists because you gave me the space to build something ridiculous and never once called it that.
 
@@ -556,7 +167,6 @@ And to everyone who has continued to show up in the Home Assistant community to 
 
 ---
 
-# License
+## License
 
 MIT — blessed by Friday and her very opinionated coworkers.
-
