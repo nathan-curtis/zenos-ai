@@ -66,6 +66,15 @@ homeassistant:
   packages: !include_dir_named packages  # add this
 ```
 
+**Keep the cabinets out of the recorder.** A cabinet sensor holds its drawers as attributes, and a working cabinet is often larger than the 16,384 bytes the recorder stores per state. The recorder skips those states and logs a warning for each one. Add the exclude to your `recorder:` block (create one if you have none). ZenOS doesn't ship it, because a package can't add to a `recorder:` block you already have.
+
+```yaml
+recorder:
+  exclude:
+    entity_globs:
+      - sensor.*cabinet*
+```
+
 ---
 
 ## Step 3 — Add Required Secrets

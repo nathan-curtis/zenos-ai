@@ -27,7 +27,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 | `zen_admintools_cabinetadmin` | 4.9.0 | No | Inspect, restore, reset, hammer, init, repair_volumeinfo, or reset_all (every cabinet and label, or the Ring-0 cabinets) |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
-| `zen_admintools_prompt_loader` | 45.7 | No (never exposed) | Load versioned Cortex, Directives, and Purpose (v45 = Open Door (default/latest), v44 = Open Door, v43 = Rule Zero). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`, the FileCabinet lock via `mode=fc_acl_mode`, and the read-cert switch via `mode=seed_cert_mode` (both console only). Declares `never_expose`: it is never exposed to the agent. |
+| `zen_admintools_prompt_loader` | 46.0 | No (never exposed) | Load versioned Cortex, Directives, and Purpose (v46 = Open Door (default/latest), v45 = Open Door, v44 = Open Door). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`, the FileCabinet lock via `mode=fc_acl_mode`, and the read-cert switch via `mode=seed_cert_mode` (both console only). Declares `never_expose`: it is never exposed to the agent. |
 | `zen_admintools_run_repair` | 5.2.0 | **No** | Human-confirmed passthrough to identity `acl_migrate` (the one repair action) |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
@@ -295,7 +295,7 @@ On every run, the prompt loader also stamps `meta.mounted: true` on syscab — e
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `mode` | select | `load` | `load` — stamp Purpose/Directives/Cortex into syscab. `whitelist` — manage act or seed whitelists. `fc_acl_mode` — the FileCabinet lock (see below). `lens_registry` — the one writer for household lens providers. `codex_registry` — the one writer for household finance codices (`list`/`get`/`register`/`unregister`). Runs queued, up to 25 at once. |
-| `cortex_version` | select | `latest` | `latest` or `45` = Open Door (current), `44` = Open Door, `43` = Rule Zero. Only used when `mode=load`. |
+| `cortex_version` | select | `latest` | `latest` or `46` = Open Door (current), `45` = Open Door, `44` = Open Door. Only used when `mode=load`. |
 | `sim_mode_allowed` | boolean | — | Stamped into `integrations_config.identity.sim_mode_allowed` only when it is unset; an existing value is never changed. Omitted, the stamp follows Flynn's `input_boolean.zenos_sim_mode_override` (Flynn also keeps the two in step on every boot). `false` fails closed on any simulated/shunted identity result until real Authentik/OIDC (SP1) is live (see `zen_dojotools_identity resolve_caller_identity`). |
 | `whitelist_type` | select | — | `mode=whitelist` only. `act` = `zen_summarizer_act_whitelist`. `seed` = `zen_summarizer_seed_whitelist`. |
 | `action_type` | select | `list` | `mode=whitelist`: `list` \| `add` \| `remove` \| `reset`. `mode=fc_acl_mode`: `status` (default) \| `audit` \| `enforce`. |
@@ -305,11 +305,11 @@ Use the `cortex_version` field to select which version to load. The three primit
 
 | Version | Codename | Notes |
 |---|---|---|
-| `43` | Rule Zero | DojoTools supersede all HA built-ins. Not preference. Authority. Domain routing table in directives. Successor to v42 'The Answer'. |
-| `45` / `latest` | Open Door | v44 with one fix: the `core_tools` list names the real log viewer, `script.zen_dojotools_ha_log_viewer`. Purpose and Directives carry the same text as v44 under a v45 header. |
+| `46` / `latest` | Open Door | v45's text. Its `os_release` stamp carries only `cortex`, `cortex_codename` and `pressed_at`; 45 and earlier also wrote a hand-kept list of component versions that had gone stale. |
+| `45` | Open Door | v44 with one fix: the `core_tools` list names the real log viewer, `script.zen_dojotools_ha_log_viewer`. Purpose and Directives carry the same text as v44 under a v45 header. |
 | `44` | Open Door | v43 plus one clarification: Assist entity exposure is a routing switch, not an existence signal. An entity that is not exposed but is enabled in Home Assistant is still real and current through the Index and DojoTools. Its `core_tools` list names a log viewer that does not exist; v45 corrects it. |
 
-Selecting `latest` or passing no `cortex_version` loads v45. A load writes purpose, directives, cortex, and `os_release` to the system cabinet with a one-second pause between writes, so consecutive `set_variable` events can't overwrite each other.
+Selecting `latest` or passing no `cortex_version` loads v46. The v43 'Rule Zero' slot is retired. A load writes purpose, directives, cortex, and `os_release` to the system cabinet with a one-second pause between writes, so consecutive `set_variable` events can't overwrite each other.
 
 The response carries a `write_report`, one entry per key (`purpose`, `directives`, `cortex`, `os_release`) with `status` (`ok`/`failed`), `ts_ok`, `content_ok`, `actual`, and `expected`. A key is `ok` only if its timestamp moved and its content carries the version that was loaded. If any key failed, the overall `status` is `error`.
 
@@ -417,6 +417,7 @@ Run when a cabinet fails identity's ACL schema check (identity answers `acl_sche
 
 | Version | Change |
 |---------|--------|
+| v5.14.0 | prompt_loader 46.0: cortex 46 (Open Door), the same text as 45. `os_release` carries only `cortex`, `cortex_codename` and `pressed_at`. `latest` = 46; slot 43 retired (slots 44, 45, 46). |
 | v5.13.0 | prompt_loader 45.7: the `seed_cert_mode` enforce parity ask uses stages `ise`. |
 | v5.12.0 | prompt_loader 45.6 declares `mcp_exposed=false` and `never_expose`: it holds the lock switches and the cortex. Anything that exposes entities must refuse it. |
 | v5.11.0 | prompt_loader 45.5: switching `seed_cert_mode` to enforce stamps the katas of summaries whose read cert is missing, so their data leaves the prompt at once. |

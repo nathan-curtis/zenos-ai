@@ -107,7 +107,7 @@ connected to a parent room.
 
 ## 4. THE NINE STATES OF A ROOM
 
-<img src="images/states_ladder.png" alt="Priority ladder: Emergency, Paused, Automation, Cleaning, Asleep, Engaged, Hold, Occupied, Vacant — higher wins" width="210" align="right">
+<img src="images/states_ladder.png" alt="Priority ladder: Emergency, Paused, Automation, Cleaning, Asleep, Hold, Engaged, Occupied, Vacant — higher wins" width="210" align="right">
 
 Every room is always in exactly one of nine states. Higher on this list
 always beats lower. If two things are true at once, the room reports the
@@ -120,8 +120,8 @@ more important one.
 | 🤖 **Automation** | Your AI (or another automation) has taken the wheel for this room on purpose, temporarily. |
 | 🧹 **Cleaning** | The robot vacuum is in here right now. |
 | 😴 **Asleep** | Someone's asleep in here. Beats Engaged: a device staying active nearby never overrides a real Asleep signal in the same room. |
+| ⏳ **Hold** | One of exactly five lines is currently high: the wasp flag (motion with no door-open to confirm entry, only for rooms opted in — see Section 6), Entertaining mode (room opted in), Guest mode (room opted in), a continuous-presence (mmWave) sensor tagged for Presence Hold (room opted in), or any entity tagged with the plain `hold` label for that room. Whichever one is true, the room reports Hold — it stays Hold exactly as long as that source stays true, clears the moment it goes false. The wasp flag is the one that remembers: it stays until a door opens (Section 6). Never a timer. Hold beats Engaged: a held room is never knocked down to Engaged. |
 | ⚡ **Engaged** | Someone is ACTIVELY using this room. Media is playing, a desk is in active use. Stronger than just "someone's here," but not stronger than the room's own Asleep. |
-| ⏳ **Hold** | One of exactly five lines is currently high: the wasp flag (motion with no door-open to confirm entry, only for rooms opted in — see Section 6), Entertaining mode (room opted in), Guest mode (room opted in), a continuous-presence (mmWave) sensor tagged for Presence Hold (room opted in), or any entity tagged with the plain `hold` label for that room. Whichever one is true, the room reports Hold — it stays Hold exactly as long as that source stays true, clears the moment it goes false. Never a timer. |
 | 🟢 **Occupied** | Somebody's in here. Presence detected, no specific activity known. |
 | ⚪ **Vacant** | Nobody's in here. The default. Nothing wrong with it. Most rooms are Vacant most of the day. |
 
@@ -538,10 +538,14 @@ Occupied/Vacant. A bedroom wants the full stack: Asleep, nightlight, TV
 sleep timer. Match the features to how the room is actually used.
 
 **Ensuite rooms cascade up on purpose.** Linking a bathroom to its
-bedroom as a child room sets up a parent/child relationship: whatever
-the child reports gets hardwired in as true for that same slot in the
-parent. Net effect — your bathroom can hold the bedroom's lights on
-so it doesn't go dark while you're brushing your teeth. But if you get
+bedroom as a child room sets up a parent/child relationship: while the
+child is in any real state (Occupied, Engaged, Asleep, Hold), the parent
+is held at Occupied, never higher. A busy ensuite means the suite is
+occupied, not that the bedroom is in use. Net effect — your bathroom can
+hold the bedroom's lights on so it doesn't go dark while you're brushing
+your teeth, and when you leave the bathroom the bedroom stays Occupied
+for a few more seconds instead of flashing dark. A child room that is
+offline or unavailable counts for nothing. But if you get
 up in the middle of the night and the bathroom motion trips Occupied,
 your partner can stay asleep in their favorite sleep scene, because
 Asleep sits higher on the ladder than Occupied — the bedroom's own

@@ -1,4 +1,4 @@
-# Zen DojoTools SystemTools — v5.3.2
+# Zen DojoTools SystemTools — v5.3.4
 
 *`zen_dojotools_ha_log_viewer` v1.1.0 · `zen_dojotools_event_emitter` v1.0.0 (same file).*
 
@@ -128,6 +128,8 @@ Reloads all YAML domains: automations, scripts, scenes, groups, helpers, timers,
 **Config check runs first** — blocked on nogo. **Deferred via scheduler** — script fires `zen_event(kind: deferred_reload_all)` and exits; the Scheduler automation handles the actual reload from automation context. This avoids the `asyncio.InvalidStateError` that occurs when a script calls `homeassistant.reload_all` directly after a `response_variable` child call. Returns immediately with `result: success` and `config_check: passed` when queued.
 
 **LAST RESORT ONLY** — use targeted reload modes (`ha_reload_scripts`, `ha_reload_automations`, etc.) whenever possible. `ha_reload_all` reloads every domain and should only be used when targeted reloads cannot resolve the issue.
+
+A targeted reload can still interrupt: `ha_reload_automations` stops any automation that is mid-run.
 
 ---
 

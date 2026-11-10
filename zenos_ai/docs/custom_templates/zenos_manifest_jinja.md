@@ -179,15 +179,15 @@ Unlike every other field above, `missing_required_labels` and `missing_optional_
 
 ## OS Version Fields (auto-injected)
 
-The macro reads the `os_release` drawer from `sensor.zen_system_cabinet_resolved` at render time and injects the following fields automatically. Callers do not set these.
+The macro injects the following fields automatically at render time. Callers do not set these. The OS version comes from `os_version()` in `zen_os_1.jinja`, never from the cabinet. The cortex fields come from the `os_release` drawer in `sensor.zen_system_cabinet_resolved`, which records the cortex text that was actually loaded.
 
 | Field | Source |
 |-------|--------|
-| `os_version` | `os_release.os_version` |
-| `os_tag` | `os_release.os_tag` |
+| `os_version` | `os_version().version` |
+| `os_tag` | `os_version().tag` + `tag_number` |
 | `cortex` | `os_release.cortex` |
 | `cortex_codename` | `os_release.cortex_codename` |
-| `os_release` | Full `os_release` block |
+| `os_release` | `cortex`, `cortex_codename` and `pressed_at` from the drawer, nothing else. A drawer pressed by cortex 45 or earlier also holds a stale list of component versions, which is dropped. |
 
 If the system cabinet is unavailable, these fields default to `'unknown'` or `{}` — the manifest still renders.
 

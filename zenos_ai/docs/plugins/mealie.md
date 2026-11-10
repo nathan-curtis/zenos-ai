@@ -1,6 +1,6 @@
 # ZenOS-AI Mealie / Kitchen Plugin
 
-**Version:** 5.24.1
+**Version:** 5.24.2
 **Package:** `packages/zenos_ai/plugins/mealie/mealie.yaml`
 **Primary script:** `zen_dojotools_kitchen`
 **Internal REST dispatcher:** `zen_sutra_mealie`

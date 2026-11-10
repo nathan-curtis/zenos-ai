@@ -1,6 +1,6 @@
 # ZenOS-AI Firefly III Finance Component
 
-**Version:** 2.9.0 (`zen_dojotools_finance`)  
+**Version:** 2.9.1 (`zen_dojotools_finance`)  
 **Package:** `packages/zenos_ai/plugins/firefly_iii/firefly_iii.yaml`  
 **Primary script:** `zen_dojotools_finance`  
 **Internal REST dispatcher:** `zen_root_firefly` (renamed from `zen_sutra_firefly` in 2.3.0)  
@@ -278,6 +278,7 @@ The YAML notes a planned n8n integration for bank feed → Firefly sync. n8n pus
 
 | Version | Change |
 |---------|--------|
+| v2.9.1 | 2026.11.0: a reply that isn't JSON (an HTML gateway error) is a structured error, not a script failure; transaction search by `tags=` keeps the tags. |
 | v2.9.0 | 2026.11.0: the four seed cases (`run:budget_summary`, `run:bills_list`, `run:net_worth_snapshot`, `run:finance_rollup`) carry the read cert `zenos.finance.read` (level 1, stages `is`). Under `seed_cert_mode` enforce, the finance summaries need it with stage `s`. See [Read certs and parity](../getting_started/security_certification_manual.md#66-read-certs-and-parity). |
 | v2.6.1 | 2026.10.1: `transaction_add` refuses a named source or destination account that matches no Firefly account (`status: error`, `reason: guarded: ...`) before any preview or post. |
 | v2.6.0 | 2026.10.1: `transaction_add` previews unless `confirm=true` (`dry_run` always previews); `external_ref` makes a re-sent post refuse as a duplicate. `budget_summary` reads the `budget-limits` endpoint. |

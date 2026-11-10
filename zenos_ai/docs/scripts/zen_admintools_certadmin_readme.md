@@ -1,4 +1,4 @@
-# Zen AdminTools CertAdmin — v1.8.1
+# Zen AdminTools CertAdmin — v1.8.2
 
 > **2026.11.0:** The `zenos_agent_parity` bundle (built by `cert_audit` from what your enabled summaries actually need) is granted with stages `ise` by default, and each member gets only the stages its tool allows: read certs `is`, emit certs `ie`. See [Read certs and parity](../getting_started/security_certification_manual.md#66-read-certs-and-parity).
 

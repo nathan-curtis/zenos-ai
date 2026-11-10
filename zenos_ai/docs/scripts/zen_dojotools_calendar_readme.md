@@ -12,7 +12,7 @@
 
 `zen_dojotools_calendar` is the canonical tool for all AI-driven calendar operations in ZenOS-AI. All calendar reads, creates, updates, and deletes must go through this tool — never call HA calendar services directly.
 
-Supports HA-native calendars (Google, Local, ICS), Microsoft 365, and any provider the HA calendar integration supports. MS365 calendars use native modify/remove APIs. Other providers use delete + recreate for update (required because HA's `calendar.create_event` service does not support patching).
+Supports HA-native calendars (Google, Local, ICS), Microsoft 365, and any provider the HA calendar integration supports. MS365 calendars use native modify/remove APIs. Other providers use delete + recreate for update (required because HA's `calendar.create_event` service does not support patching). That path needs both `start` and `end`, and recreates only after the delete succeeded or found nothing. A create or update makes one write. An update that changes only the summary keeps the event's dates.
 
 **Split from:** `dojotools_office.yaml`. The script alias and behavior are unchanged — only the file location changed.
 
@@ -38,8 +38,8 @@ Supports HA-native calendars (Google, Local, ICS), Microsoft 365, and any provid
 |-------|-------------|-------------|
 | `action_type` | — | Operation. Default: `read`. |
 | `calendar_name` | `read`, `create`, `update`, `delete` | Calendar entity_id, display name, or `*` / blank for all. A display name matches the calendar's entity name, its device + entity name, or the legacy friendly_name. |
-| `start` | `read` | Start of date range. ISO string (`2026-06-01T09:00:00`) or date string (`2026-06-01`). Default: today 00:00 local. |
-| `end` | `read` | End of date range. Default: tomorrow 00:00 local. |
+| `start` | `read`, `create`, `update` | ISO string (`2026-06-01T09:00:00`), space-separated datetime (`2026-06-01 09:00:00`) or date (`2026-06-01`). For `read`, the start of the range; default today 00:00 local. For `create`, a date alone (`YYYY-MM-DD`) makes an all-day event. A value that does not parse is refused before anything is written. |
+| `end` | `read`, `create`, `update` | Same formats as `start`. For `read`, the end of the range; default tomorrow 00:00 local. For `create`, an omitted end follows `start`: one day for an all-day event, one hour for a timed one. |
 | `summary` | `create`, `update` | Event title. |
 | `description` | `create`, `update` | Event body text. |
 | `location` | `create`, `update` | Event location string. |

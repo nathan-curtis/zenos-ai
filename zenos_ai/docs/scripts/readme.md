@@ -80,7 +80,7 @@ Boot guard, initializer, OOBE driver, and prompt fallback. Gates 0–4 drive the
 
 ---
 
-## 3. Zen DojoTools Profile Editor — v5.4.1 · Persona Editor v1.5.0
+## 3. Zen DojoTools Profile Editor — v5.4.2 · Persona Editor v1.5.2
 **File:** [`zen_dojotools_profile_readme.md`](zen_dojotools_profile_readme.md)
 
 Interactive profile surface for ZenOS-AI identity profiles. Reads and writes AI persona, household, user, and family profile drawers; signs/restores AI essence; and manages AI KFC certifications. Expose to your conversation agent so Friday can configure household details conversationally.
@@ -94,14 +94,14 @@ Core primitive for label CRUD and entity tagging. Backbone of the label index th
 
 ---
 
-## 5. Zen DojoTools Identity — v5.15.0
+## 5. Zen DojoTools Identity — v5.15.1
 **File:** [`zen_dojotools_identity_readme.md`](zen_dojotools_identity_readme.md)
 
 Identity resolver for household members and AI constructs. MCP-exposed. Resolves by label, person entity, cabinet entity, or GUID. Delegates to the same path the prompt uses. Writes the ACL v2 record FileCabinet enforces (`acl_migrate`, `acl_set`, `take_ownership`) and owns the live-ack chokepoint.
 
 ---
 
-## 6. Zen DojoTools Scheduler — v5.2.7
+## 6. Zen DojoTools Scheduler — v5.3.1
 **File:** [`zen_dojotools_scheduler_readme.md`](zen_dojotools_scheduler_readme.md)
 
 Trigger orchestrator. 20+ trigger IDs, component subscription via Dojo drawer, heartbeat drawer, and manual force events (`summary_force`, `ninja_force`, `supersummary_force`). Hardware triggers strip to `zen_dojotools_scheduler_custom.yaml`.
@@ -157,7 +157,7 @@ FileCabinet garbage collector. Enforces drawer hide/delete/recycle lifecycle. `g
 
 ---
 
-## 13. Zen DojoTools SystemTools — v5.3.2
+## 13. Zen DojoTools SystemTools — v5.3.4
 **File:** [`zen_dojotools_systemtools_readme.md`](zen_dojotools_systemtools_readme.md)
 
 HA lifecycle management: config check, safe restart, update install/skip. Log viewer (five modes). Structured `zen_event` emission. `render_dojo` and `render_system` template render tools. `prompt_health` prompt integrity checker. `pipeline` summarizer pipeline status. Internal HA API wrapper (do NOT expose). Requires long-lived HA token in `secrets.yaml`. v5.2.0: `kfc_manifest` (KF5 self-registration, `zen_system` rollup component); `home_status`/`home_mode`, `quiet_hours`/`work_hours`, `scheduler_anchors`, `guest_mode`/`entertaining` — see [components/systemtools.md](../components/systemtools.md).
@@ -178,7 +178,7 @@ Universal, contract-safe telemetry tool for emitting structured ZenOS-AI events 
 
 ---
 
-## 16. Zen DojoTools FileCabinet — v6.36.3
+## 16. Zen DojoTools FileCabinet — v6.37.1
 **File:** [`zen_dojotools_filecabinet_readme.md`](zen_dojotools_filecabinet_readme.md)
 
 Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. CabCeption nested drawer trees via `/` path separator. VirtualDrawer (cross-cabinet redirect) and LiveDrawer (tool-call-on-read with warm/cold cache). **Tapestry** (`weave`/`weave_preview`/`weave_save`) — multi-cabinet drawer composer; definitions stored as labeled drawers; cycle detection; depth 3 unrolled. `move`/`copy` blocked on mounted drawers by default (`force_action=true` required to transfer mount config intact). `fleet` + `expansion_sitrep` modes. Mode-scoped `tool:mode` callout whitelist entries (KF5 self-registration support) alongside legacy plain/`tool:*` forms. Single exit per action, honest `write_unverified` answers, every write a stated merge or replace, an ACL gate that checks every hop of a mount chain (enforced on a fresh install; audit on an upgrade until the console switch, `prompt_loader mode=fc_acl_mode`), and expansions (`expand_drawer` / `collapse_drawer`) that move a root drawer and its tree to an expansion slot as a permanent redirect. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet or the admin door.
@@ -248,7 +248,7 @@ Agent-composable casting of a Lovelace dashboard/view to any display in the hous
 
 ---
 
-## 25. Zen AdminTools CertAdmin — v1.6.0
+## 25. Zen AdminTools CertAdmin — v1.8.2
 **File:** [`zen_admintools_certadmin_readme.md`](zen_admintools_certadmin_readme.md)
 
 Admin-only cert issuance/revocation authority for AI persona (`ai_user`) cabinets. Not agent-reachable (`mcp_exposed: false`) — every call is a household-admin action, not something an agent invokes on itself. Grants name the pipeline stages they cover (`cert_stages`), and `zenos_agent_autonomous` covers the summarizer's background sends.

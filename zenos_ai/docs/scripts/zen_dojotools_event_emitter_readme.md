@@ -209,7 +209,7 @@ Reserved Kinds
 
 The emitter is reachable by agents, so kinds the system acts on are internal-only. A call with a reserved kind returns status: error with reason "guarded: kind '<kind>' is reserved for internal system events" and fires nothing. Matching ignores case and surrounding whitespace.
 
-Reserved prefixes: deferred_, dojotool_, postman_, priority_inject_, gc_, cabinet_, identity_, alert_, label_, warmup_, image_, autovac_. Reserved exact kind: kata_emit.
+Reserved prefixes: deferred_, dojotool_, postman_, priority_inject_, gc_, cabinet_, identity_, alert_, label_, warmup_, image_, autovac_. Reserved exact kinds: kata_emit, room_control_request (Room Manager's override listener writes the room's control key from it, so an agent goes through room_control_set and its certs instead).
 
 Still open: summary_force, supersummary_force, ninja_force, and free-form kinds.
 

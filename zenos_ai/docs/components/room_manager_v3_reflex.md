@@ -195,8 +195,8 @@ never requires touching either file.
 | `occupied` | Presence binary_sensor(s) | Drives `occupied` |
 | `engaged` | media_player(s), monitored docks | Drives `engaged` on start; on stop, arms the shared timer's engaged→occupied decay |
 | `asleep` / `bed_occupancy` | Sleep-detection sensor(s) | Drives `asleep` |
-| `hold` | Any binary_sensor/cover | Floors at `occupied` while true, no clock, instant fall-through on close ("fridge door mode") |
-| `wasp_door` | A door contact sensor | Real wasp-in-a-box, level-based (no latch, no timer) — see [Architecture §25.7](../architecture/25_room_manager_v3.md) for the full formula. Motion/occupancy live AND every `wasp_door` for the room reads closed → `hold`, recomputed fresh on every render; any `wasp_door` opening clears it that same render, no memory of the last edge. Requires the room-level `wasp_enabled` gate below — `wasp_door` alone is not sufficient. |
+| `hold` | Any binary_sensor/cover | Resolves the room to `hold` while true, no clock, instant fall-through on close ("fridge door mode") |
+| `wasp_door` | A door contact sensor | Real wasp-in-a-box, a latch — see [Architecture §25.7](../architecture/25_room_manager_v3.md) for the full formula. Motion/occupancy live AND every `wasp_door` for the room reads closed → `hold`, and the room stays held after presence stops, because nobody has left through a door. Any `wasp_door` opening clears it (then a short blind period, `wasp_blind_seconds`, default 5 s, before it can set again); a manual override clears it too; it never clears on a timeout. Requires the room-level `wasp_enabled` opt-in. |
 | `wasp_enabled` | The room's Area, OR any entity carrying the room's label | Room-level opt-in gate — a room needs this AND at least one `wasp_door`-tagged entity before `hold` can ever fire from wasp. Deliberately opt-in: a room connected by an open archway instead of a real door (no way to distinguish "someone's inside with the door shut" from "there is no door") would misfire constantly if wasp were on by default. Read/write via `zen_dojotools_room_manager mode=wasp_enable area=<room>` — omit `wasp_room_enabled=` to read, pass `true`/`false` to write. |
 | `smoke` / `carbon_monoxide` / `moisture` / `siren` | Detector entities | Arms `emergency_latch` — human/agent ack-only clear |
 | `vibration` | Any binary_sensor with a `vibration.detected`/`vibration.cleared` event source | Purpose-neutral by design — this label alone only makes the dispatch resync promptly on vibration edges. To actually feed `occupied`/`engaged`, ALSO apply that label to the same entity (works today with zero code change: `_occ_source_ents`/`_engaged_source_ents` already treat any labeled entity's `on` state as truthy). See `zen_room_manager_dispatch.yaml` ~L590-606. |
@@ -205,9 +205,9 @@ never requires touching either file.
 | ~~`privacy_door`~~ | — | **Dead, as of 2026-08-15.** Used to try to `input_boolean.turn_on/off` the triggering lock entity itself (wrong domain, silently failed) via `zen_room_manager_dispatch.yaml` L138-142 — removed rather than left broken. `room_state.yaml` never consumed it either. If you find this label on a real entity, retag it `ext_lock`. |
 | `room_control_manager` | The room's control select | Enables `Paused`/`Automation`/`Cleaning`/manual-tier overrides. Zero shared entity/label/code path with legacy `room_control`. |
 | `room_timer` + `room_timer_class` | Timer + paired select | Enables decay-backed occupied/engaged/asleep — one shared clock for all three. `asleep` class default is 8h (was 30m). **Stale-class self-heal:** a plain hold-release deliberately doesn't restart an `asleep` timer, which can leave the stored `room_timer_class` stuck on `asleep` with the timer cancelled; the motion and door arm gates would then silently never re-arm. On the next motion/door event, if the room isn't wasp-latching, isn't genuinely held/asleep per its **live** state sensor, and its timer is idle, the dispatcher resets the stale class to `''` first, so that same event arms normally. |
-| `entertaining_hold` | `input_boolean.zen_entertaining` + the room's own label | Opt-in per room. Outranks `occupied`/`vacant`, outranked by `engaged`/`asleep`/manual override/emergency. |
+| `entertaining_hold` | `input_boolean.zen_entertaining` + the room's own label | Opt-in per room. Outranks `engaged`/`occupied`/`vacant`, outranked by `asleep`/manual override/emergency. |
 | `guest_hold` | `input_boolean.zen_guest_mode` + the room's own label | Same tier/ranking as `entertaining_hold`, independent source. |
-| `presence_hold` | A continuous-presence (mmWave, not PIR motion) sensor + the room's own label | Same tier/ranking as `entertaining_hold`/`guest_hold`, independent source. Distinct from the generic `hold` label above — `hold` only floors at `occupied` ("fridge door mode"), `presence_hold` resolves to the literal `hold` state. Traces back to legacy Node-RED's deliberate Hold-class wiring for continuous-presence sensors, which v3 had no equivalent for until 2026-08-22. |
+| `presence_hold` | A continuous-presence (mmWave, not PIR motion) sensor + the room's own label | Same tier/ranking as `entertaining_hold`/`guest_hold`, independent source. Like the generic `hold` label, it resolves to the literal `hold` state. |
 | `autosleep_disable` | Any entity carrying the room's label | Kills automatic asleep-firing for this room entirely. Manual `room_control_manager` "Asleep" pick is unaffected. |
 | `asleep_window_disable` | Any entity carrying the room's label | Keeps autosleep active but removes the night→wake window gate. |
 | `autosleep_schedule` | A truthy-resolving entity (`input_boolean`/`switch`/`binary_sensor`, or `calendar`/`schedule.*`) + the room's own label | Authoritative override of the night→wake window — **replaces** the clock check entirely for that room rather than OR'ing with it. `asleep_window_disable` still outranks it if a room somehow carries both. For non-standard schedules (shift work, etc.) — see the operator's manual §6. |
@@ -273,9 +273,10 @@ states.sensor.<room>_state
 ### Cascade order (highest wins)
 
 ```
-emergency (or child-emergency) > paused (manual, or child-paused) > asleep >
-manual override (any other room_control_manager value) > engaged >
-hold (wasp / entertaining / guest / presence) > occupied (or child-occupied, or fridge-door hold) > vacant
+emergency (or child-emergency) > child-paused >
+manual override (any room_control_manager value, Paused included) > asleep >
+hold (wasp / entertaining / guest / presence / hold entity) > engaged >
+occupied (or child-occupied) > vacant
 ```
 
 **Updated 2026-08-23.** Two real changes from the previous ladder:
@@ -290,6 +291,11 @@ hold (wasp / entertaining / guest / presence) > occupied (or child-occupied, or 
   `child_occupied` — a subroom in active use implies the parent space is
   occupied, not that the parent itself is Engaged. De-escalation is now
   always a single step (occupied → vacant), never two.
+
+Hold ranks above engaged, because hold is a superset of engaged. A child
+that is `unknown`, `unavailable` or missing counts for nothing, and a
+releasing child keeps its parent `occupied` for an 8 second bridge before
+the parent re-renders.
 
 
 ---

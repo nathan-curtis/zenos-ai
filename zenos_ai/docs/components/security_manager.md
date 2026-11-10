@@ -1,6 +1,8 @@
 # ZenOS-AI Security Manager
 
-**Version:** 5.9.0
+**Version:** 5.9.2
+
+> **2026.11.0 (5.9.1, 5.9.2):** `auto_arm_check` is refused from a user or agent session; only the auto-arm automations call it. A `zone.home` that is unknown or unavailable is never an empty house: the count reads -1, nothing arms and the arrival path doesn't run, and the Night-Late and Away watchers ignore a change from unknown or unavailable (a template reload).
 
 > **2026.11.0 (5.8.0, 5.9.0):** the `security_manager` KFC drops `master_switch` and its instruction; on and off is `meta.enabled`. `security_perimeter`, `security_panel` and `security_cameras` are cache slots (`role: cache`, no triggers): a trigger pack of your own writes them and the `security_manager` rollup reads them as `perimeter_cache`, `panel_cache` and `camera_cache`. On a stock install nothing fills them, and the rollup runs on what it has. Its summary seeds Room Manager's `home_overview`, so under `seed_cert_mode` enforce it needs `zenos.presence.read` with stage `s`.
 **File:** `dojotools/dojotools_security_manager.yaml`

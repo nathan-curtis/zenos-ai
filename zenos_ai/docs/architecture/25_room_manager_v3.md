@@ -18,19 +18,23 @@ The room-as-object idea comes from bangali's RoomManager for SmartThings (Chapte
 Every deployed room has one template sensor built from `blueprints/template/zenos/room_state.yaml`, found by the `zen_room_state` label. Its `state` is the resolved tier. The highest tier with an active source wins:
 
 ```text
-emergency > manual override > asleep > engaged > child-engaged
-  > hold (wasp, entertaining, guest) > occupied > vacant
+emergency > child paused > manual override > asleep
+  > hold (wasp, entertaining, guest, presence, hold entity) > engaged
+  > occupied (including any active child) > vacant
 ```
+
+Hold ranks above engaged, because hold is a superset of engaged.
 
 | Tier | Source |
 |---|---|
-| `emergency` | `emergency_latch` input_boolean, armed by smoke, CO, moisture, or siren. Wins even over `paused`. Cleared only by a human or agent acknowledgement. |
+| `emergency` | `emergency_latch` input_boolean, armed by smoke, CO, moisture, or siren, or a child room in `emergency`. Wins even over `paused`. Cleared only by a human or agent acknowledgement. |
+| child paused | A child room in `paused`. The parent resolves `paused` too. |
 | manual override | `room_control_manager` select: `paused`, `automation`, `cleaning`, `vacant`, `occupied`, `engaged`, `asleep`, or `hold`. Releases back to `Auto`. |
 | `cleaning` | A manual override set by the Cleaning Dispatcher while a vacuum works the room. |
 | `asleep` | Live signal (window-gated, 21.8), the shared timer decaying in class `asleep` (8 hour default), an `asleep_hold` entity, or a manual override (never window-gated). Beats direct `engaged` in the same room, and beats any child cascade. |
 | `engaged` | Live signal (media playing, a monitored desk in use), or the shared timer decaying in class `engaged`. |
-| `hold` | `wasp_flag`, `entertaining_hold`, or `guest_hold`. Same visible state, distinguished by `last_trigger` (25.7). |
-| `occupied` | Live signal, the shared timer decaying in class `occupied`, a non-vacant child, or an active `hold`-labeled entity (a fridge door: floors the room at occupied with no clock, and falls through the moment it closes). |
+| `hold` | `wasp_flag`, `entertaining_hold`, `guest_hold`, `presence_hold`, or an active `hold`-labeled entity (a fridge door: holds the room with no clock, and falls through the moment it closes). Same visible state, distinguished by `last_trigger` (25.7). |
+| `occupied` | Live signal, the shared timer decaying in class `occupied`, or an active child room (see Child rooms). |
 | `vacant` | Nothing is true. |
 
 **Direct asleep always wins.** Handlers that rearm a room's timer treat both `hold` and `asleep` as already held, so a motion event in an asleep room (a bathroom trip) cannot rearm the timer into class `occupied`. A child room going occupied cancels the parent's timer only when the parent's own state is outside `asleep` and `hold`. Either guard alone missing would let child activity or stray motion knock a sleeping room down to `occupied`.
@@ -43,7 +47,7 @@ Decay durations come from the room's `occupied_minutes`, `engaged_minutes`, and 
 
 ### Child rooms
 
-An ensuite or sub-room contributes to its parent, default on, opt out per room with `child_link_disable`. A child at `engaged` promotes the parent to `engaged`. A child in any other active, non-paused state floors the parent at `occupied` for as long as it stays active. The parent's own direct `asleep` always wins.
+An ensuite or sub-room contributes to its parent, default on, opt out per room with `child_link_disable`. A child in any real state other than `vacant` or `paused` (`engaged`, `asleep` and `hold` included) holds the parent at `occupied`, never higher, for as long as it stays active: a busy ensuite means the suite is occupied, not that the bedroom is in use. A child in `paused` or `emergency` cascades as itself. A child that is `unknown`, `unavailable` or missing counts for nothing. When a child releases, the parent stays `occupied` for an 8 second bridge and then re-renders, so the release doesn't flash the parent dark. The parent's own direct `asleep` always wins.
 
 ### Explainability
 
@@ -134,21 +138,22 @@ An override wins over live evidence when set, and releases on its own when the r
 
 ### Wasp hold
 
-`wasp_flag_active` is level-based. It is recomputed from current state on every render and has no memory:
+`wasp_flag_active` is a latch. It sets when presence is live with every door closed, and keeps itself (through its own attribute) until a door opens:
 
 ```text
-wasp_enabled AND wasp_door entities exist AND NOT manual_override
-  AND NOT any wasp_door open now
-  AND (direct_occupied OR occupied timer holding)
+cleared  if NOT wasp_enabled OR no wasp_door entities OR manual_override
+            OR any wasp_door open now
+set      if direct_occupied OR occupied timer holding
+else     keep the previous value
 ```
 
-Presence is live and every door is closed: the room is held. A door opens: hold clears on the same render, and the opening itself floors the room at `occupied`. It closes again with presence still live: hold resumes. Nothing latches, so nothing can get stuck.
+Presence is live and every door is closed: the room is held. Presence then stops, and the room stays held, because whoever is inside hasn't left through a door. A door opens: hold clears on that render, and the opening itself floors the room at `occupied`. After a release the latch can't set again for a short blind period (`wasp_blind_seconds`, default 5 seconds), so a door bouncing shut doesn't re-latch it at once. A manual override clears it too. It never clears on a timeout.
 
 `wasp_door` alone is not enough. The room must also carry `wasp_enabled`, on its area or on any entity with the room label. A room joined by an open archway cannot tell "someone inside with the door shut" from "there is no door," so wasp would misfire there. Set it with `mode=wasp_enable area=<room>`.
 
 ### Entertaining and guest hold
 
-Two independent `hold` sources, opted in per room by labeling the existing shared boolean with the purpose label and the room label. A room whose label is not on the boolean is unaffected. Both outrank `occupied` and `vacant`, and are outranked by `engaged`, `asleep`, manual override, and emergency.
+Two independent `hold` sources, opted in per room by labeling the existing shared boolean with the purpose label and the room label. A room whose label is not on the boolean is unaffected. Both outrank `engaged`, `occupied` and `vacant`, and are outranked by `asleep`, manual override, and emergency.
 
 ## 25.8 Asleep
 

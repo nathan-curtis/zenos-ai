@@ -1,4 +1,4 @@
-# Zen DojoTools FileCabinet — v6.36.3
+# Zen DojoTools FileCabinet — v6.37.1
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 **ZenOS Release:** 2026.11.0 'This Is Spinal Tap'
@@ -246,10 +246,10 @@ A LiveDrawer absorbs the KF4 schema. It is a VirtualDrawer variant where the mou
 
 | Field | Purpose |
 |-------|---------|
-| `tool` | Script name to call (e.g. `zen_dojotools_inventory`) |
+| `tool` | Script name to call (e.g. `zen_dojotools_inventory`). `action_type` is read when `tool` is absent; a drawer that names two different scripts in the two fields is refused with `tool_call_blocked`, because it could pass the whitelist as one and run as the other. |
 | `params` | Params dict passed to the tool call |
 | `cache.ttl_seconds` | Cache TTL in seconds |
-| `cache.digest_fields` | Optional: field paths to extract from the tool response for caching |
+| `cache.digest_fields` | Optional: field paths to extract from the tool response for caching. Each path returns only its own field. |
 
 **Read behavior:**
 
@@ -274,6 +274,8 @@ fc_args: >
 ```
 
 Tool calls are gated by a whitelist stored in `sensor.zenos_system_cabinet` (`fc_mount_callout_whitelist`). If the drawer's `fc_args.tool`/mode combination is not covered by the whitelist, the read returns `tool_call_blocked`.
+
+**Stage `l` (live drawer) cert check.** The drawer's tool runs as the agent responsible for the household (the prime, else the default agent). When the drawer's mode is one the tool gates in its `certs_required`, that agent must hold the cert with stage `l`. `help`, `tool_manifest`, `kfc_manifest` and a bare call are ungated. `seed_cert_mode` decides what a miss does: in audit (the default when the drawer is missing) FileCabinet fires `zen_event` `live_cert_audit` with `would_deny` and runs the call; in enforce it refuses with `live_cert_required`. A tool lists `l` in a cert's `st_ok` before that stage can be granted. No shipped tool does yet, and no shipped live drawer runs a gated mode.
 
 A live drawer whose tool call reads the same drawer back, directly or through another mount (A reads B, B reads A), is refused with `tool_call_cycle_detected`. While a resolution is in flight, FileCabinet keeps a `<key>/mount_resolving` marker on the volume and clears it on every exit. The marker is only checked when the cache misses, and one left behind by a crashed run expires after 30 seconds.
 
@@ -394,12 +396,12 @@ Creates if absent, updates if present (alias `write`). Default `write_mode` is `
 Removes the drawer, prunes `_label_index`, verifies deletion, then cascades to all children via prefix scan. The answer counts the children removed in `children_deleted`.
 
 ### `move`
-Transfers a drawer to `destination_path` (same cabinet) or `destination_volume_entity_id` (cross-cabinet). A destination that resolves to the source key refuses with `code: same_key`. Cascades to all children. Each child write is verified before the source child is deleted. Label index is migrated: source index is pruned, destination index is updated with moved labels.
+Transfers a drawer to `destination_path` (same cabinet) or `destination_volume_entity_id` (cross-cabinet). A destination that resolves to the source key refuses with `code: same_key`. Cascades to all children. The drawer and every child keep their `meta` and their own `acl`, so a move never declassifies a drawer. Each child write is verified before the source child is deleted. Label index is migrated: source index is pruned, destination index is updated with moved labels.
 
 **Mounted drawer protection:** If the drawer is a VirtualDrawer or LiveDrawer, `move` returns `status: error, code: mounted_drawer` with the mount type. Use `set_mount` at the destination key + `delete` at the source instead. Pass `force_action: true` to bypass — the full mount config transfers intact (the mount_point structure moves with the entry, not just `.value`). Without `force_action`, the operation is hard-blocked; a plain move without it would silently strip the mount config, leaving a dead entry at the destination.
 
 ### `copy`
-Copies a drawer to `destination_path`. Cascades subtree. If no `tags` are supplied, the source drawer's existing labels are inherited at the destination.
+Copies a drawer to `destination_path`, or into another cabinet with `destination_volume_entity_id`. Cascades the subtree; a cross-cabinet copy writes the children into the destination. The drawer and every child keep their `meta` (expiry) and their own `acl`, so a copy never declassifies a drawer. If no `tags` are supplied, the source drawer's existing labels are inherited at the destination. A destination write the cabinet never confirms answers `write_unverified`, and the copy then skips the labels and children.
 
 **Mounted drawer protection:** Same guard as `move`. Copying a mount without `force_action: true` is blocked to prevent silent mount config loss at the copy destination.
 
@@ -1033,6 +1035,10 @@ Stored as a drawer value (JSON):
 - Max depth 3 (unrolled recursion — 3 passes, cycle detection across all passes)
 - Output truncated at 8KB (`truncated: true` + `dropped_sources` list in response)
 - Any output >2KB: response includes `virtual_drawer_hint` with a call shape to save the result as a LiveDrawer
+
+### Access
+
+`weave` and `weave_preview` check read (`r`) on every source drawer and every nested definition for the caller, the same check a `get` runs. Denied sources are logged to `fc_acl_audit`. With `fc_acl_mode` enforce their content is never read, and each one is listed in `errors` as `acl_denied`.
 
 ### Tapestry Implementation Notes
 

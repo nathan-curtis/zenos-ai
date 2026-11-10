@@ -277,17 +277,17 @@ If you grant broad allow scope and later regret it, remove the specific entry as
 | `i` | interactive | Yes, by every gated tool |
 | `s` | Ninja seed | Yes: read certs on seeds, and a component's `meta.requires` |
 | `e` | Ninja emit (the act at the end of a run) | Yes: acts and chaining |
-| `l` | live drawer | Not yet. FileCabinet will check it when it runs a live drawer's tool. |
+| `l` | live drawer | Yes: FileCabinet, when a live drawer runs a gated mode of its tool. `seed_cert_mode` decides: audit logs `live_cert_audit`, enforce refuses with `live_cert_required`. |
 | `m` | SuperSummary | Reserved. SuperSummary calls no gated tool, and reads katas the Ninja already filtered. |
 | `c` | scheduler | Reserved. The scheduler only calls housekeeping. |
 
-No tool allows `m` or `c` in its `st_ok`, so a grant can't ask for them.
+No tool allows `l`, `m` or `c` in its `st_ok` yet, so a grant can't ask for them. A tool that adds `l` to a cert's `st_ok` makes that cert grantable for its live drawers. No shipped live drawer runs a gated mode.
 
 - A grant stores its stages as `st`. A grant without one is interactive only, which is every grant made before 11.0.
 - Each tool declares the stages its certs allow (`st_ok` in its `certs_required`). A grant can't ask for a stage its tool doesn't allow.
 - Outside `i`, only an exact grant counts. A parent cert never covers a child in the background.
 - Adding a stage goes to your phone like any grant, and the prompt says it in plain words ("in the background, with no one asking"). Revoking with `cert_stages` drops just those stages.
-- In 2026.11.0 two stages are read. The Ninja emit stage (`e`) gates the act at the end of a run. The Ninja seed stage (`s`) gates a component that sets a minimum level (`meta.requires`): the agent must hold that cert with `s`, or the run is refused (`kfc_cert_required`). Seed tools themselves are declared by the tool (`seed_modes`), not granted.
+- In 2026.11.0 three stages beyond `i` are read. The live-drawer stage (`l`) gates a live drawer's gated mode. The Ninja emit stage (`e`) gates the act at the end of a run. The Ninja seed stage (`s`) gates a component that sets a minimum level (`meta.requires`): the agent must hold that cert with `s`, or the run is refused (`kfc_cert_required`). Seed tools themselves are declared by the tool (`seed_modes`), not granted.
 - The pipeline acts as the agent responsible for the household: the prime in its ACL, else the default agent. That agent must be onboarded, or summaries pause.
 
 ```yaml
