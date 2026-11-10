@@ -93,6 +93,14 @@ One gate ships on: the backstage pass. An agent you haven't approved gets help a
 
 See [What the New Security Unlocks](#what-the-new-security-unlocks).
 
+**Release candidate 3 is a review pass.** A full code review of RC2 and a round of Room Manager tickets, fixed:
+- **Security holes closed.** Auto-arm can't be called from a conversation, weave can't read a drawer you can't, a copy or move keeps the drawer's access rules, a live drawer can't name one tool and run another, and the event emitter can't change a room's control mode.
+- **The live-drawer stage is checked.** A live drawer that runs a gated mode needs its cert granted for live drawers, under the same audit/enforce switch as read certs.
+- **Rooms behave.** Rooms no longer overwrite each other's timers, busy fan rooms no longer crowd out room events, releasing an ensuite no longer flashes its parent dark, and room state no longer scans every sensor.
+- **Calendar, Profile, Identity, Spa, Finance, Mealie and Media Manager fixes,** and auto-arm no longer reads a lost presence reading as an empty house.
+
+See [Fixed](#fixed).
+
 | Planned | Landed | Still to come |
 |---|---|---|
 | Access-path audit | The audit drove the default table and caller origin below. | Finishing the map of every path in. |
@@ -414,10 +422,10 @@ See [Building a KFC](../kung_fu/building_a_kfc.md#kf6-acts-chains-read-certs-and
 - **Turning a profile's tracking off sticks.** Profile Editor wrote it back on.
 - **Identity finds nested family members.** `is_member` missed a member of a family inside a family.
 - **The cabinet repair selector lists its options again.**
-- **Spa history works.** The 7-day baseline query sends its window and types, and history metrics come back as values, not strings. Its climate, cover and camera name fallbacks look only in their own domain instead of walking every entity in Home Assistant.
+- **Spa history works.** The 7-day baseline query sends its window and types, and history metrics come back as mappings, not strings. Its climate, cover and camera name fallbacks look only in their own domain instead of walking every entity in Home Assistant.
 - **Finance survives a gateway error.** A reply that isn't JSON, such as an HTML error page, is a structured error instead of a script failure. Transaction search by `tags=` keeps the tags.
 - **Mealie builds its ingredient-to-recipe map.** It came back empty.
-- **Media Manager's room match counts.** A search hit in the room you asked about ranks higher, as intended.
+- **Media Manager's room match counts.** A search hit that matches the room's provider now raises its confidence.
 - **A live drawer's digest returns only the fields it names.** Each field held the whole response.
 - **FileCabinet copy is honest and complete.** A copy whose destination never confirms answers `write_unverified` and stops before the labels and children. A cross-cabinet copy writes its children into the destination; they went back into the source.
 - **Copying or moving a drawer keeps its access rules and expiry,** for the drawer and every child. A copy or move never declassifies a drawer.
