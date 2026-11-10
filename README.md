@@ -10,7 +10,7 @@ Let's automate everything that isn't nailed down.
 
 And a few things that are.
 
-**Release Candidate 2: 2026.11.0 'This Is Spinal Tap'** (`feat/2026.11.0`, ETA Saturday, November 14, 2026) | Current Stable: 2026.10.2 'Tron' (security patch on 2026.10.0) | Legacy line: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) and 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/spinal_tap.md).
+**Release Candidate 3: 2026.11.0 'This Is Spinal Tap'** (`feat/2026.11.0`, ETA Saturday, November 14, 2026) | Current Stable: 2026.10.2 'Tron' (security patch on 2026.10.0) | Legacy line: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) and 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/spinal_tap.md).
 
 > **ZenOS Spook advisory (Home Assistant 2026.11):** install Spook **5.5.1** and park there until the pending Spook fixes ship in 5.11.2 or later. On Home Assistant 2026.11, Spook 5.6.0 to 5.10.0 fail to load (`cannot import name 'CONF_STOP_ACTIONS'`), and 5.11.0 and 5.11.1 freeze a ZenOS install for 30 to 40 seconds at a time ([frenck/spook#2005](https://github.com/frenck/spook/issues/2005)). On 5.5.1 everything works except the Ectoplasm actions that need Spook 5.7.0 (repair and ghost lists, categories, entity icons and aliases, and helper create and delete other than `input_number`): those answer `spook_version_required` and change nothing. To move: in HACS open **Spook**, choose **Redownload**, pick **5.5.1**, and restart Home Assistant. Still on Home Assistant 2026.10 or earlier? Stay where you are.
 
