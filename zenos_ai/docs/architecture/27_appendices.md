@@ -141,7 +141,7 @@ Every "Not yet built" box in the book, in one place.
 | 19 | Signed certificates issued by a certificate authority | Design direction; the entry is already shaped for it |
 | 19 | Secure enclave cabinet for certifications, accessed only through a representative token derived from the conversation ID (salted and hashed), expiring at session start plus 5:30 | In progress |
 | 19 | A gate that reads `waives_live_ack` | Recorded by CertAdmin, read by no tool |
-| 19 | Stage checks beyond the summarizer's emit step, and removing the seed and act whitelists | Stages defined since 2026.11.0; only emit is checked; the lists go in 2026.12 |
+| 19 | Stage checks for SuperSummary and the scheduler, and removing the seed and act whitelists | Seed, emit and live-drawer stages checked since 2026.11.0; SuperSummary and the scheduler reserved; the lists go in 2026.12 |
 | 20 | Telling one agent or one session from another; the admission token bound to `zen_root_authentik` | Later phase; the token waits on an OIDC plugin |
 | 20 | A responsible agent for a family or a person, not only the household | Built for the household's pipeline since 2026.11.0 |
 | 20 | Administrative competency certification | Design direction for this release line |

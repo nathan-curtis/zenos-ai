@@ -46,13 +46,14 @@ A Monk is not a separate agent or layer. It is the model call, made once per com
 
 For one KFC, the Ninja Summarizer:
 
-1. Reads the component definition from the Dojo cabinet.
-2. Gathers context. A component with a `seed` or `area_seed` calls a declared tool (for example Room Manager `mode=get` for an area) to get its context. Otherwise it runs an Index call over the component's declared labels. A seed tool must be on the component's whitelist. A call outside it is blocked and logged.
-3. Loads the component Kata schema, `kata_template`, and the component's previous Kata for continuity.
-4. Builds a prompt: instructions, the schema to fill, an example, the gathered context, and trigger notes.
-5. Calls the Monk.
-6. Validates the result and writes it to the Kata cabinet under the component's `kata_key` (Chapter 15).
-7. Decides whether anything needs to escalate (14.4).
+1. Reads the component definition from the Dojo cabinet. A component whose `role` is `cache` is skipped: it is a slot a trigger pack writes (Security Manager's perimeter, panel and camera slots), not a summary, so a run can never overwrite it.
+2. Checks that the agent the run acts as may read what it is about to read (14.6).
+3. Gathers context. A component with a `seed` or `area_seed` calls a tool (for example Room Manager `mode=get` for an area) to get its context. Otherwise it runs an Index call over the component's declared labels. The seed must be a mode the tool declares for the summarizer (`seed_modes` in its `tool_manifest`); any other seed stops the run before the model is called.
+4. Loads the component Kata schema, `kata_template`, and the component's previous Kata for continuity.
+5. Builds a prompt: instructions, the schema to fill, an example, the gathered context, trigger notes, and the act the component's tool declares, if any.
+6. Calls the Monk.
+7. Validates the result and writes it to the Kata cabinet under the component's `kata_key` (Chapter 15).
+8. Decides whether anything needs to escalate (14.4).
 
 ## 14.3 SuperSummary: the whole house
 
@@ -78,15 +79,21 @@ Here is what that synthesis reads like when Friday is asked for it:
 
 ## 14.4 Escalation
 
-A component Kata can say that something needs action: `action_required`, an `urgency` from 0 to 10, and optionally a `suggested_act_event` naming a tool call that would address it. The Ninja Summarizer routes that three ways.
+A component Kata can say that something needs action: `action_required`, an `urgency` from 0 to 10, and optionally a `suggested_act_event` naming a tool call that would address it, with `suggested_act_args`. The Ninja Summarizer routes that three ways.
 
 **Refresh the whole house.** If urgency is at or above the component's `drift_threshold`, it fires `summary_force`, so `zen_summary` reflects the change now rather than at the next scheduled run.
 
 **Act autonomously**, through a gated path. A suggested action is emitted only if all of these hold: the component asserted `action_required`, urgency is at or above the push floor (default 4) or the life-safety threshold, and then three layers pass in order:
 
 1. **Infrastructure deny.** A suggested action that targets the dispatcher or tool router is refused outright and logged as critical. A summary cannot escalate into the routing layer.
-2. **Master switch.** `input_boolean.zen_action_emission_enabled` must be on. It is off on a fresh install, and it is operator-only: no agent can write it.
-3. **Whitelist.** The specific tool and mode must be on the action whitelist.
+2. **Emission switch.** `input_boolean.zen_action_emission_enabled` must be on. It is off on a fresh install, and it is operator-only: no agent can write it.
+3. **The emit cert.** The target tool names the cert a background act needs: the one in its `certs_required` whose `st_ok` allows the Ninja emit stage `e`. The agent the run acts as must hold that cert with stage `e`, which a person approved on a phone (Chapter 19). The act must also be one the tool declares (`act: {mode, args, description}` in its `tool_manifest`), with arguments that fit the declaration; otherwise it is refused as `no_act_declared` or `act_args_invalid`. A life-safety urgency skips this layer, as Postman's own gate does; the first two still apply.
+
+A refused act is written onto the component's Kata as `act_blocked`, naming what to grant, so the refusal is visible where the decision was made.
+
+**Summaries can start other summaries.** The Ninja declares its own act, `run`, behind `zenos.pipeline.chain`. A component may start only the components it lists in `chain_to`, each hop passes every gate on its own, a component already on the chain is refused (`chain_loop`), and a chain stops three deep (`chain_depth`).
+
+> **Not yet built.** Through 2026.11.0 the old act whitelist is a bridge: an act whose cert the agent holds for interactive use only still goes through when its tool is on the list, stamped legacy, with a notice saying which stage to grant. The bridge and the list go in 2026.12.
 
 **Ask a human.** Anything that needs attention but has no automatable action goes to `zen_dojotools_urgency_handler`, which opens or updates a task (Chapter 22). Before escalating, the summarizer checks `zen_dojotools_alertmanager mode=check_ack` for the component. If a household member has acknowledged the condition, the escalation is suppressed until the acknowledgement expires or is revoked (Chapter 15).
 
@@ -104,16 +111,31 @@ Three switches stop the pipeline, checked master first:
 
 The master ships off so a new install does not start continuous background inference before its owner has pointed `input_text.zenos_ai_task_entity` at something appropriate. The Ninja Summarizer runs several times an hour, and SuperSummary at least four times an hour, which is why the recommended target is a local model. Turning a switch off changes nothing else. Turning one back on fires the corresponding force event within seconds.
 
+## 14.6 What a run may read
+
+A run acts as the agent responsible for the household (Chapter 20), and that agent's certifications decide what the run may read, before the model sees anything.
+
+**The agent must be onboarded.** If it isn't, the run refuses with `agent_not_onboarded`, summaries pause, and a notification says why.
+
+**A component can require a level.** A component's `meta.requires` names a certification and level. The agent must hold it at that level or higher, granted for the Ninja seed stage `s`, or the run stops with `kfc_cert_required` and the last Kata stays. A component the agent doesn't meet also stays out of the agent's prompt. No shipped component sets a requirement.
+
+**Private data needs a read cert.** A tool can tag a seed mode with the certification that reads it (`mode@cert:level`): Finance's summaries carry `zenos.finance.read`, Room Manager's `home_overview` carries `zenos.presence.read`, and Taskmaster's medications carry `zenos.health.read`. The agent must hold that certification for stage `s`. Its Kata is stamped with what it needed, and every prompt feed drops a Kata whose stamp the agent no longer meets, so revoking the cert takes the data out of the prompt too.
+
+One switch, `seed_cert_mode` in the system cabinet, decides what a missing read cert does. In audit, the run goes ahead and logs `seed_cert_audit`; in enforce, it stops with `seed_cert_required` before the seed tool is called. A fresh install starts in enforce and asks for `zenos_agent_parity` when onboarding completes; an upgraded install stays in audit until its owner switches it from the console. `zenos_agent_parity` is one bundle built from what the enabled summaries actually need, so one approval on a phone keeps them all running.
+
+> **Not yet built.** Through 2026.11.0 the old seed whitelist is a bridge: a tool that declares no `seed_modes` still seeds when it is on the list, stamped legacy. The bridge and the list go in 2026.12.
+
 The Monastery decides when and how each domain is summarized. The next chapter is the shape every one of those summaries takes.
 
 <!-- where -->
-## 14.6 Where to look
+## 14.7 Where to look
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
 * The per-component summarizer and the whole-house synthesis: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`zen_dojotools_ninja_summarizer`, `zen_dojotools_supersummary`). Docs: [zen_dojotools_summarizers_readme.md](../scripts/zen_dojotools_summarizers_readme.md).
 * SuperSummary's run governor and context budget: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`super_burnout_seconds`, `max_context_tokens`). Docs: [zen_dojotools_summarizers_readme.md](../scripts/zen_dojotools_summarizers_readme.md).
 * The operator gate on action emission: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`zen_action_emission_enabled`). Docs: [zen_dojotools_summarizers_readme.md](../scripts/zen_dojotools_summarizers_readme.md).
+* Seeds, read certs, acts and chains: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`seed_cert_required`, `act_blocked`, `chain_to`); the stage checks and the read-cert switch: [`zen_identity.jinja`](../../../custom_templates/zenos_ai/zen_identity.jinja) (`macro caller`, `macro seed_cert_mode`, `macro kata_seed_ok`). Docs: [zen_dojotools_summarizers_readme.md](../scripts/zen_dojotools_summarizers_readme.md).
 * The catch-all for attention that has no automatable action: [`dojotools_dispatcher.yaml`](../../../packages/zenos_ai/dojotools/dojotools_dispatcher.yaml) (`zen_dojotools_urgency_handler`). Docs: [zen_dojotools_dispatcher_readme.md](../scripts/zen_dojotools_dispatcher_readme.md).
 <!-- /where -->
 

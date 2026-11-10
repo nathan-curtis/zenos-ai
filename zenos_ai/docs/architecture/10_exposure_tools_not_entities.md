@@ -58,7 +58,9 @@ At no point does the agent need an entity exposed. The tools resolve every targe
 | | AdminTools, Roots, Sutras, Stacks, Codices |
 | | Maintenance scripts |
 
-AdminTools stay off the agent surface unless a human deliberately exposes one for recovery (Chapter 20). Each tool's manifest declares whether it is meant to be exposed (`mcp_exposed`), and the getting-started guide carries the current exposure list.
+AdminTools stay off the agent surface (Chapter 20). Each tool's manifest declares whether it is meant to be exposed (`mcp_exposed`), and the getting-started guide carries the current exposure list.
+
+Since 2026.11.0 that is enforced, not just advised. Flynn's admin plane guard unexposes every `zen_admintools_*` script from every voice assistant (Assist, and so MCP; Alexa; Google) at start, every hour, and whenever a tool asks. `prompt_loader`, which holds the lock switches and the cortex, and anything labeled `zen_never_expose` are always unexposed. Unexposing only tightens, so it asks no one. Ectoplasm's `entity_expose` refuses the admin plane whatever certification the caller holds, and `mcp_sync` flags an exposed admin tool as critical. A test server that needs admin tools on the agent surface sets the system cabinet's `admin_plane_guard` drawer to `listed`, which unexposes only the entities it names.
 
 Not exposing an entity does not make it disappear. Exposure decides how an agent reaches a thing, not whether the thing exists. An entity that is enabled in Home Assistant but not exposed is still real and current, and the Index and the tools still find it. Cortex 44, 'Open Door', says so to the agent in as many words, because an agent that reads an unexposed entity as missing will tell you your house has less in it than it does.
 

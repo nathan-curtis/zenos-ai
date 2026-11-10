@@ -11,17 +11,22 @@ The Abbot started as the second version of the Ninja summarizer, which looked at
 
 ## 22.1 Triggers
 
-The Scheduler owns a fixed set of trigger IDs:
+The Scheduler owns a core set of trigger IDs:
 
 | Kind | Triggers |
 |---|---|
 | Time | `every_10_minutes`, `quarter_hour`, `hourly_trigger`, `daily_noon`, `daily_midnight` |
 | Home | `home_mode_updates`, `home_occupancy_change`, `start_home_wake`, `start_home_evening` |
-| Openings | `door_opens_or_closes`, `window_opens_or_closes`, `garage_door`, `lock_changes` |
+| Openings | `door_opens_or_closes`, `window_opens_or_closes`, `garage_door`, `lock_changes` (legacy: they watch `group.all_doors` and its siblings) |
+| Labels | `zen_leak`, `zen_smoke`, `zen_door`, `zen_power`, `zen_appliance` |
 | Devices | `vacuum_started`, `vacuum_docked`, `persistent_notification` |
 | System | `ha_start`, `force_summary`, `force_ninja`, `force_supersummary`, `force_gc`, `force_identity_manifest`, `deferred_script_reload`, `deferred_reload_all` |
 
 The force triggers correspond to `zen_event` kinds (`summary_force`, `ninja_force`, `supersummary_force`) that anything can fire to request a run now.
+
+**Label triggers.** The five label triggers fire on whatever carries their label, so a device becomes a trigger without YAML: label a leak sensor `zen_leak` and a component subscribed to `zen_leak` runs when it gets wet. `zen_smoke` covers smoke, carbon monoxide and gas; `zen_door` doors and windows opening or closing; `zen_power` a circuit going dead; `zen_appliance` an appliance starting or finishing. Each is idle until an entity carries its label. They are the hypergraph routing again (Chapter 7).
+
+**The trigger registry.** The system cabinet drawer `zen_trigger_registry` lists every trigger a component can subscribe to, and only the Scheduler writes it. A trigger pack registers its triggers with `zen_event` kind `trigger_pack_register`, and the Scheduler accepts it only from automation context, never from a user or agent call. The core pack registers at start, after an automation reload, and on the quarter-hour tick whenever the registry has lost it. Scribe's `list_triggers` reads the registry, and a component subscribed only to triggers nothing registers shows as `never_fires`.
 
 ## 22.2 Subscriptions, not scores
 

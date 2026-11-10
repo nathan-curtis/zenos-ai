@@ -75,7 +75,7 @@ Since 2026.11.0 the pipeline acts as the **responsible agent**: the agent respon
 
 Then the rungs apply to the responsible agent, with one change. An act at the end of a run needs a certification the agent holds for that stage, not just for interactive use (Chapter 19). Granting a stage is a live acknowledgement like any grant, so a person decides, once, that the agent may do this with no one asking. `zenos_agent_autonomous` is that decision as a bundle.
 
-> **Not yet built.** In 2026.11.0 only the summarizer's emit step is checked this way, and only against the household's responsible agent. The pipeline does not yet resolve a family's or a person's responsible agent, and live drawers, SuperSummary and the scheduler do not check a stage.
+> **Not yet built.** In 2026.11.0 the summarizer's seed and emit steps and FileCabinet's live drawers check a stage, and only against the household's responsible agent. The pipeline does not yet resolve a family's or a person's responsible agent, and SuperSummary and the scheduler do not check a stage.
 
 ## 20.5 Live acknowledgement
 
@@ -143,7 +143,7 @@ The override is a switch instead: the `cert_admin_console_bypass` drawer on the 
 
 Whoever throws it takes the responsibility a live acknowledgement would. It exists so an install with no working push path can still approve anything, and on an install with no notification target at all, it is the only approval there is.
 
-AdminTools generally follow the same rule: they are the configuration and recovery plane, not an agent capability, and they are not exposed to conversation agents unless a human deliberately exposes them.
+AdminTools follow the same rule: they are the configuration and recovery plane, not an agent capability. Since 2026.11.0 Flynn's admin plane guard keeps them off every voice assistant, and only a test server's `admin_plane_guard` drawer can let them stay (Chapter 10).
 
 > **Not yet built.** A separate administrative competency certification ("ZenOS Admin Certified, Level X"), admitting an agent to the administrative plane with each AdminTool deciding which functions a given level may use, is design direction for this release line. Today the administrative plane is enforced by exposure (AdminTools are not agent-reachable) and by live acknowledgement, not by an admin certification.
 
