@@ -22,7 +22,7 @@ Print Shop submits plain-text print jobs and triggers basic maintenance (head cl
 
 ## Prerequisites (manual setup — do this before using the tool)
 
-1. **Install HA's native IPP integration** (Settings → Devices & Services → Add Integration → IPP). Point it at the printer directly (e.g. `192.168.1.120:631/ipp/print`) or at a CUPS queue. This creates a status sensor, e.g. `sensor.epson_wf_7840_series` — note the entity_id, you'll need it. Repeat once per household printer.
+1. **Install HA's native IPP integration** (Settings → Devices & Services → Add Integration → IPP). Point it at the printer directly (e.g. `192.0.2.10:631/ipp/print`) or at a CUPS queue. This creates a status sensor, e.g. `sensor.epson_wf_7840_series` — note the entity_id, you'll need it. Repeat once per household printer.
 2. **Install Rudd-O's `homeassistant-ipp-printing` via HACS.** This is a single confirm-only config step — printer details are not configured inside Rudd-O itself, only in the IPP integration and this tool's `configure` mode.
 3. **Expose the IPP sensor via Settings → Voice Assistants** (needed for the entity to be usable by the automation layer).
 4. **Run `mode=configure`** with `epson_ip` and `epson_entity` to seed the `print_shop` drawer in the AI user cabinet. If `epson_entity` isn't configured, the tool uses the first `sensor.*` carrying the `printer` label.
@@ -95,7 +95,7 @@ There is no direct text-to-printer path — everything is rasterized to an image
 # One-time setup
 zen_dojotools_print_shop:
   mode: configure
-  epson_ip: 192.168.1.120
+  epson_ip: 192.0.2.10
   epson_entity: sensor.epson_wf_7840_series
 
 # Check status
