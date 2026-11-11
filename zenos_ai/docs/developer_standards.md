@@ -446,6 +446,13 @@ Taskmaster demonstrates both. Its `briefing` seed produces scored task context. 
 6. Use cooldown, drift threshold, and delay to prevent noisy or synchronized dispatch.
 7. State safety and interpretation rules in both executable controls and KFC instructions when defense in depth is appropriate.
 8. Do not create a standalone KFC file when its owning tool can return the contract from the same package file.
+9. **Seeds are declared by the tool (KF6).** A seed must be a mode the tool lists in its `tool_manifest` `seed_modes`. A seed mode that reads private data (finance, health, presence) names its read cert: `'mode@zenos.<domain>.read:1'`.
+10. **A minimum level is a requirement, not a hint.** `meta.requires: {cert, level}` is enforced: the agent the pipeline acts as must hold it for the Ninja seed stage, or the component doesn't run and leaves the prompt. Ship without one unless the component really needs it.
+11. **Acts and chains are declared.** A component acts only through the act its tool declares, behind that tool's emit cert. A component that starts other summaries lists them in `chain_to`.
+12. **Subscribe to triggers that exist.** Every entry in `trigger_subscriptions` should be in the trigger registry; Scribe flags a component nothing can fire as `never_fires`. Prefer a label trigger (`zen_leak`, `zen_door`, and the rest) over a group trigger. A pack that adds triggers registers them with `zen_event` kind `trigger_pack_register` from an automation.
+13. **A slot a pack writes is `role: cache`,** with no triggers, so a summarizer run can never overwrite it.
+
+See [Building a KFC](kung_fu/building_a_kfc.md) for the full contract.
 
 ### 3.9 Boot Orchestration (the Flynn/Stepgate pattern)
 
@@ -537,6 +544,10 @@ A ZenOS health sensor (`zen_label_health`, `zen_cabinet_health`, `zen_monastery_
 4. **Do not collapse genuinely distinct conditions into one summary enum value that consumers can't disambiguate**, especially when some of those conditions are safe (not yet bootstrapped) and others are not (actively broken). If a rollup must exist for display purposes, also expose the underlying per-item detail as an attribute (a missing-items list, a per-slot state map) so a consumer that needs to make a real decision can inspect the actual condition instead of trusting the collapsed label. A downstream gate that trusts `warn` as universally safe because "it's usually fine" will eventually be wrong in exactly the case that matters.
 5. **Never gate a destructive or write-triggering decision on a live `states(entity_id)` read at boot.** Recorder-restored state is untrustworthy in the first moments after HA starts, and is not the same guarantee as an authoritative identity/content field actually being present in the underlying data. This is a hard rule, not a style preference; violating it is how cabinet data gets destroyed. See the boot-orchestration GUID-gate pattern in §3.9.
 6. **A diagnostic check that itself depends on a network or transport call must distinguish "checked, and it's genuinely absent" from "the check itself failed to complete."** Trusting a response body's shape alone (e.g. "it parsed as JSON, so it must be a valid result") without first confirming the transport call actually succeeded (HTTP status, timeout, auth failure) produces a confident false negative indistinguishable from the real thing being absent. Surface the check's own success/failure as an explicit field separate from the check's answer.
+
+### 5.3 Queued automations and long waits
+
+A queued automation runs one pass at a time, so a long wait inside it holds every later trigger, including anything routed through it (deferred reloads, other events). Keep long waits out of a queued dispatcher: hand them to their own automation, as Room Manager's fan worker does. When a pass must wait on several items by offset, sleep the gap since the previous item, not each item's whole offset; the offsets are from the trigger, and sleeping each in turn adds them up. [HALMark FG-51](https://github.com/nathan-curtis/HALMark) covers the general Home Assistant half.
 
 ## 6. Packaging and Co-location Standard
 
@@ -658,6 +669,17 @@ For writes with meaningful impact:
 - return a useful audit trace;
 - provide fallback or recovery guidance.
 
+### Security rules (2026.11.0)
+
+Each of these was a real hole, found and fixed.
+
+- **New autonomy ships off.** Anything that acts on its own (a background act, an auto-arm, a room engine) ships disabled, and turning it on is a person's action. Nothing enables it for them. Make the off state loud and document how to opt in.
+- **An internal-only mode checks who called, not just its name.** A mode meant only for automations refuses any call with a user in its context (`context.user_id` is set for a person's or an agent's session, and empty for an automation). Leaving it undocumented is not a gate: an agent-callable `auto_arm_check` could name an unlocked lock and disarm a panel with no cert or acknowledgement.
+- **A generic emitter refuses the kinds your listeners act on.** If your automation acts on a `zen_event` kind, add that kind to the event emitter's reserved list in `dojotools_systemtools.yaml`. Otherwise an agent can fire it and skip every cert the proper tool would check.
+- **Data carries its rules.** Copying, moving or composing data (copy, move, weave, a summary) checks read access on every source and writes the result with the same access rules and expiry. A derived copy never declassifies.
+- **Resolve the target once, then check and run that.** A dispatch that takes a tool name resolves it to one name, checks certs against that name, and runs that name. Input that names two different targets is refused, or it can pass the check as one and run as the other.
+- **Admin tools never reach the agent.** Flynn unexposes every `zen_admintools_*` script every hour. A tool that must never be exposed returns `never_expose: true` (with `never_expose_reason`) from its manifest and carries the `zen_never_expose` label. Flynn always unexposes the label, Ectoplasm's `entity_expose` refuses it, and anything else that exposes entities must refuse it too.
+
 ## 8. Manifest Standard
 
 Every Stripe 1 or higher component should implement `tool_manifest` using the shared `MF.tool_manifest()` macro.
@@ -699,7 +721,7 @@ A script's `description:` and every field `description:` are plain ASCII (2026.1
 
 A tool that gates on certification publishes the certificates it needs as `certs_required` on its manifest output: the cert name, display name, description, `max_level`, which modes each gate covers, and which calls need a live acknowledgement regardless of level. `zen_dojotools_manifest mode=cert_audit` builds the cert catalog from these declarations live. There is no hand-maintained catalog to drift.
 
-## 9. Tool Contract Standard (2026.10.0)
+## 9. Tool Contract Standard (2026.10.0, extended in 2026.11.0)
 
 These rules apply to every new or revised DojoTool, SystemTool, and AdminTool. Chapter 12 (Contracts) explains why they exist.
 
@@ -712,6 +734,8 @@ Return through the shared `envelope()` macro in `zen_os_1.jinja`: `{status, mode
 Build the response in one variable and return it once, at the end. A denial is set early and every later branch checks for it before overwriting. A tool with several `stop` points can leave along a path that skipped its checks. A tool with one exit cannot.
 
 Every top-level `if:` waits on the result variable (`result is not defined and ...`), and a `choose:` dispatch opens with a branch that matches when a result is already set and keeps it. One exit does not mean nothing runs after the answer: a branch that tests only `mode` still runs after a refusal, overwrites it, and does its side effect. The 2026.11.0 rollout of the onboarding gate found more than 20 such branches, one of them a real cert bypass. Prove a guard by forcing it to refuse and checking that nothing downstream ran, not only that the answer says error.
+
+The same rule covers a fallback. A step placed after a `choose:` runs after every branch, a successful one included; a fallback belongs in the `choose:`'s `default:`. A generic calendar create placed after the Microsoft 365 branch ran after a successful Microsoft 365 create too, and wrote the event twice.
 
 ### The onboarding gate
 
@@ -733,7 +757,7 @@ Every agent-facing script calls `OS.entry_gate(user_id, tool, mode)` from `zen_o
 
 ### Help
 
-`mode=help` returns `{status: help, message}`, with `mode` accepted as an alias. The message states the tool's modes and required fields. `zen_dojotools_manifest mode=audit_help` checks every tool for a conforming help response and a complete manifest. Sutras, Stacks, and Codices are exempt.
+`mode=help` returns `{status: help, message}`, with `mode` accepted as an alias. Help is the default: a missing or unknown mode answers help, and a bare call (no mode and no input) never acts, crashes or errors. The message states the tool's modes and required fields. `zen_dojotools_manifest mode=audit_help` checks every tool for a conforming help response and a complete manifest. Sutras, Stacks, and Codices are exempt.
 
 ### Certification
 
@@ -743,6 +767,23 @@ Every agent-facing script calls `OS.entry_gate(user_id, tool, mode)` from `zen_o
 - Treat `scope_decision` as authoritative: `deny` blocks the call outright, `allow` exempts the target from the per-call acknowledgement, `default` means the tool's own rule applies.
 - Build every refusal with `cert_denial()`, so every denial carries the same `status`, `error`, `message`, `can_request`, and `request_via` fields.
 - An action that needs a human in the loop calls `request_live_ack` and proceeds only on `approved`. `declined`, `timeout`, and `dispatch_failed` are all refusals.
+- Declare where each cert may be used with `st_ok`: stage letters for interactive (`i`), the Ninja seed (`s`), the Ninja emit (`e`) and live drawers (`l`). Without it a cert is interactive only. Allow a stage only if your tool is meant to be used there; a grant can never name a stage the tool doesn't allow.
+- A tool the summarizer may act through declares the act next to its emit cert: `act: {mode, args, description}`. The Ninja tells the model exactly that act and refuses anything else (`no_act_declared`, `act_args_invalid`).
+- A live drawer that runs a gated mode needs that cert with stage `l`. A tool with write modes is whitelisted for live drawers as `tool:mode`, never as the bare tool.
+
+See [The Pipeline Gets a Pass](releases/spinal_tap.md#the-pipeline-gets-a-pass) and the [Security & Certification manual](getting_started/security_certification_manual.md).
+
+### Cabinet data (2026.11.0)
+
+FileCabinet enforces access rules, so a tool that keeps state in a cabinet works with the gate, not around it.
+
+- Read and write through FileCabinet (`zen_sutra_filecabinet`), never with raw cabinet events. Pass `mode`, and `write_mode: replace` for a read-modify-write; under a merge, a key you removed comes back.
+- Name your tool with `caller_tool` as a constant in its own call, never from input, so a rule can say `@tool:<script>`. A tool that passes an agent-chosen cabinet and key straight to the engine stamps `caller_origin: agent`.
+- Treat `write_unverified` and every error as a failure. Never report success the cabinet didn't confirm.
+- Structural keys (VolumeInfo, `meta`, `_label_index`, the system cabinet and the vault) are written only through `zen_admintools_cabinet_writer`.
+- Expect a refusal. On an enforcing install a drawer the caller can't read answers `guarded:`; a tool passes that on, and doesn't retry around it.
+
+See the [FileCabinet readme](scripts/zen_dojotools_filecabinet_readme.md#access-control-acl-v2).
 
 ## 10. Decision Guide
 
@@ -878,6 +919,11 @@ Use Firefly III as the reference when one-file packaging would make the componen
 - Gating a boot-time write decision on a live `states(entity_id)` read instead of an authoritative identity/content field.
 - Adding a write path to a component with a trigger-based health sensor without auditing whether that path fires the sensor's refresh event.
 - Reaching for a new `input_text`/`input_boolean` helper, or trusting a domain's own state machine, for small durable state that a cabinet drawer would serve more reliably.
+- Shipping new autonomous behavior switched on, or turning it on for the household.
+- Treating an undocumented mode as internal. Gate it on who called.
+- A sibling branch or a fallback step that runs after the answer was set.
+- Copying or composing data without carrying its access rules.
+- Long waits inside a queued automation that other work goes through.
 
 ## 13. Review Checklist
 
@@ -905,6 +951,14 @@ Before accepting a new component, reviewers should confirm:
 - [ ] The tool returns through `envelope()` with a single exit, and any caller of another tool unwraps `.result`.
 - [ ] `mode=help` returns `{status: help, message}` and passes `audit_help`.
 - [ ] A cert-gated tool declares `certs_required`, honors a scope `deny`, and refuses through `cert_denial()`.
+- [ ] Each cert declares `st_ok` for exactly the stages the tool is meant for; a background act is declared as `act` next to its emit cert.
+- [ ] Forcing each guard to refuse leaves nothing downstream running.
+- [ ] Modes meant only for automations refuse a call with a user in its context.
+- [ ] Any event kind this component acts on is reserved in the event emitter.
+- [ ] Copies, moves and derived reads check every source and keep its access rules.
+- [ ] Cabinet writes go through FileCabinet with `caller_tool`, check the answer, and leave structural keys to the cabinet writer.
+- [ ] New autonomous behavior ships off.
+- [ ] Seed modes are declared, and seeds that read private data name their read cert.
 - [ ] If this touches boot orchestration: every write-completion path fires the relevant health-sensor refresh event; no boot-time write decision trusts a live `states(entity_id)` read alone; any early-exit optimization accounts for every gate's re-entry conditions, not just health-sensor rollups.
 - [ ] If this adds or changes a health sensor: it is event-triggered rather than clock-polled if it gates any consequential decision; a rolled-up enum value exposes enough underlying detail for a real consumer to disambiguate safe-vs-broken; a diagnostic check distinguishes "checked, absent" from "check itself failed."
 
