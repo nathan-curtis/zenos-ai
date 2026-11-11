@@ -28,18 +28,23 @@ When you build a KFC, you make five decisions. The rest is plumbing.
 
 **What signals are worth waking the ninja?**
 
-ZenOS dispatches your component in two ways:
+Your component runs when a trigger it subscribes to fires. Reach for these in order:
 
-- **Hourly sweep** — the scheduler wakes every KFC on a regular cadence. You get this for free. It means every component eventually converges on current state even if no trigger fires.
-- **KFC Trigger automation** — your personal automation file that fires `summary_force` for your component on specific entity state changes. This is the instant path.
+1. **A scheduled sweep.** Subscribe to a time trigger (`hourly_trigger` is the usual one) in `trigger_subscriptions`. Every component that subscribes converges on current state even when nothing else fires. It isn't automatic: a component that subscribes to nothing never runs.
+2. **A label trigger.** `zen_leak`, `zen_smoke`, `zen_door`, `zen_power` and `zen_appliance` fire on whatever carries their label. Label the device, subscribe to the trigger, and you're done: no YAML (see [Triggers](#triggers)).
+3. **A trigger pack, when your component owns its triggers.** A component you ship that needs triggers of its own carries them in its own package file, as an automation that registers them with `trigger_pack_register` (see [Triggers](#triggers)). Make it label-driven so it works in any house.
+4. **Wiring your own entity.** To make one specific device in your house wake a component, write a small automation in your installation, outside `packages/zenos_ai/`, that fires `summary_force` for the component. It names your entity IDs, so it never ships.
 
-Not every entity change needs the instant path. The question is: *what can't wait an hour?*
+**The rule: a trigger that names a label can ship; a trigger that names an entity ID is personal.**
+
+Not every change needs an instant run. The question is: *what can't wait an hour?* The examples below are the fourth kind, wiring specific entities, but the trigger hygiene applies to any trigger you write.
 
 **Alert Manager** answers "safety and security events." A smoke alarm firing cannot wait for the hourly sweep.
 
 ```yaml
 # kfc_trigger_alert_manager.yaml (your installation, not the repo)
 # Safety-critical = instant dispatch. Informational = hourly sweep covers it.
+# Shipping this? Label the detectors zen_smoke and subscribe instead.
 
 triggers:
   - trigger: state
@@ -58,10 +63,10 @@ triggers:
 **Taskmaster** answers "lifecycle transitions." A bed sensor changing means someone just woke up or went to sleep — that's task-relevant now, not in an hour.
 
 ```yaml
-# kfc_trigger_taskmaster.yaml
+# kfc_trigger_taskmaster.yaml (your installation, not the repo)
 triggers:
   - trigger: state
-    entity_id: binary_sensor.withings_alex_in_bed
+    entity_id: binary_sensor.bedroom_bed_occupied
     not_from: [unknown, unavailable]   # no to: filter — both directions matter here
 ```
 
@@ -374,7 +379,9 @@ component_summary: >
   <What does this component monitor? What does it flag? What is nominal?>
 ```
 
-### KFC Trigger Automation (your installation — do not commit to repo)
+### Wiring a Specific Entity (your installation, not the repo)
+
+For triggers a component ships, use a label trigger or a trigger pack in the component's own package (see [Triggers](#triggers)). This template is for wiring your own device by entity ID, which stays in your installation.
 
 ```yaml
 # kfc_trigger_<component_name>.yaml
@@ -423,7 +430,8 @@ automation:
 - [ ] Trigger automation uses `not_from: [unknown, unavailable]` on all triggers
 - [ ] `to:` filter set (or intentionally omitted with a comment) on every trigger
 - [ ] `for:` delays added for any state that needs debouncing
-- [ ] `caller_token: <component_name>` on all FileCabinet writes in your tool (if applicable)
+- [ ] FileCabinet calls your tool makes name it with `caller_tool` (a constant, never from input) and pass `caller_token` through (if applicable)
+- [ ] Triggers you ship are label triggers or a registered pack in the component's package; triggers that name your entity IDs stay in your installation
 - [ ] `mode: queued` on trigger automation
 - [ ] No `master_switch`: on and off is `meta.enabled`
 - [ ] Path A: Scribe `publish_kfc` run — artifact_state must be `formal` before Dojo accepts it

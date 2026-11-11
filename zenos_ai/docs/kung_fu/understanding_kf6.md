@@ -207,9 +207,11 @@ The Scheduler ships with a standard set of triggers (time patterns, home mode ch
 
 **Try a label first.** Since 2026.11.0, five triggers fire on a label instead of an entity: `zen_leak`, `zen_smoke`, `zen_door`, `zen_power` and `zen_appliance`. Label a leak sensor `zen_leak`, subscribe your component to `zen_leak`, and it runs when the sensor gets wet. No YAML, no reload. See [Triggers](building_a_kfc.md#triggers).
 
-But what if you want your component to summarize when *your* specific hardware does something — a Withings sleep sensor, a specific flow sensor, a custom device?
+**Shipping a component that owns its triggers?** Put them in the component's own package file as a trigger pack that registers itself, and make it label-driven so it works in any house. See [Triggers](building_a_kfc.md#triggers).
 
-The recommended pattern is a dedicated trigger file per KFC. Keep it in your installer's custom packages directory (outside `packages/zenos_ai/` — it's personal, never commit it to the shared repo):
+But what if you want your component to summarize when *your* specific hardware does something: a sleep sensor, a specific flow sensor, a custom device?
+
+Wire it with a small trigger file per KFC. It names your entity IDs, so keep it in your installation's own packages directory (outside `packages/zenos_ai/`), never in the shared repo. A trigger that names a label can ship; a trigger that names an entity ID is personal.
 
 ```yaml
 # packages/your_family/kfc_trigger_<component>.yaml

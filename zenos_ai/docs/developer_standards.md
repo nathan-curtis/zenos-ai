@@ -589,7 +589,8 @@ script:
     ...
 
 automation:
-  ...                  # only component-specific triggers not owned by shared Scheduler
+  ...                  # only the component's own triggers: a trigger pack that
+                       # registers itself, label-driven, never naming an entity ID
 ```
 
 The owning DojoTool should normally emit its KFC definition through `mode=kfc_manifest`. Avoid separate static KFC manifests when self-registration is possible.
