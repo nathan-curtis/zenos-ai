@@ -107,7 +107,7 @@ Omit `pipeline_tier` for standard components — `keeper` is the default.
 | `every_10_minutes` | Every 10 minutes |
 | `home_mode_updates` | `zen_home_mode` changes |
 | `home_occupancy_change` | `zone.home` count changes |
-| `alarm_panel` | Alarm panel state change |
+| `alarm_panel` | An alarm panel labeled `alarm_panel` is triggered (not on arm or disarm) |
 | `force_summary` | Targeted force via zen_event |
 | `zen_leak` | A sensor labeled `zen_leak` detects water |
 | `zen_smoke` | A sensor labeled `zen_smoke` detects smoke, CO or gas |

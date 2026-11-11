@@ -1,7 +1,13 @@
 {#-
 ###############################################################################
 # ZenOS-AI: zen_identity.jinja
-# Version: 1.8.1
+# Version: 1.9.0
+#
+# v1.9.0: cert_held(entity_id, cert, level, stage): whether one agent cabinet
+#   holds a cert, and why not (none, level, stage). It holds the grant
+#   ranking that caller() had inline; caller() now calls it and adds
+#   cert_why (policy, not_onboarded, or cert_held's why). Agent health asks
+#   it about every agent, not only the session caller (#10678).
 #
 # v1.8.1: cert_stages() docs say which stages are checked: i, s and e; l is
 #   not checked yet (FileCabinet, when it runs a live drawer's tool); m and c
@@ -296,6 +302,53 @@
 {%- endmacro -%}
 
 {#-
+@macro: cert_held
+@desc:  Whether one agent cabinet holds a cert, and if not, why. The one
+        place the grant ranking lives; caller() uses it, and so does any
+        report that asks about an agent other than the session caller
+        (agent health, #10678). Ranking: an exact grant, then the cert's 11
+        alias (cert_aliases), then (stage i only) the most specific dotted
+        parent. Outside stage i a parent never counts.
+@param  entity_id  the agent's AI user cabinet
+@param  cert       cert name
+@param  level      minimum level (default 1)
+@param  stage      one stage letter (default i)
+@returns JSON {held, satisfied_by, level, stages, reissue_pending, why}.
+         why is '' when held, else none (no grant under any name), level
+         (granted below the level), or stage (granted, but its st lacks the
+         stage).
+-#}
+{%- macro cert_held(entity_id='', cert='', level=1, stage='i') -%}
+  {%- set _eid = entity_id | default('', true) | string | trim -%}
+  {%- set _rc = cert | default('', true) | string | trim -%}
+  {%- set _st = (stage | default('i', true) | string | trim | lower)[:1] or 'i' -%}
+  {%- set _alias = (cert_alias_of(_rc) | trim) if _rc != '' else '' -%}
+  {%- set ns = namespace(key='', len=-1, level=0, st='i') -%}
+  {%- if _rc != '' and _eid != '' -%}
+    {%- set _craw = (state_attr(_eid, 'variables') or {}).get('zen_ai_certs', {}) -%}
+    {%- set _cev = _craw.get('value', _craw) if _craw is mapping else {} -%}
+    {%- set _cev = (_cev | from_json({})) if _cev is string else _cev -%}
+    {%- set _certs = (_cev.get('kfc_certifications', {}) if _cev is mapping else {}) or {} -%}
+    {%- for _hk, _he in _certs.items() if _hk == _rc or (_alias != '' and _hk == _alias) or (_st == 'i' and _rc.startswith(_hk ~ '.')) -%}
+      {%- set _rank = (_rc | length) if _hk == _rc else (((_rc | length) - 1) if _hk == _alias else (_hk | length)) -%}
+      {%- if _rank > ns.len -%}
+        {%- set ns.key = _hk -%}
+        {%- set ns.len = _rank -%}
+        {%- set ns.level = (_he.get('level', 0) | int(0)) if _he is mapping else 0 -%}
+        {%- set ns.st = ((_he.get('st') if _he is mapping else '') or 'i') | string -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+  {%- set _lvl_ok = ns.level >= (level | int(1)) -%}
+  {%- set _st_ok = _st in ns.st -%}
+  {%- set _held = _eid != '' and ns.key != '' and _lvl_ok and _st_ok -%}
+  {{- {'held': _held, 'satisfied_by': ns.key, 'level': ns.level,
+       'stages': ns.st if ns.key != '' else '',
+       'reissue_pending': _alias != '' and ns.key == _alias and not (ns.key | string).startswith('zenos.'),
+       'why': '' if _held else ('none' if ns.key == '' else ('stage' if not _st_ok else 'level'))} | tojson -}}
+{%- endmacro -%}
+
+{#-
 @macro: caller
 @desc:  Who is calling, and whether they hold a cert, for template-side gates
         (the FileCabinet ACL gate, #10626). Same answer as identity
@@ -317,9 +370,11 @@
 @param  container       '' = the session caller; a cabinet = its responsible agent
 @param  stage           one stage letter (default i)
 @returns JSON {entity_id, guid, policy_status, cert_checked, cert_ok, cert_level, cert_satisfied_by,
-         cert_reissue_pending, stage, cert_stages, agent_source, onboarded}. A grant under the
-         cert's other name (cert_aliases) also satisfies it, ranked below an exact grant;
-         cert_reissue_pending says so.
+         cert_reissue_pending, stage, cert_stages, agent_source, onboarded, cert_why}. A grant
+         under the cert's other name (cert_aliases) also satisfies it, ranked below an exact
+         grant; cert_reissue_pending says so. cert_why is '' when the check passes, else policy
+         (identity policy blocks the caller), not_onboarded (the container's responsible agent),
+         or cert_held's why (none, level, stage). The ranking itself is cert_held().
 -#}
 {%- macro caller(required_cert='', required_level=1, container='', stage='i') -%}
   {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
@@ -339,33 +394,15 @@
   {%- endif -%}
   {%- set _eid = '' if _eid in ['unknown', 'unavailable', 'none'] else _eid -%}
   {%- set _guid = (CABS.acl_guid_of(_eid) | trim) if _eid else '' -%}
-  {%- set ns = namespace(key='', len=-1, level=0, st='i') -%}
   {%- set _rc = required_cert | default('', true) | string | trim -%}
-  {%- set _alias = (cert_alias_of(_rc) | trim) if _rc != '' else '' -%}
-  {%- if _rc != '' and _eid != '' -%}
-    {%- set _craw = (state_attr(_eid, 'variables') or {}).get('zen_ai_certs', {}) -%}
-    {%- set _cev = _craw.get('value', _craw) if _craw is mapping else {} -%}
-    {%- set _cev = (_cev | from_json({})) if _cev is string else _cev -%}
-    {%- set _certs = (_cev.get('kfc_certifications', {}) if _cev is mapping else {}) or {} -%}
-    {#- A grant under the cert's other name (2026.11 rename alias) ranks just
-        below an exact grant and above any parent. Outside stage i a parent
-        never counts. -#}
-    {%- for _hk, _he in _certs.items() if _hk == _rc or (_alias != '' and _hk == _alias) or (_st == 'i' and _rc.startswith(_hk ~ '.')) -%}
-      {%- set _rank = (_rc | length) if _hk == _rc else (((_rc | length) - 1) if _hk == _alias else (_hk | length)) -%}
-      {%- if _rank > ns.len -%}
-        {%- set ns.key = _hk -%}
-        {%- set ns.len = _rank -%}
-        {%- set ns.level = (_he.get('level', 0) | int(0)) if _he is mapping else 0 -%}
-        {%- set ns.st = ((_he.get('st') if _he is mapping else '') or 'i') | string -%}
-      {%- endif -%}
-    {%- endfor -%}
-  {%- endif -%}
-  {%- set _held = _eid != '' and ns.key != '' and ns.level >= (required_level | int(1)) and _st in ns.st -%}
+  {%- set _ch = (cert_held(_eid, _rc, required_level, _st) | from_json({})) if (_rc != '' and _eid != '') else {} -%}
+  {%- set _held = _ch.get('held', false) -%}
   {{- {'entity_id': _eid, 'guid': _guid, 'policy_status': 'blocked' if _blocked else 'allowed',
        'cert_checked': _rc != '', 'cert_ok': (_eid != '' and (_rc == '' or _held)) if _ctr != '' else (_rc == '' or _held),
-       'cert_level': ns.level, 'cert_satisfied_by': ns.key,
-       'cert_reissue_pending': _alias != '' and ns.key == _alias and not (ns.key | string).startswith('zenos.'),
-       'stage': _st, 'cert_stages': ns.st if ns.key != '' else '', 'agent_source': _src, 'onboarded': _onb} | tojson -}}
+       'cert_level': _ch.get('level', 0), 'cert_satisfied_by': _ch.get('satisfied_by', ''),
+       'cert_reissue_pending': _ch.get('reissue_pending', false),
+       'stage': _st, 'cert_stages': _ch.get('stages', ''), 'agent_source': _src, 'onboarded': _onb,
+       'cert_why': ('' if (_rc == '' or _held) else ('policy' if _blocked else ('not_onboarded' if not _onb else (_ch.get('why') or 'none'))))} | tojson -}}
 {%- endmacro -%}
 
 {#-

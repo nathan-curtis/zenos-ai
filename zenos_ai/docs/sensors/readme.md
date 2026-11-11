@@ -215,40 +215,47 @@ Use `current_gate` and `next_step` when troubleshooting a stuck boot — they te
 
 ## sensor.zen_agent_health
 
-**What it checks:** Whether AI agents are bootable — infrastructure + per-agent gate validation.
+**What it checks:** Whether your agent can run, and what it's allowed to do: infrastructure, per-agent gates, onboarding, and anything held back by a missing cert (Agent Health 4.7.0).
 
 **Update frequency:** Continuous (state-based)
 
 | State | Condition |
 |---|---|
-| `critical` | label_health or cabinet_health = `critical` or `error` |
-| `error` | label/cabinet = `error`, 0 agents bootable |
-| `warmup` | Inside boot warmup window (≤5 min) with monastery not yet settled — system initializing, check again shortly |
-| `warn` | Structural gates blocking; or ≥1 agent bootable but monastery ≠ `ok` |
-| `ok` | Infrastructure ok, ≥1 agent bootable, monastery ok, cabinet ok |
+| `critical` | label_health or cabinet_health = `critical` |
+| `error` | label/cabinet = `error`, or 0 agents bootable |
+| `warn` | Labels exist but aren't assigned |
+| `onboarding_required` | The agent can run, but it doesn't hold `zenos.agent.basic`, so its tools answer `onboarding_required`. Run `zen_flynn_oobe mode=run`; it asks your household admin to approve the agent. |
+| `restricted` | The agent is onboarded and working, but something is held back by a cert: a background summary or act was refused for a missing cert, or identity policy blocks every cert check. The `reason` says which. |
+| `ok` | Bootable, onboarded, nothing held back |
 
-**Agent bootability gates (per agent):**
+`restricted` never raises an alert, and Flynn counts it as ready. The summary pipeline (the Monastery) doesn't affect this sensor; see `zen_monastery_health`.
+
+**Agent gates (per agent, in `roster`):**
 
 | Gate | Blocks If |
 |---|---|
 | `infra` | Flynn infra not ok |
 | `conversation_agent` | `input_text.zenos_conversation_agent` empty or unavailable |
-| `default_persona` | Cabinet is not labeled `zen_default_ai_user_cabinet` |
+| `onboarded` | The agent doesn't hold `zenos.agent.basic` |
 | `system_purpose` | System cabinet has no `purpose` drawer |
 | `system_directives` | System cabinet has no `directives` drawer |
 | `dojo_loaded` | Dojo cabinet missing `kfc_template` |
 | `kata_summary` | Kata cabinet has no `zen_summary` drawer |
 
+Informational, never blocking: `default_persona` (is this the default agent), `responsible_for` (the household, when this agent is its responsible agent), `system_cortex`, `manifest`.
+
 **Key attributes:**
 
 | Attribute | Contents |
 |---|---|
+| `reason` | One line: what's wrong, and whether a cert request fixes it (agent side) or a person has to (system side) |
 | `roster` | JSON array of all agent objects with per-gate status |
-| `agents_ok` | Count of fully bootable agents |
+| `agents_ok` | Count of onboarded, bootable agents |
+| `certs` | Identity policy, onboarding, the household's responsible agent, and the components a missing cert is holding back (`refused`, `act_blocked`), plus any still using the 11 legacy lists (`legacy_bridge`) |
 | `active_persona` | Name of the currently selected AI persona |
 | `conversation_entity` | Configured conversation agent entity ID |
 
-**This is the sensor to check first when Friday won't wake up.** The `roster` attribute shows exactly which gate is blocking each agent and what's missing.
+**This is the sensor to check first when your agent won't wake up or won't do something.** `roster` shows which gate is blocking each agent. For which cert to grant, at which stage, run `zen_dojotools_systemtools mode=zen_health_report` and read its `certs` section.
 
 ---
 

@@ -1,6 +1,6 @@
 # ZenOS-AI AlertManager
 
-**Version:** 5.6.2
+**Version:** 5.6.4
 **File:** `dojotools/dojotools_alertmanager.yaml`
 
 **Entities:**
@@ -263,6 +263,10 @@ All three drawers are created automatically on first write. The `_` prefix marks
 ## KFC Registration (KF6)
 
 `zen_dojotools_alertmanager` self-registers its dojo drawer via `mode=kfc_manifest` (`alert_manager` component) — see [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract). No Scribe authoring step is needed; `zen_dojotools_manifest mode=bootstrap_kfc` discovers and mounts it automatically.
+
+**What wakes it.** The `alert_manager` component subscribes to `ha_start`, `daily_midnight`, `hourly_trigger`, `home_mode_updates`, `alarm_panel`, `zen_leak`, `zen_smoke` and `force_summary`. `zen_leak` (5.6.3) is the Scheduler's label trigger for leak sensors: any moisture sensor labeled `zen_leak` that detects water wakes Alert Manager at once, with no trigger file to write. The wake-up says only that a `zen_leak` sensor fired, not which one. Alert Manager finds the wet sensor in its own snapshot, so give the sensor the `alert_manager` and `alert_when_on` labels as well. `zen_smoke` (5.6.4) works the same way for smoke, carbon monoxide and gas sensors labeled `zen_smoke`. `alarm_panel` (Scheduler 5.3.2) works the same way too: an alarm panel labeled `alarm_panel`, the label Security Manager already finds panels by, wakes Alert Manager when it goes to triggered.
+
+**Upgrading.** An installed system picks up a changed subscription list on its own. `bootstrap_kfc` runs at HA start, after any script or automation reload, and daily at 00:01. It rewrites the `alert_manager` mount whenever the tool's list differs from the stored one, and keeps the component's on/off setting. The reload that installs the update is enough.
 
 ---
 

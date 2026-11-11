@@ -31,7 +31,7 @@ When you build a KFC, you make five decisions. The rest is plumbing.
 Your component runs when a trigger it subscribes to fires. Reach for these in order:
 
 1. **A scheduled sweep.** Subscribe to a time trigger (`hourly_trigger` is the usual one) in `trigger_subscriptions`. Every component that subscribes converges on current state even when nothing else fires. It isn't automatic: a component that subscribes to nothing never runs.
-2. **A label trigger.** `zen_leak`, `zen_smoke`, `zen_door`, `zen_power` and `zen_appliance` fire on whatever carries their label. Label the device, subscribe to the trigger, and you're done: no YAML (see [Triggers](#triggers)).
+2. **A label trigger.** `zen_leak`, `zen_smoke`, `zen_door`, `zen_power`, `zen_appliance` and `alarm_panel` fire on whatever carries their label. Label the device, subscribe to the trigger, and you're done: no YAML (see [Triggers](#triggers)).
 3. **A trigger pack, when your component owns its triggers.** A component you ship that needs triggers of its own carries them in its own package file, as an automation that registers them with `trigger_pack_register` (see [Triggers](#triggers)). Make it label-driven so it works in any house.
 4. **Wiring your own entity.** To make one specific device in your house wake a component, write a small automation in your installation, outside `packages/zenos_ai/`, that fires `summary_force` for the component. It names your entity IDs, so it never ships.
 
@@ -320,6 +320,7 @@ The rule behind all of this is that a tool says what it does and what it needs, 
 | `zen_door` | a door or window opens or closes | `zen_door` |
 | `zen_power` | a power sensor stays below 1 W for 30 s (a fed circuit went dead) | `zen_power` |
 | `zen_appliance` | power rises above 10 W (started), or stays below 3 W for 2 minutes (finished) | `zen_appliance` |
+| `alarm_panel` | an alarm panel is triggered (not on arm or disarm) | `alarm_panel` (the label Security Manager finds panels by) |
 
   A label follows the entity live, so labeling a sensor is enough; no reload. Prefer `zen_door` over the older group-based `door_opens_or_closes`, `window_opens_or_closes`, `lock_changes` and `garage_door`, which never fire on an install without `group.all_doors` and its siblings.
 

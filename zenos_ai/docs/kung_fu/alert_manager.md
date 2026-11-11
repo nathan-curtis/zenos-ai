@@ -25,13 +25,35 @@ Not every alert needs instant dispatch. Match trigger timing to what you're actu
 
 | Type | Examples | When to dispatch |
 |------|----------|-----------------|
-| Life safety | Smoke, CO, gas, flood sensor | Immediately — wire a per-KFC trigger file |
+| Leak | Water or flood sensor | Immediately: label it `zen_leak` (no trigger file, see below) |
+| Heat | Heat detector | Immediately: wire a per-KFC trigger file (Home Assistant has no heat trigger to aim at a label) |
+| Smoke, CO, gas | Smoke, CO or gas detector | Immediately: label it `zen_smoke` (no trigger file, see below) |
 | Security | Door/window open, motion | Immediately or on mode change — depends on context |
 | Equipment | Appliance fault, pump off | Immediately for failure states |
 | Chemistry / maintenance | Pool/spa chemistry, filter | Hourly sweep is fine — no trigger file needed |
 | Informational | Energy, temperature drift | Scheduled sweep — no trigger file needed |
 
 The Scheduler's built-in `hourly_trigger` handles most passive monitoring. Reserve per-KFC trigger files for things that matter in the moment.
+
+---
+
+## Leak Sensors: the `zen_leak` Label
+
+Alert Manager subscribes to the Scheduler's `zen_leak` label trigger. Give a leak sensor three labels:
+
+- `zen_leak`: wakes Alert Manager the moment the sensor detects water.
+- `alert_manager`: puts the sensor in Alert Manager's snapshot, so it can name which one is wet.
+- `alert_when_on`: tells it that `on` (wet) is the bad direction.
+
+A `zen_leak` wake-up is treated as life safety (urgency 9, never held, never suppressed by home mode). The labels go on the sensor, so the setup ships with the house rather than living in a personal trigger file.
+
+An upgraded install picks up the subscription as soon as it reloads: `bootstrap_kfc` runs at HA start, after any script or automation reload, and daily at 00:01, and rewrites the mount when the list changes.
+
+### Smoke, CO and gas: the `zen_smoke` Label
+
+The same three labels work for smoke, carbon monoxide and gas detectors, with `zen_smoke` in place of `zen_leak` (Alert Manager 5.6.4). The trigger fires for a sensor Home Assistant reports as smoke, carbon monoxide or gas (its device class). A combined or summary sensor with no device class won't fire it, so label the individual detectors.
+
+Heat detectors are the exception: Home Assistant has no heat trigger that can be aimed at a label, so a heat sensor still needs a trigger file.
 
 ---
 

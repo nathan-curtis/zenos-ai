@@ -3,8 +3,19 @@
 #
 # Scripts:
 #   zen_dojotools_supersummary: SuperSummary - Whole-Home Synthesizer (v4.9.0)
-#   zen_dojotools_ninja_summarizer: Ninja Summarizer - Per-Component Kata Writer (v5.6.0)
+#   zen_dojotools_ninja_summarizer: Ninja Summarizer - Per-Component Kata Writer (v5.7.0)
 #
+# ninja 5.7.0: refusals and legacy bridges are readable (#10678). A run refused
+#   for kfc_cert_required, seed_cert_required or agent_not_onboarded stamps
+#   last_refusal {reason, cert, level, stage, why, agent, at} on the existing
+#   kata (merge); the next successful run replaces the kata and clears it. A
+#   seed or act through an 11 legacy list adds legacy_bridge [{kind, tool,
+#   at}] to the kata it writes. Agent health reads both.
+# ninja 5.6.1: life safety skips the emission cooldown. A run at or above
+#   push_gate_life_safety_bypass (default 8) emits even inside
+#   emission_cooldown_minutes, and its kata records cooldown_bypassed
+#   life_safety. An earlier, routine emission no longer holds back a leak
+#   or alarm (#10679). Acks apply as before.
 # ninja 5.6.0: a component with role cache is a cache slot written by a
 #   trigger pack, not a summary; the Ninja skips it (reason cache_slot) so a
 #   run can never overwrite the cache.
@@ -1151,7 +1162,7 @@ script:
                   summary='Writes one component summary for the agent',
                   display_name='Ninja Summarizer - Per-Component Kata Writer',
                   tier='dojotools',
-                  version='5.6.0',
+                  version='5.7.0',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['dojotools'],
                   optional_labels=['ninja_summarizer', 'ai_summarizer'],
@@ -1523,6 +1534,10 @@ script:
         - variables:
             _seed_stamp: {}
             _seed_alias: {}
+            # #10678: a seed or act that went through an 11 legacy list.
+            # Stamped on the kata (legacy_bridge) so health can count them
+            # before 12 removes the lists.
+            _legacy_bridge: []
             _kfc_req: >-
               {%- set _r = _notify_meta.get('requires', {}) -%}
               {%- set _r = (_r | from_json({})) if _r is string else _r -%}
@@ -1789,6 +1804,8 @@ script:
                     {{ _seed_tool_ok and _seed_declared | count == 0 and _seed_tool in (_wt if _wt is sequence and _wt is not string else []) }}
               - if: "{{ _seed_legacy }}"
                 then:
+                - variables:
+                    _legacy_bridge: "{{ _legacy_bridge + [{'kind': 'seed', 'tool': _seed_tool, 'at': now().isoformat()}] }}"
                 - event: zen_event
                   event_data:
                     event:
@@ -2544,7 +2561,14 @@ script:
                 {%- else -%}
                   {{ emission_cooldown_minutes + 1 }}
                 {%- endif -%}
-              _cooldown_active: "{{ (_minutes_since_last | float) < (emission_cooldown_minutes | int) }}"
+              # Life safety (#10679): the cooldown never holds back a run at
+              # or above the push gate's life-safety bypass.
+              _cooldown_bypassed: >-
+                {{ (_minutes_since_last | float) < (emission_cooldown_minutes | int)
+                   and (_urgency | int) >= (_push_life_safety | int) }}
+              _cooldown_active: >-
+                {{ (_minutes_since_last | float) < (emission_cooldown_minutes | int)
+                   and not ((_urgency | int) >= (_push_life_safety | int)) }}
 
           - alias: Emit emission_suppressed if cooldown active
             if:
@@ -2799,6 +2823,8 @@ script:
                             {%- endif -%}
                       - if: "{{ _act_legacy }}"
                         then:
+                          - variables:
+                              _legacy_bridge: "{{ _legacy_bridge + [{'kind': 'act', 'tool': _suggested_act_event, 'cert': _act_cert, 'at': now().isoformat()}] }}"
                           - event: zen_event
                             event_data:
                               event:
@@ -2963,7 +2989,10 @@ script:
                 {#- A seed read through a tagged mode stamps its cert, so the prompt feeds can drop the kata if the cert goes. -#}
                 {%- set _with_period = _with_period | combine({'seed_requires': _seed_stamp}) if (_seed_stamp is defined and _seed_stamp is mapping and _seed_stamp | length > 0) else _with_period -%}
                 {%- set _with_period = _with_period | combine({'seed_alias': _seed_alias}) if (_seed_alias is defined and _seed_alias is mapping and _seed_alias | length > 0) else _with_period -%}
+                {#- #10678: a legacy-list seed or act rides on the kata for health's 12-readiness count. -#}
+                {%- set _with_period = _with_period | combine({'legacy_bridge': _legacy_bridge}) if (_legacy_bridge is defined and _legacy_bridge is sequence and _legacy_bridge is not string and _legacy_bridge | count > 0) else _with_period -%}
                 {%- if _emission_fired -%}
+                  {%- set _with_period = _with_period | combine({'cooldown_bypassed': 'life_safety'}) if (_cooldown_bypassed | bool) else _with_period -%}
                   {{ _with_period | combine({'last_emission_at': now().timestamp() | string}) }}
                 {%- else -%}
                   {{ _with_period }}
@@ -3064,6 +3093,40 @@ script:
               message: 'zen_event {{ _ze_evt.component }} | {{ _ze_evt.kind }} | {{ _ze_evt.severity }} | summary="{{ _ze_evt.summary }}" | meta={{ _ze_evt.metadata | default({}) | tojson }}'
               level: "{{ 'warning' if _ze_evt.severity == 'warn' else _ze_evt.severity }}"
 
+      # #10678: a cert or onboarding refusal stops the run before the kata is
+      # written, and its notice can't be read back. Stamp last_refusal on the
+      # kata (merge, so the last summary stays) for agent health to read. A
+      # later successful run writes the kata with replace, which clears it.
+      - if: >-
+          {{ (post_to_kata_cabinet | default(false) | bool)
+             and final_response is defined and final_response is mapping
+             and final_response.get('error') in ['kfc_cert_required', 'seed_cert_required', 'agent_not_onboarded']
+             and (component_slug | default('')) != '' and (kata_cabinet | default('')) is string
+             and (kata_cabinet | default('')).startswith('sensor.')
+             and (state_attr(kata_cabinet, 'variables') or {}).get(component_slug) is not none }}
+        then:
+          - action: script.zen_sutra_filecabinet
+            continue_on_error: true
+            data:
+              action_type: upsert
+              write_mode: merge
+              show_hidden_volumes: false
+              volume_entity_id:
+                - "{{ kata_cabinet }}"
+              path: "{{ component_slug }}"
+              value: >-
+                {%- set _rq = final_response.get('required') if final_response.get('required') is mapping else {} -%}
+                {%- set _hd = final_response.get('held') if final_response.get('held') is mapping else {} -%}
+                {%- set _st = (_rq.get('stage') or 's') | string -%}
+                {%- set _why = 'not_onboarded' if final_response.get('error') == 'agent_not_onboarded'
+                       else ('none' if (_hd.get('cert') or '') == ''
+                       else ('stage' if _st not in ((_hd.get('stages') or '') | string)
+                       else 'level')) -%}
+                {{ {'last_refusal': {'reason': final_response.get('error'),
+                                     'cert': _rq.get('cert') or '', 'level': _rq.get('level', 0),
+                                     'stage': _st, 'why': _why,
+                                     'agent': final_response.get('agent') or '',
+                                     'at': now().isoformat()}} }}
       - variables:
           final_response: >-
             {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}

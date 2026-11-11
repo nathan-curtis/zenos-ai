@@ -262,7 +262,7 @@ The conversational path: start chatting with your AI agent — Flynn's Agent Bui
 
 **Trigger:** All health sensors green + OOBE complete + monastery and agent health confirmed
 
-Fires **once on transition** (not on subsequent green re-runs). Before creating the notification, Flynn verifies that `zen_monastery_health` is `ok` or `warn` and `zen_agent_health` is `ok` or `warn`, and that no init-state cabinets remain. Reaching Gate 4 is necessary but not sufficient — all three conditions must hold.
+Fires **once on transition** (not on subsequent green re-runs). Before creating the notification, Flynn verifies that `zen_monastery_health` is `ok` or `warn` and `zen_agent_health` is `ok`, `warn` or `restricted` (onboarded, with something held back by a cert; Flynn 5.4.1), and that no init-state cabinets remain. Reaching Gate 4 is necessary but not sufficient — all three conditions must hold.
 
 Creates a persistent notification:
 

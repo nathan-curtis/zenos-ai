@@ -205,7 +205,7 @@ Satisfied? Do nothing. The next Scheduler tick will find your component in the D
 
 The Scheduler ships with a standard set of triggers (time patterns, home mode changes, door/lock/window state changes, etc.). Your component subscribes to any combination of those by listing their IDs in `trigger_subscriptions`. `zen_dojotools_scribe mode=list_triggers` lists every one that's registered.
 
-**Try a label first.** Since 2026.11.0, five triggers fire on a label instead of an entity: `zen_leak`, `zen_smoke`, `zen_door`, `zen_power` and `zen_appliance`. Label a leak sensor `zen_leak`, subscribe your component to `zen_leak`, and it runs when the sensor gets wet. No YAML, no reload. See [Triggers](building_a_kfc.md#triggers).
+**Try a label first.** Since 2026.11.0, six triggers fire on a label instead of an entity: `zen_leak`, `zen_smoke`, `zen_door`, `zen_power`, `zen_appliance` and `alarm_panel`. Label a leak sensor `zen_leak`, subscribe your component to `zen_leak`, and it runs when the sensor gets wet. No YAML, no reload. See [Triggers](building_a_kfc.md#triggers).
 
 **Shipping a component that owns its triggers?** Put them in the component's own package file as a trigger pack that registers itself, and make it label-driven so it works in any house. See [Triggers](building_a_kfc.md#triggers).
 

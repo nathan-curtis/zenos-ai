@@ -1,7 +1,18 @@
 ###############################################################################
 # ZenOS-AI — Agent Health
-# Version: 4.6.0
+# Version: 4.7.0
 #
+# 4.7.0: agent health reports what the agent may do on 11, not only whether
+#   its persona loads (#10678). New states restricted and
+#   onboarding_required (see below). New roster gates onboarded
+#   (zenos.agent.basic held, the cert every tool's onboarding gate checks)
+#   and responsible_for (the household, when this agent is its responsible
+#   agent); default_persona is informational now, so an agent that is not
+#   the default no longer reads warn. agents_ok counts every onboarded,
+#   bootable agent. New attribute certs: policy, onboarding, and the
+#   components whose last run was refused for a cert or had an act
+#   blocked (HEALTH.agent_cert_summary). The full per-cert breakdown is
+#   SystemTools zen_health_report.
 # 4.6.0: sensor.zen_room_manager_health (green/yellow/red, informational,
 #   not in the Flynn/agent rollups) (#10614).
 #
@@ -19,23 +30,32 @@
 # sensor.zen_agent_health
 #   Agent bootability rollup + per-agent roster. Labels and cabinets only;
 #   the Monastery does not affect this state (see zen_monastery_health).
-#   State: critical | error | warn | ok
-#     ok       = labels + cabinets ok (cabinet warn is non-blocking) AND
-#                at least 1 bootable agent
+#   State: critical | error | warn | onboarding_required | restricted | ok
+#     ok                  = bootable, onboarded, nothing refused for a cert
+#     restricted          = bootable and onboarded, but a component's last
+#                           run was refused for a cert or had an act blocked;
+#                           or identity policy blocks every cert check (the
+#                           reason says which: one is fixed by a grant, the
+#                           other only by a person)
+#     onboarding_required = bootable, but the default agent does not hold
+#                           zenos.agent.basic, so its tools refuse it
 #     error    = labels + cabinets ok but 0 agents bootable, or labels or
 #                cabinets in error
 #     warn     = labels in warn
 #     critical = labels or cabinets critical
+#   restricted never alerts; Flynn's Gate 4 counts it as ready.
 #
 # Agent bootability gates (per agent in roster attribute):
 #   infra              — Flynn infra ok
 #   conversation_agent — zenos_conversation_agent set and entity available
-#   default_persona    — this cabinet is the zen_default_ai_user_cabinet
+#   onboarded          - holds zenos.agent.basic (stage i)
 #   system_purpose     — system cabinet has purpose drawer
 #   system_directives  — system cabinet has directives drawer
 #   dojo_loaded        — dojo cabinet has kfc_template key (written by reset_template)
 #   kata_summary       — kata cabinet has zen_summary key
 # Optional gates (informational only):
+#   default_persona    — this cabinet is the zen_default_ai_user_cabinet
+#   responsible_for    - containers this agent is responsible for
 #   system_cortex      — system cabinet has cortex drawer
 #   manifest           — household cabinet has zen_library_manifest
 #
@@ -253,7 +273,18 @@ template:
             {%- if ns.ok_count == 0 %}
               error
             {%- else %}
-              ok
+              {#--- bootable: now what may it do? (#10678) ---#}
+              {%- import 'zenos_ai/zenos_health.jinja' as HEALTH %}
+              {%- set cs = HEALTH.agent_cert_summary() | from_json({}) %}
+              {%- if cs.get('policy_status') == 'blocked' %}
+                restricted
+              {%- elif not cs.get('basic_held', false) %}
+                onboarding_required
+              {%- elif (cs.get('refused', []) | count) + (cs.get('act_blocked', []) | count) > 0 %}
+                restricted
+              {%- else %}
+                ok
+              {%- endif %}
             {%- endif %}
           {%- endif %}
 
@@ -281,10 +312,20 @@ template:
                   {%- set ns.ok_count = ns.ok_count + 1 %}
                 {%- endif %}
               {%- endfor %}
+              {%- import 'zenos_ai/zenos_health.jinja' as HEALTH %}
+              {%- set cs = HEALTH.agent_cert_summary() | from_json({}) if ns.ok_count > 0 else {} %}
+              {%- set _nref = cs.get('refused', []) | count %}
+              {%- set _nblk = cs.get('act_blocked', []) | count %}
               {%- if ns.ok_count == 0 and not conv_avail %}
                 Conversation agent not configured or unavailable (input_text.zenos_conversation_agent).
               {%- elif ns.ok_count == 0 %}
                 No bootable agent found — default AI user cabinet not assigned or persona missing.
+              {%- elif cs.get('policy_status') == 'blocked' %}
+                System side: identity policy blocks the caller (integrations_config identity.sim_mode_allowed is off), so every cert check fails. A grant can't fix this; a person has to change the policy. Don't request certs.
+              {%- elif not cs.get('basic_held', false) %}
+                The agent is not onboarded (zenos.agent.basic is not held), so its tools answer onboarding_required. Run zen_flynn_oobe mode=run; it asks the household admin to approve the agent.
+              {%- elif _nref + _nblk > 0 %}
+                Agent side: the agent is ready, but {{ _nref + _nblk }} background component{{ 's' if _nref + _nblk != 1 else '' }} {{ 'are' if _nref + _nblk != 1 else 'is' }} held back by a missing cert ({{ (cs.get('refused', []) + cs.get('act_blocked', [])) | unique | join(', ') }}). SystemTools zen_health_report lists each cert, the stage it needs, and how to request it.
               {%- elif mon_st != 'ok' %}
                 Agent is bootable and ready. Monastery ({{ mon_st }}) is a separate, non-blocking pipeline signal — see zen_monastery_health.
               {%- else %}
@@ -374,6 +415,11 @@ template:
               {%- set def_ns.loaded_name = (_def_probe.get('name', '') if _def_probe is mapping else '') | lower | trim %}
             {%- endif %}
 
+            {#--- cert posture, once for every row (#10678) ---#}
+            {%- set cs_r = health.agent_cert_summary() | from_json({}) %}
+            {%- set cert_policy = cs_r.get('policy_status', 'allowed') %}
+            {%- set resp_cab = cs_r.get('responsible_agent', '') %}
+
             {#--- enumerate agent cabinets dynamically ---#}
             {%- set all_ai_cabs = label_entities('zen_ai_user_cabinet')
                                   | select('match', 'sensor\\.') | list %}
@@ -388,24 +434,29 @@ template:
                 {%- set ag_name = ag_name if ag_name != '' else ag_cab %}
 
                 {%- set ag_is_default = ag_cab == def_cab %}
+                {%- import 'zenos_ai/zen_identity.jinja' as ID %}
+                {%- set ag_basic = (ID.cert_held(ag_cab, 'zenos.agent.basic', 1, 'i') | from_json({})).get('held', false) %}
+                {%- set ag_resp = ['household'] if ag_cab == resp_cab else [] %}
 
                 {#--- required agent gates ---#}
                 {%- set agent = {
                   'infra':              infra_gate,
                   'conversation_agent': conv_gate,
-                  'default_persona':    'ok' if ag_is_default else 'warn',
+                  'onboarded':          'ok' if ag_basic      else 'warn',
                   'system_purpose':     'ok' if purpose_ok    else 'warn',
                   'system_directives':  'ok' if directives_ok else 'warn',
                   'dojo_loaded':        'ok' if dojo_loaded   else 'warn',
                   'kata_summary':       'ok' if kata_summary  else 'warn',
                   'essence':            ag_ess_status,
+                  'default_persona':    'ok' if ag_is_default else 'info',
+                  'responsible_for':    ag_resp,
                   'system_cortex':      'ok' if cortex_ok     else 'warn',
                   'manifest':           'ok' if manifest_ok   else 'warn'
                 } %}
 
                 {#--- required keys only drive status ---#}
                 {%- set req = [
-                  agent.infra, agent.conversation_agent, agent.default_persona,
+                  agent.infra, agent.conversation_agent, agent.onboarded,
                   agent.system_purpose, agent.system_directives,
                   agent.dojo_loaded, agent.kata_summary, agent.essence
                 ] %}
@@ -419,9 +470,10 @@ template:
                   {%- set note = 'blocked_by_infra' %}
                 {%- elif not conv_avail %}
                   {%- set note = 'conv_agent_unavailable' if conv_set else 'conv_agent_not_configured' %}
-                {%- elif not ag_is_default %}
-                  {%- set note = 'no_persona' if def_ns.loaded_name == ''
-                                 else 'persona_is_' ~ def_ns.loaded_name %}
+                {%- elif cert_policy == 'blocked' %}
+                  {%- set note = 'cert_policy_blocked' %}
+                {%- elif not ag_basic %}
+                  {%- set note = 'not_onboarded' %}
                 {%- elif not purpose_ok %}
                   {%- set note = 'system_purpose_missing' %}
                 {%- elif not directives_ok %}
@@ -433,8 +485,12 @@ template:
                 {%- elif ag_ess_status != 'ok' %}
                   {%- set _miss = ag_probe.get('missing', []) | join(',') if ag_probe is mapping else '' %}
                   {%- set note = 'essence_' ~ ag_ess_status ~ ':' ~ _miss %}
+                {%- elif ag_resp | count > 0 and ((cs_r.get('refused', []) | count) + (cs_r.get('act_blocked', []) | count)) > 0 %}
+                  {%- set note = 'ready_restricted' %}
                 {%- elif mon_st not in ['ok', 'disabled'] %}
                   {%- set note = 'ready_monastery_' ~ mon_st %}
+                {%- elif not ag_is_default %}
+                  {%- set note = 'ready_not_default' %}
                 {%- else %}
                   {%- set note = 'ready' %}
                 {%- endif %}
@@ -465,11 +521,13 @@ template:
                   and states(conv_eid) not in ['unknown','unavailable'] %}
             {%- set all_ai_cabs = label_entities('zen_ai_user_cabinet')
                                   | select('match', 'sensor\\.') | list %}
-            {%- set def_cab = states('sensor.zen_default_ai_user_cabinet_resolved') %}
+            {#- #10678: every onboarded agent counts, not only the default one. -#}
+            {%- import 'zenos_ai/zen_identity.jinja' as ID %}
             {%- set ns = namespace(ok=0) %}
             {%- for ag_cab in all_ai_cabs %}
               {%- if states(ag_cab) not in ['unknown','unavailable'] %}
-                {%- if labels_cabs_ok and conv_avail and ag_cab == def_cab %}
+                {%- if labels_cabs_ok and conv_avail
+                       and (ID.cert_held(ag_cab, 'zenos.agent.basic', 1, 'i') | from_json({})).get('held', false) %}
                   {%- set ns.ok = ns.ok + 1 %}
                 {%- endif %}
               {%- endif %}
@@ -494,6 +552,25 @@ template:
 
           conversation_entity: >-
             {{ states('input_text.zenos_conversation_agent') | trim | default('none') }}
+
+          ##################################################################
+          # CERT POSTURE (#10678). The cheap view: policy, onboarding, and
+          # which components a missing cert is holding back. The per-cert
+          # breakdown (what to request, at what stage) is SystemTools
+          # zen_health_report, which runs only when called.
+          ##################################################################
+          certs: >-
+            {%- import 'zenos_ai/zenos_health.jinja' as HEALTH %}
+            {%- set cs = HEALTH.agent_cert_summary() | from_json({}) %}
+            {{ {'policy_status': cs.get('policy_status', 'allowed'),
+                'onboarded': cs.get('basic_held', false),
+                'responsible_agent': cs.get('responsible_agent', ''),
+                'responsible_source': cs.get('responsible_source', 'none'),
+                'responsible_onboarded': cs.get('responsible_onboarded', false),
+                'refused': cs.get('refused', []),
+                'act_blocked': cs.get('act_blocked', []),
+                'legacy_bridge': cs.get('legacy_bridge', []),
+                'details': 'systemtools mode=zen_health_report (certs section)'} | tojson }}
 
           timestamp: "{{ now().isoformat() }}"
 
