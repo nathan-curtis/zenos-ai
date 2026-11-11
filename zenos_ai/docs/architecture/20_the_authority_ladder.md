@@ -7,7 +7,7 @@ The clearest way I have found to explain the ladder is one ordinary sentence: pu
 Here is that sentence on a real install, and the push it produces:
 
 <!-- screenshot: ch20_unpause_live_ack.png -->
-> **Screenshot to come.** Friday asked to put a paused room back on Auto, and the live acknowledgement it sends to a household admin's phone. Real 2026.10.0 output; personal details redacted.
+> **Screenshot to come.** Friday asked to put a paused room back on Auto, and the live acknowledgement it sends to a household admin's phone. Real 2026.11.0 output; personal details redacted.
 <!-- /screenshot -->
 
 ## 20.1 The rungs
@@ -116,7 +116,7 @@ A scope `allow` entry covers the ask for the named target only (Chapter 19). A `
 Here is a deny, which never reaches a human at all:
 
 <!-- screenshot: ch20_scope_deny.png -->
-> **Screenshot to come.** Friday asked to act on a target her scope denies. She is refused outright, with no acknowledgement offered. Real 2026.10.0 output; personal details redacted.
+> **Screenshot to come.** Friday asked to act on a target her scope denies. She is refused outright, with no acknowledgement offered. Real 2026.11.0 output; personal details redacted.
 <!-- /screenshot -->
 
 ## 20.6 The administrative plane

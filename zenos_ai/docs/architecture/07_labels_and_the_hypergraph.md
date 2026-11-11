@@ -84,7 +84,7 @@ When the entity is a cabinet, Inspect returns only the cabinet's header: GUID, v
 Here is a question no single sensor can answer, asked of Friday:
 
 <!-- screenshot: ch07_humidity_pattern.png -->
-> **Screenshot to come.** Friday asked whether anything is unusual with humidity across the house. The answer comes from label intersection across rooms, not from any one entity. Real 2026.10.0 output; personal details redacted.
+> **Screenshot to come.** Friday asked whether anything is unusual with humidity across the house. The answer comes from label intersection across rooms, not from any one entity. Real 2026.11.0 output; personal details redacted.
 <!-- /screenshot -->
 
 ## 7.3 Resolution rules

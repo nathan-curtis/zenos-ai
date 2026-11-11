@@ -51,7 +51,7 @@ Tools resolve targets through labels, and gated tools refuse traversals the call
 Here is the difference between knowing and reaching, on a real install:
 
 <!-- screenshot: ch21_node_not_edges.png -->
-> **Screenshot to come.** Friday, without zenos.actuation.security_control, asked whether the alarm is armed and whether she can disarm it. She knows the state from a summary and cannot act on it. Real 2026.10.0 output; personal details redacted.
+> **Screenshot to come.** Friday, without zenos.actuation.security_control, asked whether the alarm is armed and whether she can disarm it. She knows the state from a summary and cannot act on it. Real 2026.11.0 output; personal details redacted.
 <!-- /screenshot -->
 
 ## 21.5 Everything is a cabinet

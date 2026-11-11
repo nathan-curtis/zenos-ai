@@ -47,7 +47,7 @@ Help exists so a tool's top-level description can stay short. The description is
 Here is an agent reading a tool's own description instead of a manual:
 
 <!-- screenshot: ch12_help.png -->
-> **Screenshot to come.** Friday asked how to use the locks tool. She calls mode=help and answers from what the tool says about itself. Real 2026.10.0 output; personal details redacted.
+> **Screenshot to come.** Friday asked how to use the locks tool. She calls mode=help and answers from what the tool says about itself. Real 2026.11.0 output; personal details redacted.
 <!-- /screenshot -->
 
 `zen_dojotools_manifest mode=audit_help` checks every tool against this contract. A tool is compliant only if `mode=help` returns `{status: help, message}` and `mode=tool_manifest` returns a complete manifest. The report says which half failed. Internal-only tiers (`zen_sutra_*`, `zen_stack_*`, `zen_codex_*`) are reported as exempt, because they are never agent-callable and each is fronted by a compliant host tool. `zen_dojotools_help mode=help tool=<name>` proxies to any tool's help, and returns `status: unsupported` rather than passing a tool's live data off as documentation.

@@ -9,7 +9,7 @@ I learned this the expensive way. Early on I deliberately exposed far more of th
 Here is what that configuration looks like, and what it can still do:
 
 <!-- screenshot: ch10_zero_entities.png -->
-> **Screenshot to come.** The Expose list with zero entities exposed, and Friday turning off a room's lights through ZenLux in the same session. Real 2026.10.0 output; personal details redacted.
+> **Screenshot to come.** The Expose list with zero entities exposed, and Friday turning off a room's lights through ZenLux in the same session. Real 2026.11.0 output; personal details redacted.
 <!-- /screenshot -->
 
 ## 10.1 Two ways to reach the house

@@ -84,7 +84,7 @@ The frame is sent on every turn, so every section is built to be small. The inde
 Here is that sensor on a live install:
 
 <!-- screenshot: ch17_prompt_length.png -->
-> **Screenshot to come.** sensor.zen_prompt_length attributes, showing the size of each section of the frame. Real 2026.10.0 output; personal details redacted.
+> **Screenshot to come.** sensor.zen_prompt_length attributes, showing the size of each section of the frame. Real 2026.11.0 output; personal details redacted.
 <!-- /screenshot -->
 
 For scale: in the reference household (Appendix F), one sampled frame was 49,868 characters. The system section and the Katas were about three quarters of it. Trimming repeated scaffolding and duplicated label descriptions in 2026.10.0 brought a later sample to 40,812. The index describing more than a thousand labels was under 5,000.

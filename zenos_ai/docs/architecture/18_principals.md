@@ -6,6 +6,8 @@ Identity began as an onboarding plan: interview the household, seed a persona fr
 
 This is also the part of ZenOS I came to with the most background. In a former life I was a Microsoft field engineer for identity, messaging, and core infrastructure. I speak PKI natively, and I have designed several hardware-backed public key infrastructures, some of which, as far as I know, are still operational. That is why everything in Part V is shaped the way it is: certification names shaped like OIDs, certification entries shaped like certificates, an identity root shaped like OIDC, and a certificate store headed for an enclave (Chapter 5). I know what it costs to retrofit an identity system that was not built for where it is going, and I would rather not.
 
+Part V follows one agent from the door to the alarm panel. A new agent with no backstage pass reaches help and its own onboarding, and nothing else, until a person approves the pass on their phone (Chapter 20). Its certifications say which domains it may act in, and each one was granted by a person, not by the agent (Chapter 19). Asking to put a paused room back on Auto sends a live acknowledgement to a household admin, because that takes back authority a human removed (Chapter 20). A target its scope denies is refused outright, with no one asked. And an agent without the security certification can be told the alarm is armed, but cannot reach it (Chapter 21). Same agent, same house, four answers. This chapter starts with who the agent is.
+
 ## 18.1 Principals are cabinets
 
 Every principal is backed by a cabinet, and the cabinet's type label says what kind of principal it is:

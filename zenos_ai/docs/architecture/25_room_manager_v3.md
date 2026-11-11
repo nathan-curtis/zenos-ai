@@ -1,5 +1,7 @@
 # 25. Room Manager v3 Reference
 
+> **Reference chapter.** This one is for people running or building on Room Manager. If you are reading the book for the story, skip ahead to [Findings](26_findings.md).
+
 Chapter 16 explains what a room's live state means and why it is built the way it is. This chapter is the operational reference: every tier, label, construct, and mode, and the rules the implementation holds to. It is also the most complete worked example in the book. Labels resolve the rooms, live state becomes part of the twin, REFLEX turns that state into effects, and certification decides which of those effects an agent may reach.
 
 Room Manager v3 is not the same system as RoomReg (`zen_dojotools_room_manager`'s spatial modes: topology, egress, emergency snapshots, Chapter 9). RoomReg answers what a room is and how it connects to the house. Room Manager v3 answers what a room is doing right now, and what should happen because of it. When someone says "room manager," check which one they mean.

@@ -8,6 +8,18 @@ It is also where retrieval lives. I am not against retrieval. I think it belongs
 
 > **Not yet built.** Search and vector backends that plug in behind the index are under investigation. The exact mechanism is deliberately left open, to be whatever serves each tool best. What is not open is how it looks to the agent: search and retrieval are one seamless capability, always, however many backends sit behind them. Seamless does not mean indistinguishable, and three constraints come with it. Every result says what kind of evidence it is: an exact label match, live state, a Kata, or a semantic match with its score, so a fuzzy match never reads like a fact. Empty stays a valid answer: semantic search always has a nearest neighbor, so a relevance floor keeps "found nothing" possible and the default out intact (Chapter 2). And nothing is returned that the caller could not have reached anyway: results are filtered by what the caller may traverse before they are ranked, so search never becomes a side door around certification and scope (Part V).
 
+## Before the machinery: one leak
+
+Part IV has a lot of names in it. Here is one ordinary event walking through all of them.
+
+A leak sensor under the kitchen sink reads wet. Your leak shutoff, an ordinary Home Assistant automation, has already closed the valve; it did not need an LLM to decide whether water is wet (Chapter 1). Everything below is about what Friday knows, not what the valve does.
+
+The sensor carries the `alert_manager` label and `alert_when_on`, which says wet is the bad direction. Alert Manager is a Kung Fu Component (Chapter 13): it reads every entity with its label. The Abbot (Chapter 22) decides when it runs. Alert Manager subscribes to the `zen_leak` trigger, so a sensor that also carries the `zen_leak` label wakes it at once; anything else waits for its next scheduled sweep. Smoke, carbon monoxide and gas (`zen_smoke`) and a triggered alarm panel (`alarm_panel`) wake it the same way.
+
+When it runs, a Ninja reads the labeled entities and a Monk, the model call, summarizes them into a fixed shape: which entity deviates, how urgent it is, and whether anything should be done. If the answer does not parse, nothing is written. If it does, it is stored as a Kata, and SuperSummary folds it into the whole-house view (14.3). If the component says action is required, it can act only through the act Postman declares, behind Postman's emit cert (14.4). A leak is life-safety urgency, which skips the cert layer and the cooldown, but not the master switches.
+
+Then you ask Friday what is going on in the kitchen. The answer is already in her frame (Chapter 17): the Kata says the sink sensor is wet. If you ask for more, she reads the sensor itself and its history through the graph (Chapter 7). She never had to discover the leak. The Monastery had already written it down.
+
 ## 14.1 The pipeline
 
 ```mermaid
@@ -74,7 +86,7 @@ SuperSummary is bounded three ways: a run governor (`super_burnout_seconds`, def
 Here is what that synthesis reads like when Friday is asked for it:
 
 <!-- screenshot: ch14_briefing.png -->
-> **Screenshot to come.** Friday asked for a briefing. The answer is SuperSummary's whole-house view, with what matters first and how urgent it is. Real 2026.10.0 output; personal details redacted.
+> **Screenshot to come.** Friday asked for a briefing. The answer is SuperSummary's whole-house view, with what matters first and how urgent it is. Real 2026.11.0 output; personal details redacted.
 <!-- /screenshot -->
 
 ## 14.4 Escalation
@@ -97,7 +109,7 @@ A refused act is written onto the component's Kata as `act_blocked`, naming what
 
 **Ask a human.** Anything that needs attention but has no automatable action goes to `zen_dojotools_urgency_handler`, which opens or updates a task (Chapter 22). Before escalating, the summarizer checks `zen_dojotools_alertmanager mode=check_ack` for the component. If a household member has acknowledged the condition, the escalation is suppressed until the acknowledgement expires or is revoked (Chapter 15).
 
-A cooldown per component (`emission_cooldown_minutes`) stops the same condition from escalating repeatedly.
+A cooldown per component (`emission_cooldown_minutes`) stops the same condition from escalating repeatedly. Life safety is the exception: at or above the life-safety bypass (`push_gate_life_safety_bypass`, default 8), the cooldown never holds an emission back, so a leak is not kept waiting because a low-battery alert went out ten minutes earlier.
 
 ## 14.5 Kill switches
 

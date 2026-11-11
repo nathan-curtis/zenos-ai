@@ -44,7 +44,7 @@ The topology is a graph other tools walk.
 Here is the topology answering a question a floor plan would:
 
 <!-- screenshot: ch09_egress.png -->
-> **Screenshot to come.** Friday asked for the way out of a bedroom with smoke in the kitchen. The route comes from portals and adjacency, not from a generic answer. Real 2026.10.0 output; personal details redacted.
+> **Screenshot to come.** Friday asked for the way out of a bedroom with smoke in the kitchen. The route comes from portals and adjacency, not from a generic answer. Real 2026.11.0 output; personal details redacted.
 <!-- /screenshot -->
 
 **Propagation.** ZenLux's bleed walks portals outward from a room and uses each portal's light transmission to decide whether and how strongly a scene carries into the next room (Chapter 25 covers REFLEX, which is separate). An archway propagates. A closed door does not.
