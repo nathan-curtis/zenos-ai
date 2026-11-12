@@ -1,6 +1,15 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Library
-# Version: 6.15.2
+# Version: 6.15.3
+# v6.15.3: stacks_by_anchor (#10682) is answered by its own Paperless branch for
+#   every anchor type (tags matched by slug, any tag), returns evidence[], and
+#   the generic stacks call no longer overwrites that answer. Catalog move,
+#   loan, return and update (#10683): a refusal (missing input, no match,
+#   several matches, unknown item) now stops before any write instead of
+#   writing anyway; success is reported only when Grocy confirms the write.
+#   move accepts location_id as well as location_name. stacks_by_anchor also
+#   reads the tool's top-level anchor_type / anchor_ids, and a missing anchor
+#   is reported instead of being overwritten by an empty success.
 # v6.15.2: Lens fixes (#10681). stacks_by_anchor returns evidence[] beside
 #   documents (leaf_type document_evidence, provider paperless_ngx,
 #   evidence_id), the shape the bus reads. Catalog by_anchor: each item is
@@ -502,7 +511,7 @@ script:
                   summary='Documents, tickets, wiki, and the physical item catalog',
                   display_name='Library — Knowledge Broker and Lens Owner',
                   tier='dojotools',
-                  version='6.15.2',
+                  version='6.15.3',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['dojotools'],
                   optional_labels=['library', 'documents', 'paperless', 'radar'],
@@ -559,7 +568,7 @@ script:
               result:
                 status: info
                 tool: zen_dojotools_library
-                version: "6.15.2"
+                version: "6.15.3"
                 mode: help
                 description: >-
                   Two departments in one tool. section=stacks: knowledge broker and Lens owner: 
@@ -932,9 +941,13 @@ script:
               _document_id: "{{ input_data.get('document_id', '') | string | trim if input_data is mapping else '' }}"
               _task_id: "{{ input_data.get('task_id', '') | string | trim if input_data is mapping else '' }}"
               _search_query: "{{ input_data.get('query', query_norm) | string | trim if input_data is mapping else query_norm }}"
-              _anchor_type: "{{ input_data.get('anchor_type', '') | string | trim | lower if input_data is mapping else '' }}"
+              # The anchors come in input_json (the Paperless stack's call) or as the
+              # tool's own top-level anchor_type / anchor_ids fields (a direct call).
+              _anchor_type: "{{ (input_data.get('anchor_type', '') if input_data is mapping else '') | default(anchor_type | default('', true), true) | string | trim | lower }}"
               _anchor_ids: >-
                 {%- set raw = input_data.get('anchor_ids', []) if input_data is mapping else [] -%}
+                {%- set raw = raw if raw else (anchor_ids | default([], true)) -%}
+                {%- if raw is string and (raw | trim)[:1] == '[' -%}{%- set raw = raw | trim | from_json([]) -%}{%- endif -%}
                 {%- if raw is string -%}
                   {{ [raw | trim | lower] if raw | trim != '' else [] }}
                 {%- elif raw is sequence -%}
@@ -994,31 +1007,9 @@ script:
           - choose:
             - conditions:
               - condition: template
-                value_template: '{{ mode_norm == "stacks_by_anchor" and _anchor_type != "label" }}'
-              sequence:
-              - variables:
-                  result:
-                    status: success
-                    tool: Zen DojoTools Library
-                    section: stacks
-                    mode: stacks_by_anchor
-                    source:
-                      system: paperless_ngx
-                    anchor_query:
-                      anchor_type: "{{ _anchor_type }}"
-                      anchor_ids: "{{ _anchor_ids }}"
-                      include_suggestions: "{{ _anchor_include_suggestions }}"
-                    result:
-                      count: 0
-                      documents: []
-                      content_redacted: true
-                      source_count: 0
-                      source_page_size: 0
-                      reason: anchor_type_not_implemented_for_paperless
-                    caller_token: "{{ caller_token_norm }}"
-            - conditions:
-              - condition: template
-                value_template: '{{ mode_norm == "stacks_by_anchor" and _anchor_type == "label" }}'
+                # #10682: every anchor type matches Paperless tags by slug (a 'kitchen'
+                # tag answers area_id kitchen as well as label kitchen).
+                value_template: '{{ mode_norm == "stacks_by_anchor" and _missing | trim == "" }}'
               sequence:
               - action: script.zen_sutra_paperless
                 response_variable: _anchor_tags_raw
@@ -1060,7 +1051,7 @@ script:
                         source:
                           system: paperless_ngx
                         anchor_query:
-                          anchor_type: label
+                          anchor_type: "{{ _anchor_type }}"
                           anchor_ids: "{{ _anchor_ids }}"
                           include_suggestions: "{{ _anchor_include_suggestions }}"
                         result:
@@ -1074,447 +1065,409 @@ script:
                           endpoint: /api/tags/
                           method: GET
                         caller_token: "{{ caller_token_norm }}"
-              - variables:
-                  _anchor_docs_endpoint: "/api/documents/?tags__id__all={{ _anchor_tag_ids | join(',') | urlencode }}&page_size={{ _anchor_page_size | int(50) }}"
+                default:
+                  - variables:
+                      _anchor_docs_endpoint: "/api/documents/?tags__id__in={{ _anchor_tag_ids | join(',') | urlencode }}&page_size={{ _anchor_page_size | int(50) }}"
+                  - action: script.zen_sutra_paperless
+                    response_variable: _anchor_docs_raw
+                    continue_on_error: true
+                    data:
+                      action_type: get
+                      endpoint: "{{ _anchor_docs_endpoint }}"
+                  - variables:
+                      _anchor_docs_content: "{{ _anchor_docs_raw.get('result', {}).get('content', {}) if _anchor_docs_raw is mapping else {} }}"
+                      result: >-
+                        {%- set docs = _anchor_docs_content.get('results', []) if _anchor_docs_content is mapping and _anchor_docs_content.get('results', []) is sequence and _anchor_docs_content.get('results', []) is not string else [] -%}
+                        {%- set ns = namespace(out=[], ev=[]) -%}
+                        {%- for d in docs if d is mapping -%}
+                          {%- set doc_tag_ids = d.get('tags', []) if d.get('tags', []) is sequence and d.get('tags', []) is not string else [] -%}
+                          {%- set m = namespace(tags=[], anchors=[], labels=[], matched=[]) -%}
+                          {%- for t in _anchor_tag_matches if t is mapping and t.get('id') in doc_tag_ids -%}
+                            {%- set slug = t.get('slug', '') | string | lower -%}
+                            {%- set m.tags = m.tags + [t] -%}
+                            {%- set m.labels = m.labels + [{'label_id': slug, 'source': 'paperless_tag', 'mapped': true}] -%}
+                            {%- set m.anchors = m.anchors + [{'type': _anchor_type, 'id': slug, 'confidence': 'explicit', 'source': 'paperless_tag', 'provider': 'paperless_ngx', 'paperless_tag_id': t.get('id'), 'name': t.get('name', '')}] -%}
+                            {%- set m.matched = m.matched + [slug] -%}
+                          {%- endfor -%}
+                          {%- if m.matched | length > 0 -%}
+                            {%- set row = {
+                              'id': d.get('id', none),
+                              'correspondent': d.get('correspondent', none),
+                              'document_type': d.get('document_type', none),
+                              'storage_path': d.get('storage_path', none),
+                              'title': '',
+                              'title_redacted': true,
+                              'tags': doc_tag_ids,
+                              'paperless_tags': m.tags,
+                              'paperless_tag_ids': doc_tag_ids,
+                              'ha_labels': m.labels,
+                              'anchor_contexts': m.anchors,
+                              'matched_anchor_ids': m.matched | unique | list,
+                              'created': d.get('created', none),
+                              'created_date': d.get('created_date', none),
+                              'modified': d.get('modified', none),
+                              'added': d.get('added', none),
+                              'deleted_at': d.get('deleted_at', none),
+                              'page_count': d.get('page_count', none),
+                              'mime_type': d.get('mime_type', none),
+                              'notes_count': d.get('notes', []) | length if d.get('notes', []) is sequence and d.get('notes', []) is not string else 0,
+                              'content_redacted': true,
+                              'stack': {
+                                'provider': 'paperless_ngx',
+                                'source': 'paperless_ngx',
+                                'object_type': 'document',
+                                'source_id': d.get('id', none),
+                                'evidence_id': 'paperless_ngx:document:' ~ (d.get('id', '') | string),
+                                'lens_mode': 'stacks_by_anchor'
+                              }
+                            } -%}
+                            {%- set ns.out = ns.out + [row] -%}
+                            {%- set ns.ev = ns.ev + [row | combine({'evidence_id': row.stack.evidence_id, 'leaf_type': 'document_evidence', 'provider': 'paperless_ngx'})] -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{
+                          {
+                            'status': 'success' if _anchor_docs_raw is mapping and _anchor_docs_raw.get('status') == 'success' else (_anchor_docs_raw.get('status', 'error') if _anchor_docs_raw is mapping else 'error'),
+                            'tool': 'Zen DojoTools Library',
+                            'section': 'stacks',
+                            'mode': 'stacks_by_anchor',
+                            'source': _anchor_docs_raw.get('source', {'system': 'paperless_ngx'}) if _anchor_docs_raw is mapping else {'system': 'paperless_ngx'},
+                            'anchor_query': {
+                              'anchor_type': _anchor_type,
+                              'anchor_ids': _anchor_ids,
+                              'include_suggestions': _anchor_include_suggestions
+                            },
+                            'result': {
+                              'count': ns.out | length,
+                              'documents': ns.out,
+                              'evidence': ns.ev,
+                              'content_redacted': true,
+                              'source_count': _anchor_docs_content.get('count', 0) if _anchor_docs_content is mapping else 0,
+                              'source_page_size': docs | length
+                            },
+                            'trace': {
+                              'tag_endpoint': '/api/tags/',
+                              'document_endpoint': _anchor_docs_endpoint,
+                              'method': 'GET',
+                              'http_status': _anchor_docs_raw.get('http_status', 0) if _anchor_docs_raw is mapping else 0
+                            },
+                            'caller_token': caller_token_norm
+                          }
+                        }}
+          # #10682: stacks_by_anchor is answered by its own branches above; this
+          # generic call has no endpoint for it and used to overwrite their result.
+          - if: "{{ mode_norm != 'stacks_by_anchor' }}"
+            then:
               - action: script.zen_sutra_paperless
-                response_variable: _anchor_docs_raw
+                response_variable: _stacks_raw
                 continue_on_error: true
                 data:
                   action_type: get
-                  endpoint: "{{ _anchor_docs_endpoint }}"
+                  endpoint: "{{ _endpoint | trim }}"
+              - choose:
+                - conditions:
+                  - condition: template
+                    value_template: '{{ mode_norm in ["stacks_search", "stacks_similar", "stacks_document_get", "stacks_document_lens"] }}'
+                  sequence:
+                  - action: script.zen_sutra_paperless
+                    response_variable: _doc_tags_raw
+                    continue_on_error: true
+                    data:
+                      action_type: get
+                      endpoint: /api/tags/?page_size=200
+                default:
+                - variables:
+                    _doc_tags_raw: {}
               - variables:
-                  _anchor_docs_content: "{{ _anchor_docs_raw.get('result', {}).get('content', {}) if _anchor_docs_raw is mapping else {} }}"
-                  result: >-
-                    {%- set docs = _anchor_docs_content.get('results', []) if _anchor_docs_content is mapping and _anchor_docs_content.get('results', []) is sequence and _anchor_docs_content.get('results', []) is not string else [] -%}
-                    {%- set ns = namespace(out=[]) -%}
-                    {%- for d in docs if d is mapping -%}
-                      {%- set doc_tag_ids = d.get('tags', []) if d.get('tags', []) is sequence and d.get('tags', []) is not string else [] -%}
-                      {%- set m = namespace(tags=[], anchors=[], labels=[], matched=[]) -%}
-                      {%- for t in _anchor_tag_matches if t is mapping and t.get('id') in doc_tag_ids -%}
-                        {%- set slug = t.get('slug', '') | string | lower -%}
-                        {%- set m.tags = m.tags + [t] -%}
-                        {%- set m.labels = m.labels + [{'label_id': slug, 'source': 'paperless_tag', 'mapped': true}] -%}
-                        {%- set m.anchors = m.anchors + [{'type': 'label', 'id': slug, 'confidence': 'explicit', 'source': 'paperless_tag', 'provider': 'paperless_ngx', 'paperless_tag_id': t.get('id'), 'name': t.get('name', '')}] -%}
-                        {%- set m.matched = m.matched + [slug] -%}
-                      {%- endfor -%}
-                      {%- if m.matched | length > 0 -%}
-                        {%- set row = {
+                  _content: "{{ _stacks_raw.get('result', {}).get('content', {}) if _stacks_raw is mapping else {} }}"
+                  _source: "{{ _stacks_raw.get('source', {'system': 'paperless_ngx'}) if _stacks_raw is mapping else {'system': 'paperless_ngx'} }}"
+                  _ha_label_index: "{{ labels() | list }}"
+                  _doc_tags_content: "{{ _doc_tags_raw.get('result', {}).get('content', {}) if _doc_tags_raw is mapping else {} }}"
+                  _doc_tags_fetch_ok: "{{ _doc_tags_raw is mapping and _doc_tags_raw.get('status') == 'success' }}"
+                  _doc_tags_by_id: >-
+                    {%- set ns = namespace(rows=[]) -%}
+                    {%- set tags = _doc_tags_content.get('results', []) if _doc_tags_content is mapping and _doc_tags_content.get('results', []) is sequence and _doc_tags_content.get('results', []) is not string else [] -%}
+                    {%- for t in tags if t is mapping and t.get('id', none) is not none -%}
+                      {%- set _name = t.get('name', '') | string | trim -%}
+                      {%- set ns.rows = ns.rows + [{'id': t.get('id'), 'name': _name, 'slug': t.get('slug', _name | slugify(separator='_')) | string | trim}] -%}
+                    {%- endfor -%}
+                    {{ ns.rows }}
+                  _safe_content: >-
+                    {%- if mode_norm not in ['stacks_search', 'stacks_similar', 'stacks_document_get', 'stacks_document_lens'] -%}
+                      {{ _content }}
+                    {%- else -%}
+                    {%- macro safe_doc(d) -%}
+                      {%- if d is mapping -%}
+                        {%- set tag_ns = namespace(paperless_tags=[], paperless_tag_ids=[], ha_labels=[], unmapped_tags=[]) -%}
+                        {%- for t in d.get('tags', []) if d.get('tags', []) is sequence and d.get('tags', []) is not string -%}
+                          {%- if t is mapping -%}
+                            {%- set _tn = t.get('name', t.get('slug', t.get('id', ''))) | string | trim -%}
+                            {%- set _ts = t.get('slug', _tn | slugify(separator='_')) | string | trim -%}
+                            {%- set _tid = t.get('id', none) -%}
+                          {%- elif t is string -%}
+                            {%- set _tn = t | trim -%}
+                            {%- set _ts = _tn | slugify(separator='_') -%}
+                            {%- set _tid = none -%}
+                          {%- else -%}
+                            {%- set _tid = t -%}
+                            {%- set _resolved = _doc_tags_by_id | selectattr('id', 'equalto', t) | list -%}
+                            {%- if _resolved | length > 0 -%}
+                              {%- set _tn = _resolved[0].name -%}
+                              {%- set _ts = _resolved[0].slug -%}
+                            {%- else -%}
+                              {%- set _tn = '' -%}
+                              {%- set _ts = '' -%}
+                            {%- endif -%}
+                          {%- endif -%}
+                          {%- if _tid is not none -%}{%- set tag_ns.paperless_tag_ids = tag_ns.paperless_tag_ids + [_tid] -%}{%- endif -%}
+                          {%- if _tn != '' -%}{%- set tag_ns.paperless_tags = tag_ns.paperless_tags + [{'id': _tid, 'name': _tn, 'slug': _ts}] -%}{%- endif -%}
+                          {%- if _ts != '' and _ts in _ha_label_index -%}
+                            {%- set tag_ns.ha_labels = tag_ns.ha_labels + [{'label_id': _ts, 'source': 'paperless_tag', 'mapped': true}] -%}
+                          {%- elif _tn != '' or _tid is not none -%}
+                            {%- set tag_ns.unmapped_tags = tag_ns.unmapped_tags + [{'id': _tid, 'name': _tn, 'slug': _ts}] -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ {
                           'id': d.get('id', none),
                           'correspondent': d.get('correspondent', none),
                           'document_type': d.get('document_type', none),
                           'storage_path': d.get('storage_path', none),
-                          'title': '',
-                          'title_redacted': true,
-                          'tags': doc_tag_ids,
-                          'paperless_tags': m.tags,
-                          'paperless_tag_ids': doc_tag_ids,
-                          'ha_labels': m.labels,
-                          'anchor_contexts': m.anchors,
-                          'matched_anchor_ids': m.matched | unique | list,
+                          'title': d.get('title', ''),
+                          'tags': d.get('tags', []),
+                          'paperless_tags': tag_ns.paperless_tags,
+                          'paperless_tag_ids': tag_ns.paperless_tag_ids,
+                          'ha_labels': tag_ns.ha_labels,
+                          'unmapped_tags': tag_ns.unmapped_tags,
                           'created': d.get('created', none),
                           'created_date': d.get('created_date', none),
                           'modified': d.get('modified', none),
                           'added': d.get('added', none),
                           'deleted_at': d.get('deleted_at', none),
+                          'archive_serial_number': d.get('archive_serial_number', none),
+                          'original_available': (d.get('original_file_name', '') | string | trim) != '',
+                          'archive_available': (d.get('archived_file_name', '') | string | trim) != '',
                           'page_count': d.get('page_count', none),
                           'mime_type': d.get('mime_type', none),
                           'notes_count': d.get('notes', []) | length if d.get('notes', []) is sequence and d.get('notes', []) is not string else 0,
-                          'content_redacted': true,
-                          'stack': {
+                          'custom_fields': d.get('custom_fields', []),
+                          'user_can_change': d.get('user_can_change', false),
+                          'search_hit': d.get('__search_hit__', none),
+                          'content_redacted': not _include_content,
+                          'content': d.get('content', '') if _include_content else none
+                        } | tojson }}
+                      {%- else -%}{{ d }}{%- endif -%}
+                    {%- endmacro -%}
+                    {%- if _content is mapping and _content.get('results', none) is sequence and _content.get('results', none) is not string -%}
+                      {%- set ns = namespace(results=[]) -%}
+                      {%- for d in _content.get('results', []) -%}
+                        {%- set rendered = safe_doc(d) -%}
+                        {%- set ns.results = ns.results + [rendered | from_json | default({})] -%}
+                      {%- endfor -%}
+                      {{ {
+                        'count': _content.get('count', 0),
+                        'next': _content.get('next', none),
+                        'previous': _content.get('previous', none),
+                        'all': _content.get('all', []),
+                        'results': ns.results,
+                        'corrected_query': _content.get('corrected_query', none)
+                      } }}
+                    {%- elif _content is mapping and _content.get('id', none) is not none -%}
+                      {{ safe_doc(_content) | from_json | default({}) }}
+                    {%- else -%}
+                      {{ _content }}
+                    {%- endif -%}
+                    {%- endif -%}
+                  _base_response:
+                    status: "{{ _stacks_raw.get('status', 'error') if _stacks_raw is mapping else 'error' }}"
+                    tool: Zen DojoTools Library
+                    section: stacks
+                    mode: "{{ mode_norm }}"
+                    source: "{{ _source }}"
+                    message: >-
+                      {%- if mode_norm in ["stacks_search", "stacks_similar", "stacks_document_get", "stacks_document_lens"] and not _doc_tags_fetch_ok -%}
+                        Warning: tag name lookup (/api/tags/) failed — tags will show as unmapped with blank name/slug even if they exist. This does not mean the tags are missing in Paperless.
+                      {%- else -%}{%- endif -%}
+                    result: "{{ _safe_content }}"
+                    trace:
+                      endpoint: "{{ _endpoint | trim }}"
+                      method: GET
+                      http_status: "{{ _stacks_raw.get('http_status', 0) if _stacks_raw is mapping else 0 }}"
+                      caller_token: "{{ caller_token_norm }}"
+              - choose:
+                - conditions:
+                  - condition: template
+                    value_template: '{{ mode_norm == "stacks_document_lens" and _content is mapping and _content.get("correspondent") is not none }}'
+                  sequence:
+                  - action: script.zen_sutra_paperless
+                    response_variable: _corr_raw
+                    continue_on_error: true
+                    data:
+                      action_type: get
+                      endpoint: "/api/correspondents/{{ _content.get('correspondent') }}/"
+                default:
+                - variables:
+                    _corr_raw: {}
+              - variables:
+                  _corr_content: "{{ _corr_raw.get('result', {}).get('content', {}) if _corr_raw is mapping else {} }}"
+                  _corr_fetch_ok: "{{ _corr_raw is mapping and _corr_raw.get('status') == 'success' }}"
+                  _corr_name: "{{ _corr_content.get('name', '') | string | trim if _corr_content is mapping else '' }}"
+              - choose:
+                - conditions:
+                  - condition: template
+                    value_template: '{{ _corr_name != "" }}'
+                  sequence:
+                  - action: script.zen_dojotools_rolodex
+                    response_variable: _corr_rolodex_raw
+                    continue_on_error: true
+                    data:
+                      mode: company_find
+                      item: "{{ _corr_name }}"
+                      limit: 3
+                default:
+                - variables:
+                    _corr_rolodex_raw: {}
+              - variables:
+                  _corr_rolodex_companies: >-
+                    {%- set r = _corr_rolodex_raw.get('result', {}) if _corr_rolodex_raw is mapping else {} -%}
+                    {{ r.get('companies', []) if r is mapping and r.get('companies', []) is sequence and r.get('companies', []) is not string else [] }}
+                  _corr_rolodex_count: "{{ (_corr_rolodex_companies | length) if _corr_rolodex_companies is sequence and _corr_rolodex_companies is not string else 0 }}"
+              - variables:
+                  result: >-
+                    {%- if mode_norm == 'stacks_tag_audit' and _content is mapping -%}
+                      {%- set tags = _content.get('results', []) if _content.get('results', []) is sequence and _content.get('results', []) is not string else [] -%}
+                      {%- set ns = namespace(paperless=[], paperless_slugs=[], mapped=[], unmapped=[], missing=[]) -%}
+                      {%- for t in tags -%}
+                        {%- if t is mapping -%}
+                          {%- set _name = t.get('name', '') | string | trim -%}
+                          {%- set _slug = t.get('slug', _name | slugify(separator='_')) | string | trim -%}
+                          {%- set _id = t.get('id', none) -%}
+                          {%- set _row = {'id': _id, 'name': _name, 'slug': _slug, 'document_count': t.get('document_count', none)} -%}
+                          {%- set ns.paperless = ns.paperless + [_row] -%}
+                          {%- if _slug != '' -%}{%- set ns.paperless_slugs = ns.paperless_slugs + [_slug] -%}{%- endif -%}
+                          {%- if _slug in _ha_label_index -%}
+                            {%- set ns.mapped = ns.mapped + [_row | combine({'label_id': _slug})] -%}
+                          {%- else -%}
+                            {%- set ns.unmapped = ns.unmapped + [_row] -%}
+                          {%- endif -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for lbl in _ha_label_index -%}
+                        {%- if lbl not in ns.paperless_slugs -%}{%- set ns.missing = ns.missing + [lbl] -%}{%- endif -%}
+                      {%- endfor -%}
+                      {{
+                        _base_response | combine({
+                          'status': 'success' if _stacks_raw is mapping and _stacks_raw.get('status') == 'success' else _base_response.status,
+                          'result': {
+                            'paperless_tags': ns.paperless,
+                            'paperless_count': ns.paperless | length,
+                            'ha_label_count': _ha_label_index | length,
+                            'mapped': ns.mapped,
+                            'mapped_count': ns.mapped | length,
+                            'unmapped_paperless_tags': ns.unmapped,
+                            'unmapped_count': ns.unmapped | length,
+                            'ha_labels_missing_paperless_tag': ns.missing,
+                            'missing_count': ns.missing | length,
+                            'doctrine': 'HA labels are canonical. Paperless tags are the document-side projection of HA label slugs.'
+                          }
+                        }, recursive=true)
+                      }}
+                    {%- elif mode_norm == 'stacks_document_lens' and _content is mapping -%}
+                      {%- set _tags = _content.get('tags', []) -%}
+                      {%- set _hit = _content.get('__search_hit__', none) -%}
+                      {{
+                        _base_response | combine({
+                          'status': 'ok' if _stacks_raw is mapping and _stacks_raw.get('status') == 'success' else _base_response.status,
+                          'lens': {'type': 'document', 'focus': _content.get('title', _document_id)},
+                          'stack': _safe_content.get('stack', {}) if _safe_content is mapping else {
                             'provider': 'paperless_ngx',
                             'source': 'paperless_ngx',
                             'object_type': 'document',
-                            'source_id': d.get('id', none),
-                            'evidence_id': 'paperless_ngx:document:' ~ (d.get('id', '') | string),
-                            'lens_mode': 'stacks_by_anchor'
-                          }
-                        } -%}
-                        {%- set ns.out = ns.out + [row] -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                    {{
-                      {
-                        'status': 'success' if _anchor_docs_raw is mapping and _anchor_docs_raw.get('status') == 'success' else (_anchor_docs_raw.get('status', 'error') if _anchor_docs_raw is mapping else 'error'),
-                        'tool': 'Zen DojoTools Library',
-                        'section': 'stacks',
-                        'mode': 'stacks_by_anchor',
-                        'source': _anchor_docs_raw.get('source', {'system': 'paperless_ngx'}) if _anchor_docs_raw is mapping else {'system': 'paperless_ngx'},
-                        'anchor_query': {
-                          'anchor_type': 'label',
-                          'anchor_ids': _anchor_ids,
-                          'include_suggestions': _anchor_include_suggestions
-                        },
-                        'result': {
-                          'count': ns.out | length,
-                          'documents': ns.out,
-                          'content_redacted': true,
-                          'source_count': _anchor_docs_content.get('count', 0) if _anchor_docs_content is mapping else 0,
-                          'source_page_size': docs | length
-                        },
-                        'trace': {
-                          'tag_endpoint': '/api/tags/',
-                          'document_endpoint': _anchor_docs_endpoint,
-                          'method': 'GET',
-                          'http_status': _anchor_docs_raw.get('http_status', 0) if _anchor_docs_raw is mapping else 0
-                        },
-                        'caller_token': caller_token_norm
-                      }
-                    }}
-          - action: script.zen_sutra_paperless
-            response_variable: _stacks_raw
-            continue_on_error: true
-            data:
-              action_type: get
-              endpoint: "{{ _endpoint | trim }}"
-          - choose:
-            - conditions:
-              - condition: template
-                value_template: '{{ mode_norm in ["stacks_search", "stacks_similar", "stacks_document_get", "stacks_document_lens"] }}'
-              sequence:
-              - action: script.zen_sutra_paperless
-                response_variable: _doc_tags_raw
-                continue_on_error: true
-                data:
-                  action_type: get
-                  endpoint: /api/tags/?page_size=200
-            default:
-            - variables:
-                _doc_tags_raw: {}
-          - variables:
-              _content: "{{ _stacks_raw.get('result', {}).get('content', {}) if _stacks_raw is mapping else {} }}"
-              _source: "{{ _stacks_raw.get('source', {'system': 'paperless_ngx'}) if _stacks_raw is mapping else {'system': 'paperless_ngx'} }}"
-              _ha_label_index: "{{ labels() | list }}"
-              _doc_tags_content: "{{ _doc_tags_raw.get('result', {}).get('content', {}) if _doc_tags_raw is mapping else {} }}"
-              _doc_tags_fetch_ok: "{{ _doc_tags_raw is mapping and _doc_tags_raw.get('status') == 'success' }}"
-              _doc_tags_by_id: >-
-                {%- set ns = namespace(rows=[]) -%}
-                {%- set tags = _doc_tags_content.get('results', []) if _doc_tags_content is mapping and _doc_tags_content.get('results', []) is sequence and _doc_tags_content.get('results', []) is not string else [] -%}
-                {%- for t in tags if t is mapping and t.get('id', none) is not none -%}
-                  {%- set _name = t.get('name', '') | string | trim -%}
-                  {%- set ns.rows = ns.rows + [{'id': t.get('id'), 'name': _name, 'slug': t.get('slug', _name | slugify(separator='_')) | string | trim}] -%}
-                {%- endfor -%}
-                {{ ns.rows }}
-              _safe_content: >-
-                {%- if mode_norm not in ['stacks_search', 'stacks_similar', 'stacks_document_get', 'stacks_document_lens'] -%}
-                  {{ _content }}
-                {%- else -%}
-                {%- macro safe_doc(d) -%}
-                  {%- if d is mapping -%}
-                    {%- set tag_ns = namespace(paperless_tags=[], paperless_tag_ids=[], ha_labels=[], unmapped_tags=[]) -%}
-                    {%- for t in d.get('tags', []) if d.get('tags', []) is sequence and d.get('tags', []) is not string -%}
-                      {%- if t is mapping -%}
-                        {%- set _tn = t.get('name', t.get('slug', t.get('id', ''))) | string | trim -%}
-                        {%- set _ts = t.get('slug', _tn | slugify(separator='_')) | string | trim -%}
-                        {%- set _tid = t.get('id', none) -%}
-                      {%- elif t is string -%}
-                        {%- set _tn = t | trim -%}
-                        {%- set _ts = _tn | slugify(separator='_') -%}
-                        {%- set _tid = none -%}
-                      {%- else -%}
-                        {%- set _tid = t -%}
-                        {%- set _resolved = _doc_tags_by_id | selectattr('id', 'equalto', t) | list -%}
-                        {%- if _resolved | length > 0 -%}
-                          {%- set _tn = _resolved[0].name -%}
-                          {%- set _ts = _resolved[0].slug -%}
-                        {%- else -%}
-                          {%- set _tn = '' -%}
-                          {%- set _ts = '' -%}
-                        {%- endif -%}
-                      {%- endif -%}
-                      {%- if _tid is not none -%}{%- set tag_ns.paperless_tag_ids = tag_ns.paperless_tag_ids + [_tid] -%}{%- endif -%}
-                      {%- if _tn != '' -%}{%- set tag_ns.paperless_tags = tag_ns.paperless_tags + [{'id': _tid, 'name': _tn, 'slug': _ts}] -%}{%- endif -%}
-                      {%- if _ts != '' and _ts in _ha_label_index -%}
-                        {%- set tag_ns.ha_labels = tag_ns.ha_labels + [{'label_id': _ts, 'source': 'paperless_tag', 'mapped': true}] -%}
-                      {%- elif _tn != '' or _tid is not none -%}
-                        {%- set tag_ns.unmapped_tags = tag_ns.unmapped_tags + [{'id': _tid, 'name': _tn, 'slug': _ts}] -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                    {{ {
-                      'id': d.get('id', none),
-                      'correspondent': d.get('correspondent', none),
-                      'document_type': d.get('document_type', none),
-                      'storage_path': d.get('storage_path', none),
-                      'title': d.get('title', ''),
-                      'tags': d.get('tags', []),
-                      'paperless_tags': tag_ns.paperless_tags,
-                      'paperless_tag_ids': tag_ns.paperless_tag_ids,
-                      'ha_labels': tag_ns.ha_labels,
-                      'unmapped_tags': tag_ns.unmapped_tags,
-                      'created': d.get('created', none),
-                      'created_date': d.get('created_date', none),
-                      'modified': d.get('modified', none),
-                      'added': d.get('added', none),
-                      'deleted_at': d.get('deleted_at', none),
-                      'archive_serial_number': d.get('archive_serial_number', none),
-                      'original_available': (d.get('original_file_name', '') | string | trim) != '',
-                      'archive_available': (d.get('archived_file_name', '') | string | trim) != '',
-                      'page_count': d.get('page_count', none),
-                      'mime_type': d.get('mime_type', none),
-                      'notes_count': d.get('notes', []) | length if d.get('notes', []) is sequence and d.get('notes', []) is not string else 0,
-                      'custom_fields': d.get('custom_fields', []),
-                      'user_can_change': d.get('user_can_change', false),
-                      'search_hit': d.get('__search_hit__', none),
-                      'content_redacted': not _include_content,
-                      'content': d.get('content', '') if _include_content else none
-                    } | tojson }}
-                  {%- else -%}{{ d }}{%- endif -%}
-                {%- endmacro -%}
-                {%- if _content is mapping and _content.get('results', none) is sequence and _content.get('results', none) is not string -%}
-                  {%- set ns = namespace(results=[]) -%}
-                  {%- for d in _content.get('results', []) -%}
-                    {%- set rendered = safe_doc(d) -%}
-                    {%- set ns.results = ns.results + [rendered | from_json | default({})] -%}
-                  {%- endfor -%}
-                  {{ {
-                    'count': _content.get('count', 0),
-                    'next': _content.get('next', none),
-                    'previous': _content.get('previous', none),
-                    'all': _content.get('all', []),
-                    'results': ns.results,
-                    'corrected_query': _content.get('corrected_query', none)
-                  } }}
-                {%- elif _content is mapping and _content.get('id', none) is not none -%}
-                  {{ safe_doc(_content) | from_json | default({}) }}
-                {%- else -%}
-                  {{ _content }}
-                {%- endif -%}
-                {%- endif -%}
-              _base_response:
-                status: "{{ _stacks_raw.get('status', 'error') if _stacks_raw is mapping else 'error' }}"
-                tool: Zen DojoTools Library
-                section: stacks
-                mode: "{{ mode_norm }}"
-                source: "{{ _source }}"
-                message: >-
-                  {%- if mode_norm in ["stacks_search", "stacks_similar", "stacks_document_get", "stacks_document_lens"] and not _doc_tags_fetch_ok -%}
-                    Warning: tag name lookup (/api/tags/) failed — tags will show as unmapped with blank name/slug even if they exist. This does not mean the tags are missing in Paperless.
-                  {%- else -%}{%- endif -%}
-                result: "{{ _safe_content }}"
-                trace:
-                  endpoint: "{{ _endpoint | trim }}"
-                  method: GET
-                  http_status: "{{ _stacks_raw.get('http_status', 0) if _stacks_raw is mapping else 0 }}"
-                  caller_token: "{{ caller_token_norm }}"
-          - choose:
-            - conditions:
-              - condition: template
-                value_template: '{{ mode_norm == "stacks_document_lens" and _content is mapping and _content.get("correspondent") is not none }}'
-              sequence:
-              - action: script.zen_sutra_paperless
-                response_variable: _corr_raw
-                continue_on_error: true
-                data:
-                  action_type: get
-                  endpoint: "/api/correspondents/{{ _content.get('correspondent') }}/"
-            default:
-            - variables:
-                _corr_raw: {}
-          - variables:
-              _corr_content: "{{ _corr_raw.get('result', {}).get('content', {}) if _corr_raw is mapping else {} }}"
-              _corr_fetch_ok: "{{ _corr_raw is mapping and _corr_raw.get('status') == 'success' }}"
-              _corr_name: "{{ _corr_content.get('name', '') | string | trim if _corr_content is mapping else '' }}"
-          - choose:
-            - conditions:
-              - condition: template
-                value_template: '{{ _corr_name != "" }}'
-              sequence:
-              - action: script.zen_dojotools_rolodex
-                response_variable: _corr_rolodex_raw
-                continue_on_error: true
-                data:
-                  mode: company_find
-                  item: "{{ _corr_name }}"
-                  limit: 3
-            default:
-            - variables:
-                _corr_rolodex_raw: {}
-          - variables:
-              _corr_rolodex_companies: >-
-                {%- set r = _corr_rolodex_raw.get('result', {}) if _corr_rolodex_raw is mapping else {} -%}
-                {{ r.get('companies', []) if r is mapping and r.get('companies', []) is sequence and r.get('companies', []) is not string else [] }}
-              _corr_rolodex_count: "{{ (_corr_rolodex_companies | length) if _corr_rolodex_companies is sequence and _corr_rolodex_companies is not string else 0 }}"
-          - variables:
-              result: >-
-                {%- if mode_norm == 'stacks_tag_audit' and _content is mapping -%}
-                  {%- set tags = _content.get('results', []) if _content.get('results', []) is sequence and _content.get('results', []) is not string else [] -%}
-                  {%- set ns = namespace(paperless=[], paperless_slugs=[], mapped=[], unmapped=[], missing=[]) -%}
-                  {%- for t in tags -%}
-                    {%- if t is mapping -%}
-                      {%- set _name = t.get('name', '') | string | trim -%}
-                      {%- set _slug = t.get('slug', _name | slugify(separator='_')) | string | trim -%}
-                      {%- set _id = t.get('id', none) -%}
-                      {%- set _row = {'id': _id, 'name': _name, 'slug': _slug, 'document_count': t.get('document_count', none)} -%}
-                      {%- set ns.paperless = ns.paperless + [_row] -%}
-                      {%- if _slug != '' -%}{%- set ns.paperless_slugs = ns.paperless_slugs + [_slug] -%}{%- endif -%}
-                      {%- if _slug in _ha_label_index -%}
-                        {%- set ns.mapped = ns.mapped + [_row | combine({'label_id': _slug})] -%}
-                      {%- else -%}
-                        {%- set ns.unmapped = ns.unmapped + [_row] -%}
-                      {%- endif -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                  {%- for lbl in _ha_label_index -%}
-                    {%- if lbl not in ns.paperless_slugs -%}{%- set ns.missing = ns.missing + [lbl] -%}{%- endif -%}
-                  {%- endfor -%}
-                  {{
-                    _base_response | combine({
-                      'status': 'success' if _stacks_raw is mapping and _stacks_raw.get('status') == 'success' else _base_response.status,
-                      'result': {
-                        'paperless_tags': ns.paperless,
-                        'paperless_count': ns.paperless | length,
-                        'ha_label_count': _ha_label_index | length,
-                        'mapped': ns.mapped,
-                        'mapped_count': ns.mapped | length,
-                        'unmapped_paperless_tags': ns.unmapped,
-                        'unmapped_count': ns.unmapped | length,
-                        'ha_labels_missing_paperless_tag': ns.missing,
-                        'missing_count': ns.missing | length,
-                        'doctrine': 'HA labels are canonical. Paperless tags are the document-side projection of HA label slugs.'
-                      }
-                    }, recursive=true)
-                  }}
-                {%- elif mode_norm == 'stacks_by_anchor' -%}
-                  {%- set sc = (_safe_content | from_json) if _safe_content is string and (_safe_content | trim)[:1] == '{' else _safe_content -%}
-                  {%- set sc = sc if sc is mapping else {} -%}
-                  {%- set docs = sc.get('results', []) if sc.get('results', []) is sequence and sc.get('results', []) is not string else [] -%}
-                  {%- set ns = namespace(matches=[], ev=[]) -%}
-                  {%- for doc in docs if doc is mapping -%}
-                    {%- set ids = namespace(v=[]) -%}
-                    {%- for anchor in doc.get('anchor_contexts', []) if anchor is mapping -%}
-                      {%- if anchor.get('type', '') == _anchor_type and (anchor.get('id', '') | string | lower) in _anchor_ids -%}
-                        {%- set ids.v = ids.v + [anchor.get('id', '') | string | lower] -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                    {%- if _anchor_include_suggestions -%}
-                      {%- for anchor in doc.get('anchor_suggestions', []) if anchor is mapping -%}
-                        {%- if anchor.get('type', '') == _anchor_type and (anchor.get('id', '') | string | lower) in _anchor_ids -%}
-                          {%- set ids.v = ids.v + [anchor.get('id', '') | string | lower] -%}
-                        {%- endif -%}
-                      {%- endfor -%}
-                    {%- endif -%}
-                    {%- if ids.v | length > 0 -%}
-                      {%- set _m = doc | combine({'matched_anchor_ids': ids.v | unique | list}) -%}
-                      {%- set ns.matches = ns.matches + [_m] -%}
-                      {%- set _did = (doc.get('id') or ((doc.get('stack') or {}).get('source_id') if doc.get('stack') is mapping else '') or '') | string -%}
-                      {%- set ns.ev = ns.ev + [_m | combine({'leaf_type': 'document_evidence', 'provider': 'paperless_ngx',
-                            'evidence_id': doc.get('evidence_id') or ((doc.get('stack') or {}).get('evidence_id') if doc.get('stack') is mapping else '') or ('paperless_ngx:document:' ~ _did)})] -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                  {{
-                    _base_response | combine({
-                      'status': 'success' if _stacks_raw is mapping and _stacks_raw.get('status') == 'success' else _base_response.status,
-                      'anchor_query': {
-                        'anchor_type': _anchor_type,
-                        'anchor_ids': _anchor_ids,
-                        'include_suggestions': _anchor_include_suggestions
-                      },
-                      'result': {
-                        'count': ns.matches | length,
-                        'documents': ns.matches,
-                        'evidence': ns.ev,
-                        'content_redacted': true,
-                        'source_count': sc.get('count', 0),
-                        'source_page_size': docs | length
-                      }
-                    })
-                  }}
-                {%- elif mode_norm == 'stacks_document_lens' and _content is mapping -%}
-                  {%- set _tags = _content.get('tags', []) -%}
-                  {%- set _hit = _content.get('__search_hit__', none) -%}
-                  {{
-                    _base_response | combine({
-                      'status': 'ok' if _stacks_raw is mapping and _stacks_raw.get('status') == 'success' else _base_response.status,
-                      'lens': {'type': 'document', 'focus': _content.get('title', _document_id)},
-                      'stack': _safe_content.get('stack', {}) if _safe_content is mapping else {
-                        'provider': 'paperless_ngx',
-                        'source': 'paperless_ngx',
-                        'object_type': 'document',
-                        'source_id': _content.get('id', _document_id),
-                        'evidence_id': 'paperless_ngx:document:' ~ (_content.get('id', _document_id) | string),
-                        'lens_mode': 'stacks_document_lens'
-                      },
-                      'object': {
-                        'object_type': 'document',
-                        'object_id': _content.get('id', _document_id),
-                        'name': _content.get('title', ''),
-                        'status': 'indexed'
-                      },
-                      'identity': {
-                        'paperless_id': _content.get('id', _document_id),
-                        'title': _content.get('title', ''),
-                        'correspondent': _content.get('correspondent', none),
-                        'document_type': _content.get('document_type', none),
-                        'created': _content.get('created', none)
-                      },
-                      'context': {
-                        'tags': _tags,
-                        'paperless_tags': _safe_content.get('paperless_tags', []) if _safe_content is mapping else [],
-                        'paperless_tag_ids': _safe_content.get('paperless_tag_ids', []) if _safe_content is mapping else [],
-                        'ha_labels': _safe_content.get('ha_labels', []) if _safe_content is mapping else [],
-                        'unmapped_tags': _safe_content.get('unmapped_tags', []) if _safe_content is mapping else [],
-                        'anchor_contexts': _safe_content.get('anchor_contexts', []) if _safe_content is mapping else [],
-                        'anchor_suggestions': _safe_content.get('anchor_suggestions', []) if _safe_content is mapping else [],
-                        'who': [],
-                        'what': [],
-                        'where': [],
-                        'concepts': [],
-                        'when': {
-                          'created': _content.get('created', none),
-                          'created_date': _content.get('created_date', none),
-                          'added': _content.get('added', none),
-                          'modified': _content.get('modified', none)
-                        },
-                        'linked_entities': [],
-                        'project': none,
-                        'contact_or_company': ({
-                          'paperless_correspondent_id': _content.get('correspondent'),
-                          'correspondent_name': _corr_name,
-                          'rolodex_match': {
-                            'matched': _corr_rolodex_count > 0,
-                            'companies': _corr_rolodex_companies,
-                            'count': _corr_rolodex_count
+                            'source_id': _content.get('id', _document_id),
+                            'evidence_id': 'paperless_ngx:document:' ~ (_content.get('id', _document_id) | string),
+                            'lens_mode': 'stacks_document_lens'
                           },
-                          'no_match_hint': (none if _corr_rolodex_count > 0 else {
-                            'reason': 'No Twenty CRM company matched this correspondent name.',
-                            'action': 'create_company',
-                            'tool': 'zen_dojotools_rolodex',
-                            'params': {'mode': 'company_create', 'item': _corr_name},
-                            'note': 'Pre-filled with the resolved correspondent name — call as-is to create, or edit item first if the name needs cleanup. If the receipt/document text contains a street address, pass it too as params.address (freetext, stored on Twenty addressStreet1). Anything beyond a street address (phone, notes, service history) still goes on afterward via mode=contact_note (note_target_type=company, item_id=new company id).'
-                          }),
-                          'all_docs': {'section': 'stacks', 'mode': 'stacks_by_company', 'input_json': {'correspondent_id': _content.get('correspondent')}}
-                        } if _corr_fetch_ok else {
-                          'paperless_correspondent_id': _content.get('correspondent'),
-                          'resolve_name': {'section': 'stacks', 'mode': 'stacks_correspondent_get', 'input_json': {'correspondent_id': _content.get('correspondent')}},
-                          'rolodex': {'case': 'company_find', 'note': 'Correspondent name lookup failed — call resolve_name first, then use name as item'},
-                          'all_docs': {'section': 'stacks', 'mode': 'stacks_by_company', 'input_json': {'correspondent_id': _content.get('correspondent')}}
-                        }) if _content.get('correspondent') is not none else none
-                      },
-                      'evidence': {
-                        'evidence_id': 'paperless_ngx:document:' ~ (_content.get('id', _document_id) | string),
-                        'provider': 'paperless_ngx',
-                        'source_system': 'paperless_ngx',
-                        'document_id': _content.get('id', _document_id),
-                        'title': _content.get('title', ''),
-                        'created': _content.get('created', none),
-                        'content_redacted': true,
-                        'archive_serial_number': _content.get('archive_serial_number', none),
-                        'original_available': _content.get('original_file_name', '') != '',
-                        'archive_available': _content.get('archived_file_name', '') != '',
-                        'search_hit': _hit
-                      },
-                      'anchor_contexts': _safe_content.get('anchor_contexts', []) if _safe_content is mapping else [],
-                      'anchor_suggestions': _safe_content.get('anchor_suggestions', []) if _safe_content is mapping else [],
-                      'actions': [
-                        {'action': 'inspect', 'payload': {'section': 'stacks', 'mode': 'stacks_document_get', 'input_json': {'document_id': _content.get('id', _document_id)}}},
-                        {'action': 'correspondent_docs', 'payload': {'section': 'stacks', 'mode': 'stacks_by_company', 'input_json': {'correspondent_id': _content.get('correspondent')}}}
-                      ] if _content.get('correspondent') is not none else [
-                        {'action': 'inspect', 'payload': {'section': 'stacks', 'mode': 'stacks_document_get', 'input_json': {'document_id': _content.get('id', _document_id)}}}
-                      ]
-                    }, recursive=true)
-                  }}
-                {%- else -%}
-                  {{ _base_response }}
-                {%- endif -%}
+                          'object': {
+                            'object_type': 'document',
+                            'object_id': _content.get('id', _document_id),
+                            'name': _content.get('title', ''),
+                            'status': 'indexed'
+                          },
+                          'identity': {
+                            'paperless_id': _content.get('id', _document_id),
+                            'title': _content.get('title', ''),
+                            'correspondent': _content.get('correspondent', none),
+                            'document_type': _content.get('document_type', none),
+                            'created': _content.get('created', none)
+                          },
+                          'context': {
+                            'tags': _tags,
+                            'paperless_tags': _safe_content.get('paperless_tags', []) if _safe_content is mapping else [],
+                            'paperless_tag_ids': _safe_content.get('paperless_tag_ids', []) if _safe_content is mapping else [],
+                            'ha_labels': _safe_content.get('ha_labels', []) if _safe_content is mapping else [],
+                            'unmapped_tags': _safe_content.get('unmapped_tags', []) if _safe_content is mapping else [],
+                            'anchor_contexts': _safe_content.get('anchor_contexts', []) if _safe_content is mapping else [],
+                            'anchor_suggestions': _safe_content.get('anchor_suggestions', []) if _safe_content is mapping else [],
+                            'who': [],
+                            'what': [],
+                            'where': [],
+                            'concepts': [],
+                            'when': {
+                              'created': _content.get('created', none),
+                              'created_date': _content.get('created_date', none),
+                              'added': _content.get('added', none),
+                              'modified': _content.get('modified', none)
+                            },
+                            'linked_entities': [],
+                            'project': none,
+                            'contact_or_company': ({
+                              'paperless_correspondent_id': _content.get('correspondent'),
+                              'correspondent_name': _corr_name,
+                              'rolodex_match': {
+                                'matched': _corr_rolodex_count > 0,
+                                'companies': _corr_rolodex_companies,
+                                'count': _corr_rolodex_count
+                              },
+                              'no_match_hint': (none if _corr_rolodex_count > 0 else {
+                                'reason': 'No Twenty CRM company matched this correspondent name.',
+                                'action': 'create_company',
+                                'tool': 'zen_dojotools_rolodex',
+                                'params': {'mode': 'company_create', 'item': _corr_name},
+                                'note': 'Pre-filled with the resolved correspondent name — call as-is to create, or edit item first if the name needs cleanup. If the receipt/document text contains a street address, pass it too as params.address (freetext, stored on Twenty addressStreet1). Anything beyond a street address (phone, notes, service history) still goes on afterward via mode=contact_note (note_target_type=company, item_id=new company id).'
+                              }),
+                              'all_docs': {'section': 'stacks', 'mode': 'stacks_by_company', 'input_json': {'correspondent_id': _content.get('correspondent')}}
+                            } if _corr_fetch_ok else {
+                              'paperless_correspondent_id': _content.get('correspondent'),
+                              'resolve_name': {'section': 'stacks', 'mode': 'stacks_correspondent_get', 'input_json': {'correspondent_id': _content.get('correspondent')}},
+                              'rolodex': {'case': 'company_find', 'note': 'Correspondent name lookup failed — call resolve_name first, then use name as item'},
+                              'all_docs': {'section': 'stacks', 'mode': 'stacks_by_company', 'input_json': {'correspondent_id': _content.get('correspondent')}}
+                            }) if _content.get('correspondent') is not none else none
+                          },
+                          'evidence': {
+                            'evidence_id': 'paperless_ngx:document:' ~ (_content.get('id', _document_id) | string),
+                            'provider': 'paperless_ngx',
+                            'source_system': 'paperless_ngx',
+                            'document_id': _content.get('id', _document_id),
+                            'title': _content.get('title', ''),
+                            'created': _content.get('created', none),
+                            'content_redacted': true,
+                            'archive_serial_number': _content.get('archive_serial_number', none),
+                            'original_available': _content.get('original_file_name', '') != '',
+                            'archive_available': _content.get('archived_file_name', '') != '',
+                            'search_hit': _hit
+                          },
+                          'anchor_contexts': _safe_content.get('anchor_contexts', []) if _safe_content is mapping else [],
+                          'anchor_suggestions': _safe_content.get('anchor_suggestions', []) if _safe_content is mapping else [],
+                          'actions': [
+                            {'action': 'inspect', 'payload': {'section': 'stacks', 'mode': 'stacks_document_get', 'input_json': {'document_id': _content.get('id', _document_id)}}},
+                            {'action': 'correspondent_docs', 'payload': {'section': 'stacks', 'mode': 'stacks_by_company', 'input_json': {'correspondent_id': _content.get('correspondent')}}}
+                          ] if _content.get('correspondent') is not none else [
+                            {'action': 'inspect', 'payload': {'section': 'stacks', 'mode': 'stacks_document_get', 'input_json': {'document_id': _content.get('id', _document_id)}}}
+                          ]
+                        }, recursive=true)
+                      }}
+                    {%- else -%}
+                      {{ _base_response }}
+                    {%- endif -%}
 
       - choose:
         - conditions:
@@ -3328,13 +3281,16 @@ script:
             - condition: template
               value_template: '{{ mode_norm in ["update", "catalog_update"] }}'
             sequence:
+            # #10683: any refusal sets _cu_halt; nothing after it writes.
             - variables:
+                _cu_halt: false
                 _cu_item_id: >-
                   {%- set v = (input_data.get('item_id', none) if input_data is mapping else none) -%}
                   {{ v | int if v is not none and v | string | trim not in ['', 'none', 'null'] else none }}
             - if: "{{ _cu_item_id is none }}"
               then:
               - variables:
+                  _cu_halt: true
                   result:
                     status: error
                     section: catalog
@@ -3356,9 +3312,10 @@ script:
                      if (_cu_current_raw is defined and _cu_current_raw.get('status') == 'ok'
                          and _cu_current_raw.get('values') is mapping)
                      else none }}
-            - if: "{{ _cu_current_values is none }}"
+            - if: "{{ not _cu_halt and _cu_current_values is none }}"
               then:
               - variables:
+                  _cu_halt: true
                   result:
                     status: error
                     section: catalog
@@ -3374,7 +3331,7 @@ script:
                     {%- set v = (inp.get(k, none)) -%}
                     {%- if v is not none and (v | string | trim) not in ['', 'none', 'null'] -%}{%- set ns.d = ns.d | combine({k: v | string | trim}) -%}{%- endif -%}
                   {%- endfor -%}
-                  {%- if inp.get('location_id', none) is not none -%}{%- set ns.d = ns.d | combine({'location_id': inp.get('location_id') | int}) -%}{%- endif -%}
+                  {%- set _loc = inp.get('location_id', none) | int(none) if inp.get('location_id', none) is not none else none -%}{%- if _loc is not none -%}{%- set ns.d = ns.d | combine({'location_id': _loc}) -%}{%- endif -%}
                   {{ ns.d }}
             # title lives on the Grocy PRODUCT's own name field (set that way at
             # add time — {'name': title}), never as a userentity value, so it
@@ -3382,9 +3339,10 @@ script:
             # above. Rename the product directly instead.
             - variables:
                 _cu_title_in: "{{ (input_data.get('title', '') or '') | string | trim if input_data is mapping else '' }}"
-            - if: "{{ _cu_partial | length == 0 and _cu_title_in == '' }}"
+            - if: "{{ not _cu_halt and _cu_partial | length == 0 and _cu_title_in == '' }}"
               then:
               - variables:
+                  _cu_halt: true
                   result:
                     status: error
                     section: catalog
@@ -3393,7 +3351,7 @@ script:
                     message: No recognized fields to update were found in input_json.
             - variables:
                 _cu_write_ok: true
-            - if: "{{ _cu_partial | length > 0 }}"
+            - if: "{{ not _cu_halt and _cu_partial | length > 0 }}"
               then:
               - variables:
                   _cu_merged: "{{ (_cu_current_values | combine(_cu_partial)) | tojson }}"
@@ -3409,7 +3367,7 @@ script:
                   _cu_write_ok: "{{ _cu_write_raw is defined and _cu_write_raw.get('written') == true }}"
             - variables:
                 _cu_rename_ok: true
-            - if: "{{ _cu_title_in != '' }}"
+            - if: "{{ not _cu_halt and _cu_title_in != '' }}"
               then:
               - variables:
                   _cu_rename_product_id: "{{ _cu_current_values.get('product_id', none) }}"
@@ -3422,15 +3380,17 @@ script:
                   new_name: "{{ _cu_title_in }}"
               - variables:
                   _cu_rename_ok: "{{ _cu_rename_raw is defined and _cu_rename_raw.get('status') == 'success' }}"
-            - variables:
-                result:
-                  status: "{{ 'success' if (_cu_write_ok and _cu_rename_ok) else 'error' }}"
-                  section: catalog
-                  mode: update
-                  item_type: "{{ _ct_item_type }}"
-                  item_id: "{{ _cu_item_id }}"
-                  fields_changed: "{{ _cu_partial.keys() | list + (['title'] if _cu_title_in != '' else []) }}"
-                  caller_token: "{{ caller_token_norm }}"
+            - if: "{{ not _cu_halt }}"
+              then:
+              - variables:
+                  result:
+                    status: "{{ 'success' if (_cu_write_ok and _cu_rename_ok) else 'error' }}"
+                    section: catalog
+                    mode: update
+                    item_type: "{{ _ct_item_type }}"
+                    item_id: "{{ _cu_item_id }}"
+                    fields_changed: "{{ _cu_partial.keys() | list + (['title'] if _cu_title_in != '' else []) }}"
+                    caller_token: "{{ caller_token_norm }}"
 
           # ── catalog loan ──────────────────────────────────────────────────────
           # M4: operates on catalog_item userobject (item_id), not product
@@ -3439,7 +3399,9 @@ script:
             - condition: template
               value_template: '{{ mode_norm in ["loan", "catalog_loan"] }}'
             sequence:
+            # #10683: any refusal sets _cl_halt; nothing after it writes.
             - variables:
+                _cl_halt: false
                 _cl_item_id_in: >-
                   {%- set v = (input_data.get('item_id', none) if input_data is mapping else none) -%}
                   {{ v | int if v is not none and v | string | trim not in ['', 'none', 'null'] else none }}
@@ -3450,6 +3412,7 @@ script:
             - if: "{{ _cl_borrower == '' or (_cl_item_id_in is none and _cl_title == '') }}"
               then:
               - variables:
+                  _cl_halt: true
                   result:
                     status: error
                     section: catalog
@@ -3458,7 +3421,7 @@ script:
                     message: "borrower and (item_id or title) are required."
                     coaching: "input_json: {\"title\": \"No Parking on the Dance Floor\", \"format\": \"cassette\", \"borrower\": \"Alex\", \"due_date\": \"2026-07-21\"}"
             # --- resolve item_id if not provided directly ---
-            - if: "{{ _cl_item_id_in is none }}"
+            - if: "{{ not _cl_halt and _cl_item_id_in is none }}"
               then:
               # resolve userentity + shells (same pattern as browse)
               - action: script.zen_sutra_grocy
@@ -3526,6 +3489,7 @@ script:
               - if: "{{ _cl_candidates | length == 0 }}"
                 then:
                 - variables:
+                    _cl_halt: true
                     result:
                       status: not_found
                       section: catalog
@@ -3535,6 +3499,7 @@ script:
               - if: "{{ _cl_candidates | length > 1 }}"
                 then:
                 - variables:
+                    _cl_halt: true
                     result:
                       status: ambiguous
                       section: catalog
@@ -3542,12 +3507,14 @@ script:
                       item_type: "{{ _ct_item_type }}"
                       message: "Multiple copies found. Specify item_id or add format= to disambiguate."
                       candidates: "{{ _cl_candidates }}"
-              - variables:
-                  _cl_item_id_in: "{{ _cl_candidates[0].get('item_id') | int }}"
-                  _cl_resolved_title: "{{ _cl_candidates[0].get('title', _cl_title) }}"
-                  _cl_current_loc: "{{ _cl_candidates[0].get('location_id') }}"
+              - if: "{{ _cl_candidates | length == 1 }}"
+                then:
+                - variables:
+                    _cl_item_id_in: "{{ _cl_candidates[0].get('item_id') | int }}"
+                    _cl_resolved_title: "{{ _cl_candidates[0].get('title', _cl_title) }}"
+                    _cl_current_loc: "{{ _cl_candidates[0].get('location_id') }}"
             # --- get current values if item_id was provided directly ---
-            - if: "{{ _cl_resolved_title | default('') == '' }}"
+            - if: "{{ not _cl_halt and _cl_resolved_title | default('') == '' }}"
               then:
               - action: script.zen_dojotools_inventory
                 response_variable: _cl_cur_raw
@@ -3557,49 +3524,67 @@ script:
                   entity: userentity-catalog_item
                   userobject_id: "{{ _cl_item_id_in }}"
               - variables:
-                  _cl_cur_vals: "{{ _cl_cur_raw.get('values', {}) if _cl_cur_raw is mapping else {} }}"
-                  _cl_current_loc: "{{ (_cl_cur_vals.get('location_id') | int(none)) if _cl_cur_vals is mapping else none }}"
-                  _cl_cur_product_id: "{{ (_cl_cur_vals.get('product_id') | int(0)) if _cl_cur_vals is mapping else 0 }}"
-              - action: script.zen_sutra_grocy
-                response_variable: _cl_prod_raw
+                  _cl_cur_ok: "{{ _cl_cur_raw is mapping and _cl_cur_raw.get('status') == 'ok' and _cl_cur_raw.get('values') is mapping }}"
+                  _cl_cur_vals: "{{ _cl_cur_raw.get('values', {}) if _cl_cur_raw is mapping and _cl_cur_raw.get('values') is mapping else {} }}"
+              - if: "{{ not _cl_cur_ok }}"
+                then:
+                - variables:
+                    _cl_halt: true
+                    result:
+                      status: not_found
+                      section: catalog
+                      mode: loan
+                      item_type: "{{ _ct_item_type }}"
+                      message: "Catalog item_id {{ _cl_item_id_in }} not found."
+              - if: "{{ _cl_cur_ok }}"
+                then:
+                - variables:
+                    _cl_current_loc: "{{ _cl_cur_vals.get('location_id') | int(none) }}"
+                    _cl_cur_product_id: "{{ _cl_cur_vals.get('product_id') | int(0) }}"
+                - action: script.zen_sutra_grocy
+                  response_variable: _cl_prod_raw
+                  continue_on_error: true
+                  data:
+                    action_type: read
+                    endpoint: "/objects/products?query[]=id={{ _cl_cur_product_id }}&limit=1"
+                - variables:
+                    _cl_resolved_title: >-
+                      {%- set c = (_cl_prod_raw.get('result', {}) or {}).get('content', []) if _cl_prod_raw is mapping else [] -%}
+                      {%- set c = c if c is sequence and c is not string else [] -%}
+                      {%- set name = c[0].get('name', '') if c | length > 0 and c[0] is mapping else '' -%}
+                      {{ name if name != '' else _cl_title }}
+            # --- write loan state to userobject ---
+            - if: "{{ not _cl_halt }}"
+              then:
+              - variables:
+                  _cl_loan_dict: >-
+                    {%- set d = {'loan_borrower': _cl_borrower, 'loan_date': now().strftime('%Y-%m-%d'), 'loan_due': _cl_due} -%}
+                    {%- if _cl_current_loc is not none -%}
+                      {%- set d = d | combine({'loan_home_location_id': _cl_current_loc | int}) -%}
+                    {%- endif -%}
+                    {{ d | tojson }}
+              - action: script.zen_dojotools_inventory
+                response_variable: _cl_write_raw
                 continue_on_error: true
                 data:
-                  action_type: read
-                  endpoint: "/objects/products?query[]=id={{ _cl_cur_product_id }}&limit=1"
+                  mode: userentity_values_set
+                  entity: userentity-catalog_item
+                  userobject_id: "{{ _cl_item_id_in }}"
+                  values_json: "{{ _cl_loan_dict }}"
               - variables:
-                  _cl_resolved_title: >-
-                    {%- set c = (_cl_prod_raw.get('result', {}) or {}).get('content', []) if _cl_prod_raw is mapping else [] -%}
-                    {%- set c = c if c is sequence and c is not string else [] -%}
-                    {%- set name = c[0].get('name', '') if c | length > 0 and c[0] is mapping else '' -%}
-                    {{ name if name != '' else _cl_title }}
-            # --- write loan state to userobject ---
-            - variables:
-                _cl_loan_dict: >-
-                  {%- set d = {'loan_borrower': _cl_borrower, 'loan_date': now().strftime('%Y-%m-%d'), 'loan_due': _cl_due} -%}
-                  {%- if _cl_current_loc is not none -%}
-                    {%- set d = d | combine({'loan_home_location_id': _cl_current_loc | int}) -%}
-                  {%- endif -%}
-                  {{ d | tojson }}
-            - action: script.zen_dojotools_inventory
-              response_variable: _cl_write_raw
-              continue_on_error: true
-              data:
-                mode: userentity_values_set
-                entity: userentity-catalog_item
-                userobject_id: "{{ _cl_item_id_in }}"
-                values_json: "{{ _cl_loan_dict }}"
-            - variables:
-                result:
-                  status: loaned
-                  section: catalog
-                  mode: loan
-                  item_type: "{{ _ct_item_type }}"
-                  item_id: "{{ _cl_item_id_in }}"
-                  title: "{{ _cl_resolved_title }}"
-                  borrower: "{{ _cl_borrower }}"
-                  loan_date: "{{ now().strftime('%Y-%m-%d') }}"
-                  loan_due: "{{ _cl_due }}"
-                  caller_token: "{{ caller_token_norm }}"
+                  _cl_write_ok: "{{ _cl_write_raw is mapping and _cl_write_raw.get('written') == true }}"
+                  result:
+                    status: "{{ 'loaned' if _cl_write_ok else 'error' }}"
+                    section: catalog
+                    mode: loan
+                    item_type: "{{ _ct_item_type }}"
+                    item_id: "{{ _cl_item_id_in }}"
+                    title: "{{ _cl_resolved_title | default('') }}"
+                    borrower: "{{ _cl_borrower }}"
+                    loan_date: "{{ now().strftime('%Y-%m-%d') }}"
+                    loan_due: "{{ _cl_due }}"
+                    message: "{{ '' if _cl_write_ok else 'Grocy did not confirm the write; the loan was not recorded.' }}"
+                    caller_token: "{{ caller_token_norm }}"
 
           # ── catalog return ────────────────────────────────────────────────────
           # M4: clears loan fields on catalog_item userobject, restores location_id
@@ -3607,7 +3592,9 @@ script:
             - condition: template
               value_template: '{{ mode_norm in ["return", "catalog_return"] }}'
             sequence:
+            # #10683: any refusal sets _cr_halt; nothing after it writes.
             - variables:
+                _cr_halt: false
                 _cr_item_id_in: >-
                   {%- set v = (input_data.get('item_id', none) if input_data is mapping else none) -%}
                   {{ v | int if v is not none and v | string | trim not in ['', 'none', 'null'] else none }}
@@ -3616,6 +3603,7 @@ script:
             - if: "{{ _cr_item_id_in is none and _cr_title == '' }}"
               then:
               - variables:
+                  _cr_halt: true
                   result:
                     status: error
                     section: catalog
@@ -3623,7 +3611,7 @@ script:
                     item_type: "{{ _ct_item_type }}"
                     message: "item_id or title required."
             # --- resolve item_id if needed ---
-            - if: "{{ _cr_item_id_in is none }}"
+            - if: "{{ not _cr_halt and _cr_item_id_in is none }}"
               then:
               - action: script.zen_sutra_grocy
                 response_variable: _cr_ue_raw
@@ -3690,6 +3678,7 @@ script:
               - if: "{{ _cr_candidates | length == 0 }}"
                 then:
                 - variables:
+                    _cr_halt: true
                     result:
                       status: not_found
                       section: catalog
@@ -3699,6 +3688,7 @@ script:
               - if: "{{ _cr_candidates | length > 1 }}"
                 then:
                 - variables:
+                    _cr_halt: true
                     result:
                       status: ambiguous
                       section: catalog
@@ -3706,13 +3696,15 @@ script:
                       item_type: "{{ _ct_item_type }}"
                       message: "Multiple loaned copies found. Specify item_id or format= to disambiguate."
                       candidates: "{{ _cr_candidates }}"
-              - variables:
-                  _cr_item_id_in: "{{ _cr_candidates[0].get('item_id') | int }}"
-                  _cr_resolved_title: "{{ _cr_candidates[0].get('title', _cr_title) }}"
-                  _cr_borrower: "{{ _cr_candidates[0].get('loan_borrower', '') }}"
-                  _cr_home_loc_id: "{{ _cr_candidates[0].get('loan_home_location_id') }}"
+              - if: "{{ _cr_candidates | length == 1 }}"
+                then:
+                - variables:
+                    _cr_item_id_in: "{{ _cr_candidates[0].get('item_id') | int }}"
+                    _cr_resolved_title: "{{ _cr_candidates[0].get('title', _cr_title) }}"
+                    _cr_borrower: "{{ _cr_candidates[0].get('loan_borrower', '') }}"
+                    _cr_home_loc_id: "{{ _cr_candidates[0].get('loan_home_location_id') }}"
             # --- if item_id provided directly, fetch current values ---
-            - if: "{{ _cr_resolved_title | default('') == '' }}"
+            - if: "{{ not _cr_halt and _cr_resolved_title | default('') == '' }}"
               then:
               - action: script.zen_dojotools_inventory
                 response_variable: _cr_cur_raw
@@ -3722,142 +3714,177 @@ script:
                   entity: userentity-catalog_item
                   userobject_id: "{{ _cr_item_id_in }}"
               - variables:
-                  _cr_cur_vals: "{{ _cr_cur_raw.get('values', {}) if _cr_cur_raw is mapping else {} }}"
-                  _cr_borrower: "{{ (_cr_cur_vals.get('loan_borrower', '') or '') if _cr_cur_vals is mapping else '' }}"
-                  _cr_home_loc_id: "{{ (_cr_cur_vals.get('loan_home_location_id') | int(none)) if _cr_cur_vals is mapping else none }}"
-                  _cr_cur_product_id: "{{ (_cr_cur_vals.get('product_id') | int(0)) if _cr_cur_vals is mapping else 0 }}"
-              - action: script.zen_sutra_grocy
-                response_variable: _cr_prod_raw
+                  _cr_cur_ok: "{{ _cr_cur_raw is mapping and _cr_cur_raw.get('status') == 'ok' and _cr_cur_raw.get('values') is mapping }}"
+                  _cr_cur_vals: "{{ _cr_cur_raw.get('values', {}) if _cr_cur_raw is mapping and _cr_cur_raw.get('values') is mapping else {} }}"
+              - if: "{{ not _cr_cur_ok }}"
+                then:
+                - variables:
+                    _cr_halt: true
+                    result:
+                      status: not_found
+                      section: catalog
+                      mode: return
+                      item_type: "{{ _ct_item_type }}"
+                      message: "Catalog item_id {{ _cr_item_id_in }} not found."
+              - if: "{{ _cr_cur_ok }}"
+                then:
+                - variables:
+                    _cr_borrower: "{{ _cr_cur_vals.get('loan_borrower', '') or '' }}"
+                    _cr_home_loc_id: "{{ _cr_cur_vals.get('loan_home_location_id') | int(none) }}"
+                    _cr_cur_product_id: "{{ _cr_cur_vals.get('product_id') | int(0) }}"
+                - action: script.zen_sutra_grocy
+                  response_variable: _cr_prod_raw
+                  continue_on_error: true
+                  data:
+                    action_type: read
+                    endpoint: "/objects/products?query[]=id={{ _cr_cur_product_id }}&limit=1"
+                - variables:
+                    _cr_resolved_title: >-
+                      {%- set c = (_cr_prod_raw.get('result', {}) or {}).get('content', []) if _cr_prod_raw is mapping else [] -%}
+                      {%- set c = c if c is sequence and c is not string else [] -%}
+                      {%- set name = c[0].get('name', '') if c | length > 0 and c[0] is mapping else '' -%}
+                      {{ name if name != '' else _cr_title }}
+            # --- write cleared loan state ---
+            - if: "{{ not _cr_halt }}"
+              then:
+              - variables:
+                  _cr_return_dict: >-
+                    {%- set d = {'loan_borrower': '', 'loan_date': '', 'loan_due': '', 'loan_home_location_id': none} -%}
+                    {%- if _cr_home_loc_id is not none -%}
+                      {%- set d = d | combine({'location_id': _cr_home_loc_id | int}) -%}
+                    {%- endif -%}
+                    {{ d | tojson }}
+              - action: script.zen_dojotools_inventory
+                response_variable: _cr_write_raw
                 continue_on_error: true
                 data:
-                  action_type: read
-                  endpoint: "/objects/products?query[]=id={{ _cr_cur_product_id }}&limit=1"
+                  mode: userentity_values_set
+                  entity: userentity-catalog_item
+                  userobject_id: "{{ _cr_item_id_in }}"
+                  values_json: "{{ _cr_return_dict }}"
               - variables:
-                  _cr_resolved_title: >-
-                    {%- set c = (_cr_prod_raw.get('result', {}) or {}).get('content', []) if _cr_prod_raw is mapping else [] -%}
-                    {%- set c = c if c is sequence and c is not string else [] -%}
-                    {%- set name = c[0].get('name', '') if c | length > 0 and c[0] is mapping else '' -%}
-                    {{ name if name != '' else _cr_title }}
-            # --- write cleared loan state ---
-            - variables:
-                _cr_return_dict: >-
-                  {%- set d = {'loan_borrower': '', 'loan_date': '', 'loan_due': '', 'loan_home_location_id': none} -%}
-                  {%- if _cr_home_loc_id is not none -%}
-                    {%- set d = d | combine({'location_id': _cr_home_loc_id | int}) -%}
-                  {%- endif -%}
-                  {{ d | tojson }}
-            - action: script.zen_dojotools_inventory
-              response_variable: _cr_write_raw
-              continue_on_error: true
-              data:
-                mode: userentity_values_set
-                entity: userentity-catalog_item
-                userobject_id: "{{ _cr_item_id_in }}"
-                values_json: "{{ _cr_return_dict }}"
-            - variables:
-                result:
-                  status: returned
-                  section: catalog
-                  mode: return
-                  item_type: "{{ _ct_item_type }}"
-                  item_id: "{{ _cr_item_id_in }}"
-                  title: "{{ _cr_resolved_title }}"
-                  returned_by: "{{ _cr_borrower }}"
-                  restored_location_id: "{{ _cr_home_loc_id }}"
-                  caller_token: "{{ caller_token_norm }}"
+                  _cr_write_ok: "{{ _cr_write_raw is mapping and _cr_write_raw.get('written') == true }}"
+                  result:
+                    status: "{{ 'returned' if _cr_write_ok else 'error' }}"
+                    section: catalog
+                    mode: return
+                    item_type: "{{ _ct_item_type }}"
+                    item_id: "{{ _cr_item_id_in }}"
+                    title: "{{ _cr_resolved_title | default('') }}"
+                    returned_by: "{{ _cr_borrower | default('') }}"
+                    restored_location_id: "{{ _cr_home_loc_id | default(none) }}"
+                    message: "{{ '' if _cr_write_ok else 'Grocy did not confirm the write; the return was not recorded.' }}"
+                    caller_token: "{{ caller_token_norm }}"
 
           # ── catalog move ─────────────────────────────────────────────────────
-          # Relocate a catalog item to a named location (shelve/reshelve).
-          # input_json: {item_id?, title?, location_name, set_as_home?}
+          # Relocate a catalog item to a location (shelve/reshelve).
+          # input_json: {item_id?, title?, location_id? | location_name?, set_as_home?}
           # set_as_home=true also updates loan_home_location_id so returns
           # go back to the new shelf automatically.
+          # #10683: any refusal sets _mv_halt; nothing after it writes.
           - conditions:
             - condition: template
               value_template: '{{ mode_norm == "move" }}'
             sequence:
             - variables:
+                _mv_halt: false
                 _mv_item_id_in: >-
                   {%- set v = (input_data.get('item_id', none) if input_data is mapping else none) -%}
                   {{ v | int if v is not none and v | string | trim not in ['', 'none', 'null'] else none }}
+                _mv_loc_id_in: >-
+                  {%- set v = (input_data.get('location_id', none) if input_data is mapping else none) -%}
+                  {{ v | int(none) if v is not none and v | string | trim not in ['', 'none', 'null'] else none }}
                 _mv_title:        "{{ (input_data.get('title', '') or '') | string | trim if input_data is mapping else '' }}"
                 _mv_loc_name:     "{{ (input_data.get('location_name', '') or '') | string | trim if input_data is mapping else '' }}"
                 _mv_set_as_home:  "{{ (input_data.get('set_as_home', false) or false) | bool if input_data is mapping else false }}"
-            - if: "{{ _mv_loc_name == '' }}"
+                _mv_loc_id: "{{ none }}"
+                _mv_loc_resolved_name: ''
+            - if: "{{ _mv_loc_name == '' and _mv_loc_id_in is none }}"
               then:
               - variables:
+                  _mv_halt: true
                   result:
                     status: error
                     section: catalog
                     mode: move
-                    message: "location_name required."
-            - if: "{{ _mv_item_id_in is none and _mv_title == '' }}"
+                    message: "location_id or location_name required."
+            - if: "{{ not _mv_halt and _mv_item_id_in is none and _mv_title == '' }}"
               then:
               - variables:
+                  _mv_halt: true
                   result:
                     status: error
                     section: catalog
                     mode: move
                     message: "item_id or title required."
-            # --- resolve target location ---
+            # --- resolve target location: by id ---
+            - if: "{{ not _mv_halt and _mv_loc_id_in is not none }}"
+              then:
+              - action: script.zen_sutra_grocy
+                response_variable: _mv_locid_raw
+                continue_on_error: true
+                data:
+                  action_type: read
+                  endpoint: "/objects/locations?query[]=id={{ _mv_loc_id_in }}&limit=1"
+              - variables:
+                  _mv_locid_row: >-
+                    {%- set c = (_mv_locid_raw.get('result', {}) or {}).get('content', []) if _mv_locid_raw is mapping else [] -%}
+                    {%- set c = c if c is sequence and c is not string else [] -%}
+                    {{ c[0] if c | length > 0 and c[0] is mapping else {} }}
+              - variables:
+                  _mv_loc_id: "{{ _mv_locid_row.get('id') | int(none) if _mv_locid_row is mapping and _mv_locid_row.get('id') is not none else none }}"
+                  _mv_loc_resolved_name: "{{ _mv_locid_row.get('name', '') if _mv_locid_row is mapping else '' }}"
+            # --- resolve target location: by name ---
             # locations_list is paginated (page size <=250) and ordered roughly
-            # by creation date — on a large install, anything created more
+            # by creation date; on a large install, anything created more
             # recently falls outside any single page and is never found,
             # including this tool's OWN configured default shelf. locations_find does a
             # real targeted name query against Grocy instead of a bulk listing,
-            # so it isn't capped by page size at all — use that instead.
-            - action: script.zen_dojotools_inventory
-              response_variable: _mv_locs_raw
-              continue_on_error: true
-              data:
-                mode: locations_find
-                item: "{{ _mv_loc_name }}"
-            - variables:
-                _mv_locs: >-
-                  {%- set r = _mv_locs_raw if _mv_locs_raw is mapping else {} -%}
-                  {%- set lst = r.get('locations', r.get('result', [])) -%}
-                  {{ lst if lst is sequence and lst is not string else [] }}
-                _mv_loc_id: >-
-                  {%- set needle = _mv_loc_name | lower -%}
-                  {%- set ns = namespace(found=none) -%}
-                  {%- for loc in _mv_locs if loc is mapping -%}
-                    {%- if ns.found is none and (loc.get('name', '') | lower) == needle -%}
-                      {%- set ns.found = loc.get('id') | int -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                  {%- if ns.found is none -%}
+            # so it isn't capped by page size at all.
+            - if: "{{ not _mv_halt and _mv_loc_id_in is none }}"
+              then:
+              - action: script.zen_dojotools_inventory
+                response_variable: _mv_locs_raw
+                continue_on_error: true
+                data:
+                  mode: locations_find
+                  item: "{{ _mv_loc_name }}"
+              - variables:
+                  _mv_locs: >-
+                    {%- set r = _mv_locs_raw if _mv_locs_raw is mapping else {} -%}
+                    {%- set lst = r.get('locations', r.get('result', [])) -%}
+                    {{ lst if lst is sequence and lst is not string else [] }}
+              - variables:
+                  _mv_loc_match: >-
+                    {%- set needle = _mv_loc_name | lower -%}
+                    {%- set ns = namespace(found=none) -%}
                     {%- for loc in _mv_locs if loc is mapping -%}
-                      {%- if ns.found is none and needle in (loc.get('name', '') | lower) -%}
-                        {%- set ns.found = loc.get('id') | int -%}
+                      {%- if ns.found is none and (loc.get('name', '') | lower) == needle -%}
+                        {%- set ns.found = loc -%}
                       {%- endif -%}
                     {%- endfor -%}
-                  {%- endif -%}
-                  {{ ns.found }}
-                _mv_loc_resolved_name: >-
-                  {%- set needle = _mv_loc_name | lower -%}
-                  {%- set ns = namespace(found='') -%}
-                  {%- for loc in _mv_locs if loc is mapping -%}
-                    {%- if ns.found == '' and (loc.get('name', '') | lower) == needle -%}
-                      {%- set ns.found = loc.get('name', '') -%}
+                    {%- if ns.found is none -%}
+                      {%- for loc in _mv_locs if loc is mapping -%}
+                        {%- if ns.found is none and needle in (loc.get('name', '') | lower) -%}
+                          {%- set ns.found = loc -%}
+                        {%- endif -%}
+                      {%- endfor -%}
                     {%- endif -%}
-                  {%- endfor -%}
-                  {%- if ns.found == '' -%}
-                    {%- for loc in _mv_locs if loc is mapping -%}
-                      {%- if ns.found == '' and needle in (loc.get('name', '') | lower) -%}
-                        {%- set ns.found = loc.get('name', '') -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                  {%- endif -%}
-                  {{ ns.found }}
-            - if: "{{ _mv_loc_id is none }}"
+                    {{ ns.found if ns.found is not none else {} }}
+              - variables:
+                  _mv_loc_id: "{{ _mv_loc_match.get('id') | int(none) if _mv_loc_match is mapping and _mv_loc_match.get('id') is not none else none }}"
+                  _mv_loc_resolved_name: "{{ _mv_loc_match.get('name', '') if _mv_loc_match is mapping else '' }}"
+            - if: "{{ not _mv_halt and _mv_loc_id is none }}"
               then:
               - variables:
+                  _mv_halt: true
                   result:
                     status: not_found
                     section: catalog
                     mode: move
-                    message: "Location '{{ _mv_loc_name }}' not found in Grocy. Use zen_dojotools_inventory mode=locations_list to see available locations."
+                    message: "Location {{ ('id ' ~ _mv_loc_id_in) if _mv_loc_id_in is not none else (\"'\" ~ _mv_loc_name ~ \"'\") }} not found in Grocy. Use zen_dojotools_inventory mode=locations_list to see available locations."
             # --- resolve item_id if not provided ---
-            - if: "{{ _mv_item_id_in is none }}"
+            - if: "{{ not _mv_halt and _mv_item_id_in is none }}"
               then:
               - action: script.zen_sutra_grocy
                 response_variable: _mv_ue_raw
@@ -3923,6 +3950,7 @@ script:
               - if: "{{ _mv_candidates | length == 0 }}"
                 then:
                 - variables:
+                    _mv_halt: true
                     result:
                       status: not_found
                       section: catalog
@@ -3931,18 +3959,21 @@ script:
               - if: "{{ _mv_candidates | length > 1 }}"
                 then:
                 - variables:
+                    _mv_halt: true
                     result:
                       status: ambiguous
                       section: catalog
                       mode: move
                       message: "Multiple copies found matching '{{ _mv_title }}'. Specify item_id to disambiguate."
                       candidates: "{{ _mv_candidates }}"
-              - variables:
-                  _mv_item_id_in:   "{{ _mv_candidates[0].get('item_id') | int }}"
-                  _mv_resolved_title: "{{ _mv_candidates[0].get('title', _mv_title) }}"
-                  _mv_old_home_loc_id: "{{ _mv_candidates[0].get('home_loc_id') }}"
+              - if: "{{ _mv_candidates | length == 1 }}"
+                then:
+                - variables:
+                    _mv_item_id_in:   "{{ _mv_candidates[0].get('item_id') | int }}"
+                    _mv_resolved_title: "{{ _mv_candidates[0].get('title', _mv_title) }}"
+                    _mv_old_home_loc_id: "{{ _mv_candidates[0].get('home_loc_id') }}"
             # --- fetch current values when item_id was provided directly ---
-            - if: "{{ _mv_resolved_title | default('') == '' }}"
+            - if: "{{ not _mv_halt and _mv_resolved_title | default('') == '' }}"
               then:
               - action: script.zen_dojotools_inventory
                 response_variable: _mv_cur_raw
@@ -3952,47 +3983,64 @@ script:
                   entity: userentity-catalog_item
                   userobject_id: "{{ _mv_item_id_in }}"
               - variables:
-                  _mv_cur_vals: "{{ _mv_cur_raw.get('values', {}) if _mv_cur_raw is mapping else {} }}"
-                  _mv_old_home_loc_id: "{{ (_mv_cur_vals.get('loan_home_location_id') | int(none)) if _mv_cur_vals is mapping else none }}"
-                  _mv_cur_product_id: "{{ (_mv_cur_vals.get('product_id') | int(0)) if _mv_cur_vals is mapping else 0 }}"
-              - action: script.zen_sutra_grocy
-                response_variable: _mv_prod_raw
+                  _mv_cur_ok: "{{ _mv_cur_raw is mapping and _mv_cur_raw.get('status') == 'ok' and _mv_cur_raw.get('values') is mapping }}"
+                  _mv_cur_vals: "{{ _mv_cur_raw.get('values', {}) if _mv_cur_raw is mapping and _mv_cur_raw.get('values') is mapping else {} }}"
+              - if: "{{ not _mv_cur_ok }}"
+                then:
+                - variables:
+                    _mv_halt: true
+                    result:
+                      status: not_found
+                      section: catalog
+                      mode: move
+                      message: "Catalog item_id {{ _mv_item_id_in }} not found."
+              - if: "{{ _mv_cur_ok }}"
+                then:
+                - variables:
+                    _mv_old_home_loc_id: "{{ _mv_cur_vals.get('loan_home_location_id') | int(none) }}"
+                    _mv_cur_product_id: "{{ _mv_cur_vals.get('product_id') | int(0) }}"
+                - action: script.zen_sutra_grocy
+                  response_variable: _mv_prod_raw
+                  continue_on_error: true
+                  data:
+                    action_type: read
+                    endpoint: "/objects/products?query[]=id={{ _mv_cur_product_id }}&limit=1"
+                - variables:
+                    _mv_resolved_title: >-
+                      {%- set c = (_mv_prod_raw.get('result', {}) or {}).get('content', []) if _mv_prod_raw is mapping else [] -%}
+                      {%- set c = c if c is sequence and c is not string else [] -%}
+                      {{ c[0].get('name', _mv_title) if c | length > 0 and c[0] is mapping else _mv_title }}
+            # --- write new location ---
+            - if: "{{ not _mv_halt }}"
+              then:
+              - variables:
+                  _mv_write_dict: >-
+                    {%- set d = {'location_id': _mv_loc_id | int} -%}
+                    {%- if _mv_set_as_home -%}
+                      {%- set d = d | combine({'loan_home_location_id': _mv_loc_id | int}) -%}
+                    {%- endif -%}
+                    {{ d | tojson }}
+              - action: script.zen_dojotools_inventory
+                response_variable: _mv_write_raw
                 continue_on_error: true
                 data:
-                  action_type: read
-                  endpoint: "/objects/products?query[]=id={{ _mv_cur_product_id }}&limit=1"
+                  mode: userentity_values_set
+                  entity: userentity-catalog_item
+                  userobject_id: "{{ _mv_item_id_in }}"
+                  values_json: "{{ _mv_write_dict }}"
               - variables:
-                  _mv_resolved_title: >-
-                    {%- set c = (_mv_prod_raw.get('result', {}) or {}).get('content', []) if _mv_prod_raw is mapping else [] -%}
-                    {%- set c = c if c is sequence and c is not string else [] -%}
-                    {{ c[0].get('name', _mv_title) if c | length > 0 and c[0] is mapping else _mv_title }}
-            # --- write new location ---
-            - variables:
-                _mv_write_dict: >-
-                  {%- set d = {'location_id': _mv_loc_id | int} -%}
-                  {%- if _mv_set_as_home -%}
-                    {%- set d = d | combine({'loan_home_location_id': _mv_loc_id | int}) -%}
-                  {%- endif -%}
-                  {{ d | tojson }}
-            - action: script.zen_dojotools_inventory
-              response_variable: _mv_write_raw
-              continue_on_error: true
-              data:
-                mode: userentity_values_set
-                entity: userentity-catalog_item
-                userobject_id: "{{ _mv_item_id_in }}"
-                values_json: "{{ _mv_write_dict }}"
-            - variables:
-                result:
-                  status: moved
-                  section: catalog
-                  mode: move
-                  item_id: "{{ _mv_item_id_in }}"
-                  title: "{{ _mv_resolved_title }}"
-                  location_id: "{{ _mv_loc_id }}"
-                  location_name: "{{ _mv_loc_resolved_name }}"
-                  home_updated: "{{ _mv_set_as_home }}"
-                  caller_token: "{{ caller_token_norm }}"
+                  _mv_write_ok: "{{ _mv_write_raw is mapping and _mv_write_raw.get('written') == true }}"
+                  result:
+                    status: "{{ 'moved' if _mv_write_ok else 'error' }}"
+                    section: catalog
+                    mode: move
+                    item_id: "{{ _mv_item_id_in }}"
+                    title: "{{ _mv_resolved_title | default('') }}"
+                    location_id: "{{ _mv_loc_id }}"
+                    location_name: "{{ _mv_loc_resolved_name }}"
+                    home_updated: "{{ _mv_set_as_home and _mv_write_ok }}"
+                    message: "{{ '' if _mv_write_ok else 'Grocy did not confirm the write; the item was not moved.' }}"
+                    caller_token: "{{ caller_token_norm }}"
 
           # ── catalog configure_status ──────────────────────────────────────────
           # Returns full shelf configuration map: intake location, which classes

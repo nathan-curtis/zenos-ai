@@ -1,4 +1,4 @@
-# Zen DojoTools Library — v6.15.2
+# Zen DojoTools Library — v6.15.3
 
 *Knowledge broker and Lens owner for the Monastery*
 
@@ -205,7 +205,7 @@ zen_dojotools_library:
 | `search` | Full-text search across all item fields including notes. Accepts `q` or `query`. |
 | `add` | Add an item. Requires `isbn` or `title`. ISBN triggers Grocy dedup guard — returns existing record if found. |
 | `update` | Retroactively update an existing catalog item (v6.12.0). Requires `item_id`. Safe partial update: reads current userentity values, `combine()`s the caller's partial `input_json` onto them, then writes the merged dict — never a blind overwrite. Same field set as `add` (including `mealie_cookbook_slug`), so an already-shelved item can be edited without recreating it. `title` renames the underlying Grocy product directly (it lives on the product's `name` field, not as a userentity value, so it can't be merged like the other fields) — previously there was no `update` mode at all, so title changes after add were not possible. |
-| `move` | Reshelve a catalog item to a named location. Resolves the location by a real targeted `locations_find` query (not a paginated `locations_list`), so it isn't capped by Grocy's ~250-per-page listing and can find locations created after the first page. |
+| `move` | Reshelve a catalog item to a location, by `location_id` (checked against Grocy) or by name. A name resolves by a real targeted `locations_find` query (not a paginated `locations_list`), so it isn't capped by Grocy's ~250-per-page listing and can find locations created after the first page. |
 | `loan` | Check out an item to a person. Requires `item` and `person` (HA person entity or name). Writes loan record to Grocy userfields. Uses `inventory_root` from borrower profile as destination location. |
 | `return` | Return a loaned item. Requires `item`. Clears loan fields, restores item to home location. |
 
@@ -255,6 +255,7 @@ The MCP-facing script is `zen_dojotools_library`. Consumers and agents call this
 
 | Version | Change |
 |---------|--------|
+| v6.15.3 | Paperless `stacks_by_anchor` works for every anchor type (a `kitchen` tag answers `area_id` and `label`), matches any tag, reads top-level `anchor_type`/`anchor_ids`, and reports a missing anchor. Catalog `move`, `loan`, `return` and `update` stop on any refusal before writing, and report success only when Grocy confirms it. `move` takes `location_id` or `location_name`. |
 | v6.15.2 | Lens evidence fixes. Paperless `stacks_by_anchor` returns `evidence[]` (`document_evidence`), the shape the bus reads. Catalog `by_anchor` attributes each item only to the area it is in, carries `title` and `item_type`, and gives a `playback_hint` only when the item has a real `digital_uri`. |
 | v6.12.2 | Fixed `by_anchor` returning zero results house-wide for every area/person/label anchor. `section_norm` defaulted to `stacks` whenever the caller omitted `section` (the Lens Bus dispatcher never passes it on generic provider calls), so every real `by_anchor` call landed in the wrong section; special-cased bare `by_anchor` to default to `catalog` instead. A second, separate defect then shadowed the fix: `section=catalog`'s own named-mode router had no case for `by_anchor` and fell through to its "unknown mode" default before ever reaching the real handler further down the file — excluded `by_anchor` from that router's entry gate. Also corrected a 3-way version self-report drift (header/description/manifest disagreed). |
 | v6.12.0 | `section=catalog mode=update` (safe partial update via `combine()`, never a blind overwrite; `title` renames the Grocy product directly). Paperless correspondent management (`stacks_correspondents_list/get/create/update`), bulk document edit `split`/`reprocess` methods, and `stacks_flag_for_review`. `catalog move`/`update`'s location lookups use a targeted `locations_find` query instead of paginated `locations_list`, which was silently missing locations past Grocy's ~250-item page cap. |

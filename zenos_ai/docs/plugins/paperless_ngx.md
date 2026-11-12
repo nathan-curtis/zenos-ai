@@ -1,6 +1,6 @@
 # ZenOS-AI Paperless-NGX Plugin
 
-**Version:** 0.7.6  
+**Version:** 0.7.7  
 **Package:** `packages/zenos_ai/plugins/paperless_ngx/paperless_ngx.yaml`  
 **Lens Bus stack provider:** `zen_stack_paperless` (provider_key: `paperless_ngx`, internal — not MCP-exposed)  
 **Internal REST broker:** `zen_sutra_paperless` (not MCP-exposed)  
@@ -67,7 +67,7 @@ zen_dojotools_library:
 
 Content is redacted by default. Pass `include_content: true` in `input_json` to opt in to full content (not recommended for large document sets in context-bound calls).
 
-On the Lens Bus (0.7.6), the provider carries the bus's top-level `anchor_type` and `anchor_ids` through to Library and answers `{status, count, evidence}`. An install with no Paperless URL reads `unavailable` (`provider_not_configured`) on the bus, not an empty success.
+On the Lens Bus (0.7.6), the provider carries the bus's top-level `anchor_type` and `anchor_ids` through to Library and answers `{status, count, evidence}`. An install with no Paperless URL reads `unavailable` (`provider_not_configured`) on the bus, not an empty success. Documents come back with titles and content redacted (IDs, dates, tags and page counts); `stacks_document_get` reads the record itself. A tag matches by slug, so a `kitchen` tag answers both `area_id: kitchen` and `label: kitchen`.
 
 ---
 
