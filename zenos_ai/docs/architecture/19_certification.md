@@ -139,10 +139,23 @@ Here is a denial as Friday relays it:
 
 `can_request` is computed centrally from the identity policy alone: true unless the caller's identity was itself blocked. No tool decides for itself whether a caller is eligible to ask. A tool requires the certification. Whether the caller may request it is the certification system's question, answered in one place.
 
+## 19.8 How the agent knows what it may do
+
+A denial in a conversation is easy: the tool answers, and Friday relays it. A denial in the background is harder. When a summarizer run is refused for a certification, nobody is in the conversation to hear it, and a notification is not something the agent can read back. So the refusal is written where the agent already looks. The run stamps `last_refusal` on the component's Kata: the reason, the certification, the level and stage it needed, and why the agent fell short (`none`, `level` or `stage`, or `not_onboarded` when it has no pass at all). The last good summary stays, and the next good run clears the stamp.
+
+`sensor.zen_agent_health` rolls that up. `onboarding_required` means the agent boots but has no backstage pass, so every tool's gate refuses it (Chapter 20). `restricted` means it is onboarded and working, but something is held back: a component refused for a certification, an act blocked, or an identity policy that blocks every check. Restricted never alerts. An agent with one locked component is still up.
+
+The health report's `certs` section is the part that matters most, because it says whose problem a gap is:
+
+* **Agent side.** A certification the household's responsible agent lacks, with the level and stage it needs and what it holds back. A grant fixes it, so the agent may ask, and the report names the request.
+* **System side.** A problem no grant can fix: the identity policy blocks the caller, the responsible agent is not onboarded, the cabinet access schema is behind, the vault is missing, or the approval path is broken. The rule is to tell a person and request nothing.
+
+That second rule closes a loop I did not want. An agent that answers every refusal by asking for a certification will keep asking for one that cannot help, and a person will eventually approve something just to make it stop. Approval fatigue is how a careful system gets talked out of being careful. The health report draws the line, so the agent knows when the answer is a grant and when it is a person.
+
 A certification is one control. It is not the whole of authority, and the next chapter is how the controls stack.
 
 <!-- where -->
-## 19.8 Where to look
+## 19.9 Where to look
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 
@@ -150,6 +163,7 @@ Every claim in this chapter can be checked in the code. These are the places to 
 * Scope resolution and the shared denial shape: [`zen_os_1.jinja`](../../../custom_templates/zenos_ai/zen_os_1.jinja) (`macro cert_scope_check`, `macro cert_denial`). Docs: [zen_os1_jinja.md](../custom_templates/zen_os1_jinja.md).
 * Granting and revoking: not agent-exposed, and every write needs a live acknowledgement or the console: [`dojotools_certadmin.yaml`](../../../packages/zenos_ai/dojotools/dojotools_certadmin.yaml) (`cert_req_grant`, `mcp_exposed`). Docs: [zen_admintools_certadmin_readme.md](../scripts/zen_admintools_certadmin_readme.md).
 * Stages on a grant, and the caller check that reads them: [`zen_identity.jinja`](../../../custom_templates/zenos_ai/zen_identity.jinja) (`macro cert_stages`, `macro caller`). The summarizer's seed and emit checks: [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml) (`seed_tool_not_authorized`, `emit_stage_not_granted`). Docs: [Security & Certification manual](../getting_started/security_certification_manual.md#64-stages).
+* What the agent may do, and whose problem a gap is: [`zenos_agent_health.yaml`](../../../packages/zenos_ai/sensors/zenos_agent_health.yaml) (states `onboarding_required`, `restricted`), [`dojotools_systemtools.yaml`](../../../packages/zenos_ai/dojotools/dojotools_systemtools.yaml) (`zen_health_report`, `certs`), and `last_refusal` in [`dojotools_summarizers.yaml`](../../../packages/zenos_ai/dojotools/dojotools_summarizers.yaml). Docs: [Health sensors](../sensors/readme.md), [zen_dojotools_systemtools_readme.md](../scripts/zen_dojotools_systemtools_readme.md).
 * Where a persona's certificates live: [`dojotools_certadmin.yaml`](../../../packages/zenos_ai/dojotools/dojotools_certadmin.yaml) (`zen_ai_certs`). Docs: [zen_admintools_certadmin_readme.md](../scripts/zen_admintools_certadmin_readme.md).
 <!-- /where -->
 
