@@ -69,7 +69,19 @@ Map the sections back onto the thesis and each one is a different way of reading
 
 None of it is raw entity state. The agent receives the house already read through the ontology, and reaches for detail through tools when it needs more (Chapter 10).
 
-## 17.3 Flynn and the fallback
+## 17.3 What she reaches for
+
+The frame is what Friday always knows. It is deliberately not everything. Chapter 14 made the trade: less in the prompt meant more within reach. This is the other half of the twin, the part she assembles when a question needs it, and it has two structured paths.
+
+**By room: context slices.** Room Manager's `get` returns a room's topology and live state, plus whichever slices the question asks for: `+light`, `+climate`, `+covers`, `+media`, `+topo`, `+appliances`, `+inventory`, `+chores`, `+tasks`, `+calendar`, `+wiki`, `+tickets`, and more (Chapter 9). A slice is not Room Manager's opinion. Each one comes from the tool that owns that domain, and the ones that live outside the house (wiki pages, tickets, the catalog, chores) are Lens Bus queries anchored on the room. Nothing she did not ask for is fetched.
+
+**By subject: the Lens Bus.** When the question is about a thing rather than a place, a person, a label, a concept, she asks the Library, and the Lens Bus collects evidence from every source filed under that subject (Chapter 13). A family member's documents, an appliance's manual and repair tickets, the transactions tagged to a project: none of it is in the frame, and all of it is one query away.
+
+The garage answer that opens this chapter is what reaching looks like. The room's state and the reason for it, the lights and doors, the room's description, a Kata's warning about the freezer, chores and security: five sources, one answer, assembled for that question and gone afterward.
+
+Both paths are reads, and both pass the same admission gate as every other agent-facing tool (Chapter 20). That keeps the twin honest about the thesis. The frame and the reach are the same resolution, $R_a(G, O, t)$, at two different moments: one prepared before she is asked, one built while she answers. Neither one hands her the house. Both hand her the part she needs.
+
+## 17.4 Flynn and the fallback
 
 `render_prompt()` checks, before resolving anything, whether it should hand the agent to Flynn instead: the override boolean `input_boolean.zen_flynn_override` is on, the persona is blank, or the persona is explicitly Flynn. If identity resolution itself fails, it falls back the same way.
 
@@ -77,7 +89,7 @@ In Flynn mode, the system section comes from `prompt_system_flynn()`, a hardcode
 
 A persona sensor that is unavailable (not blank, genuinely unavailable) is a different failure, and `render_prompt()` says so as an error instead of pretending it is Flynn.
 
-## 17.4 Keeping it small
+## 17.5 Keeping it small
 
 The frame is sent on every turn, so every section is built to be small. The index is capped and ranked. The roster is cached. SuperSummary works under a context budget (Chapter 14). Empty tail sections cost nothing. `sensor.zen_prompt_length` reports the size of each section, and `sensor.zen_prompt_health` reports whether the persona's identity is intact, so a prompt that is growing or degrading is visible before it becomes a problem.
 
@@ -96,7 +108,7 @@ For scale: in the reference household (Appendix F), one sampled frame was 49,868
 The frame is the twin as one agent sees it. Which parts of the graph that agent may act on is a different question, and it is the one Part V answers, starting with who the agent is.
 
 <!-- where -->
-## 17.5 Where to look
+## 17.6 Where to look
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 

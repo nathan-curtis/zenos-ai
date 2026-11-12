@@ -53,7 +53,7 @@ Here is the topology answering a question a floor plan would:
 
 **Emergency.** `mode=emergency` combines topology with live state into a crisis snapshot: exits, safety equipment in each room, hazards, the household rally point, and scenario-specific guidance.
 
-**Context.** `mode=get` returns a room's topology together with live context slices, each requested explicitly with `context_slices`: `+light`, `+climate`, `+covers`, `+media`, `+topo` (open doors and windows), `+appliances`, `+inventory`, `+chores`, `+tasks`, `+calendar`, `+wiki`, `+tickets`. Each slice comes from the domain tool that owns it rather than from Room Manager re-deriving it. A room's `digest` (chores due, tickets open, notifications pending) is always included.
+**Context.** `mode=get` returns a room's topology together with live context slices, each requested explicitly with `context_slices`: `+light`, `+climate`, `+covers`, `+media`, `+topo` (open doors and windows), `+appliances`, `+inventory`, `+chores`, `+tasks`, `+calendar`, `+wiki`, `+tickets`. Each slice comes from the domain tool that owns it rather than from Room Manager re-deriving it, and the slices that live outside the house (wiki pages, tickets, the catalog) are Lens Bus queries anchored on the room. Chapter 17 covers how slices and the Lens Bus make up the half of the twin Friday reaches for. A room's `digest` (chores due, tickets open, notifications pending) is always included.
 
 `mode=home_overview` rolls every room up into one whole-house snapshot, which is what the prompt uses for Friday's sense of the house as a whole (Chapter 17).
 
