@@ -83,9 +83,11 @@ When the entity is a cabinet, Inspect returns only the cabinet's header: GUID, v
 
 Here is a question no single sensor can answer, asked of Friday:
 
-<!-- screenshot: ch07_humidity_pattern.png -->
-> **Screenshot to come.** Friday asked whether anything is unusual with humidity across the house. The answer comes from label intersection across rooms, not from any one entity. Real 2026.11.0 output; personal details redacted.
-<!-- /screenshot -->
+<p align="center">
+  <img src="images/ch07_whats_open.png" width="420" alt="Asked what is open right now, Friday lists the open doors room by room: the studio's main and closet doors, the guest room door and closet doors, and doors in the laundry room, master bedroom, office and powder room. She gives the garage entry door lock's state, and says no garage doors or shades are open." />
+</p>
+
+*Friday asked what is open right now. The answer crosses door contacts in every room, a lock, the garage doors and the shades, and groups them by room. No single sensor or group holds that list; it comes from labels and rooms. Real 2026.11.0 output, November 2026; the lock state blurred.*
 
 ## 7.3 Resolution rules
 

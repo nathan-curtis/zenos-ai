@@ -85,9 +85,11 @@ SuperSummary is bounded three ways: a run governor (`super_burnout_seconds`, def
 
 Here is what that synthesis reads like when Friday is asked for it:
 
-<!-- screenshot: ch14_briefing.png -->
-> **Screenshot to come.** Friday asked for a briefing. The answer is SuperSummary's whole-house view, with what matters first and how urgent it is. Real 2026.11.0 output; personal details redacted.
-<!-- /screenshot -->
+<p align="center">
+  <img src="images/ch14_briefing.png" width="420" alt="Asked what is happening around the home this morning, Friday says it is clear and about 59 degrees with no active alerts, and gives the alarm's state; the house is waking up, with the living room occupied, the office and master bath engaged, and activity in the guest room; several lights are on but nothing is playing; there are five overdue tasks and six due today; and one small security note about the garage entry door." />
+</p>
+
+*Friday asked what is happening around the home this morning. Weather, alerts, the alarm, which rooms are awake, lights and media, the task list, and one security note at the end, in one short answer. She did not go looking for any of it: the whole-house view was already written. Real 2026.11.0 output, November 2026; the alarm and lock states blurred.*
 
 ## 14.4 Escalation
 

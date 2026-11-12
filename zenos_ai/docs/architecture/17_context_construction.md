@@ -83,9 +83,11 @@ The frame is sent on every turn, so every section is built to be small. The inde
 
 Here is that sensor on a live install:
 
-<!-- screenshot: ch17_prompt_length.png -->
-> **Screenshot to come.** sensor.zen_prompt_length attributes, showing the size of each section of the frame. Real 2026.11.0 output; personal details redacted.
-<!-- /screenshot -->
+<p align="center">
+  <img src="images/ch17_prompt_length.png" width="380" alt="The Home Assistant details view of sensor.zen_prompt_length, state 41775, with a sections attribute listing each part of the frame in characters: agent_queue 670, capsule 2402, console_bridge 104, dojo 10095, header 494, id_manifest 280, index 1353, manifest 1232, overview 811, priority_inject 0, system 22319, wake 2015, for a total of 41,775." />
+</p>
+
+*`sensor.zen_prompt_length` on a live install: 41,775 characters in all. The system section and the Katas (`dojo`) are about three quarters of it, the index is 1,353, and the priority-notice block costs nothing when there is nothing to say. Real 2026.11.0 output, November 2026.*
 
 For scale: in the reference household (Appendix F), one sampled frame was 49,868 characters. The system section and the Katas were about three quarters of it. Trimming repeated scaffolding and duplicated label descriptions in 2026.10.0 brought a later sample to 40,812. The index describing more than a thousand labels was under 5,000.
 
