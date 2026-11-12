@@ -1,8 +1,8 @@
-# Zen DojoTool Dispatcher — v5.5.0
+# Zen DojoTool Dispatcher — v5.5.1
 
 > **2026.11.0:** The declared-act route. A tool with no hand-written route is called if its `tool_manifest` declares an `act`: the dispatcher reads the declaration itself and calls only that mode, with only the declared args (enum values checked) plus `kata_input`. The payload never picks the mode, and a hand-written route always wins. See [Declared acts](../kung_fu/building_a_kfc.md#declared-acts).
 
-*Automation — no `tool_manifest`, so the file header version is canonical. `zen_dojotools_lens_dispatch` (same file): v1.1.2. An item a provider returns through two anchors is one entry carrying both anchor contexts.*
+*Automation — no `tool_manifest`, so the file header version is canonical. `zen_dojotools_lens_dispatch` (same file): v1.2.1. An item a provider returns through two anchors is one entry carrying both anchor contexts. A provider that answers `not_configured` with nothing returned reads `unavailable` (`provider_not_configured`), not success with 0.*
 
 **File:** `packages/zenos_ai/dojotools/dojotools_dispatcher.yaml`
 **Automations:** `zen_dojotool_dispatcher` and supporting routers (single dispatch automation as of v5.2.0 — see below)
@@ -132,7 +132,7 @@ One flat `choose` block, one arm per `tool` + `version` pair — no tiering, no 
 
 `zen_dojotools_urgency_handler` is the catch-all triage lane for `action_required=true` events that fall through both `summary_force` (needs `urgency >= drift_threshold`) and the four-layer autonomous-remediation gate (needs `urgency >= push_floor` **and** a non-empty `suggested_act_event`). Those low-urgency, no-automatable-action "needs a human" signals are routed to Taskmaster as a real task (priority scaled from urgency; no Postman push — anything push-worthy already went through the four-layer gate).
 
-- **Dedup.** Every ticket it creates is tagged with a stable per-component tag. Before creating, it searches for an already-open ticket carrying that tag: found → a recurrence note is added to the existing ticket; not found → create, then tag it so the next occurrence finds it. If the tag search finds nothing, it falls back to an exact-title search, since each ticket's title is set deterministically at creation. The tag write is checked after creation, and a failed tag fires `urgency_handler_dedup_tag_failed` so it can be traced.
+- **Dedup.** Every ticket it creates is tagged with a stable per-component tag. It also tags the ticket with the component slug, the anchor the Radar lens finds. Before creating, it searches for an already-open ticket carrying that tag: found → a recurrence note is added to the existing ticket; not found → create, then tag it so the next occurrence finds it. If the tag search finds nothing, it falls back to an exact-title search, since each ticket's title is set deterministically at creation. The tag write is checked after creation, and a failed tag fires `urgency_handler_dedup_tag_failed` so it can be traced.
 - **No-signal guard.** When there's no existing ticket **and** `urgency <= 0` **and** both `attention` and `suggested_act_event` are empty (missing, blank, or explicit `null`), `task_create` is skipped entirely and the handler returns `status: suppressed_no_signal` instead of opening an empty "Action required" ticket.
 - **Ack suppression happens upstream.** A KFC component acknowledged via `zen_dojotools_alertmanager mode=ack` (with `condition_key` = the component's `kata_key`) never reaches this handler — the summarizer suppresses the emission first. See [AlertManager → Acknowledgements](../components/alertmanager.md#acknowledgements).
 

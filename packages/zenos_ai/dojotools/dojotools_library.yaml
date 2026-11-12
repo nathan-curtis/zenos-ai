@@ -1,6 +1,13 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Library
-# Version: 6.15.1
+# Version: 6.15.2
+# v6.15.2: Lens fixes (#10681). stacks_by_anchor returns evidence[] beside
+#   documents (leaf_type document_evidence, provider paperless_ngx,
+#   evidence_id), the shape the bus reads. Catalog by_anchor: each item is
+#   attributed only to the anchors it matched (its own area, not every area
+#   asked about), carries item_type and its title (the work's name, one
+#   catalog_find_by_tag call for the types present), and a Grocy "None" userfield
+#   is empty, so no playback_hint without a real digital_uri.
 # v6.15.1: each cert this tool declares gets a short plain description for
 #   the approval prompt (the old text moves to detail) and its real max_level.
 # v6.15.0: cert names moved to the zenos.* namespace (2026.11). An old flat
@@ -495,7 +502,7 @@ script:
                   summary='Documents, tickets, wiki, and the physical item catalog',
                   display_name='Library — Knowledge Broker and Lens Owner',
                   tier='dojotools',
-                  version='6.15.1',
+                  version='6.15.2',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['dojotools'],
                   optional_labels=['library', 'documents', 'paperless', 'radar'],
@@ -552,7 +559,7 @@ script:
               result:
                 status: info
                 tool: zen_dojotools_library
-                version: "6.13.1"
+                version: "6.15.2"
                 mode: help
                 description: >-
                   Two departments in one tool. section=stacks: knowledge broker and Lens owner: 
@@ -1370,7 +1377,7 @@ script:
                   {%- set sc = (_safe_content | from_json) if _safe_content is string and (_safe_content | trim)[:1] == '{' else _safe_content -%}
                   {%- set sc = sc if sc is mapping else {} -%}
                   {%- set docs = sc.get('results', []) if sc.get('results', []) is sequence and sc.get('results', []) is not string else [] -%}
-                  {%- set ns = namespace(matches=[]) -%}
+                  {%- set ns = namespace(matches=[], ev=[]) -%}
                   {%- for doc in docs if doc is mapping -%}
                     {%- set ids = namespace(v=[]) -%}
                     {%- for anchor in doc.get('anchor_contexts', []) if anchor is mapping -%}
@@ -1386,7 +1393,11 @@ script:
                       {%- endfor -%}
                     {%- endif -%}
                     {%- if ids.v | length > 0 -%}
-                      {%- set ns.matches = ns.matches + [doc | combine({'matched_anchor_ids': ids.v | unique | list})] -%}
+                      {%- set _m = doc | combine({'matched_anchor_ids': ids.v | unique | list}) -%}
+                      {%- set ns.matches = ns.matches + [_m] -%}
+                      {%- set _did = (doc.get('id') or ((doc.get('stack') or {}).get('source_id') if doc.get('stack') is mapping else '') or '') | string -%}
+                      {%- set ns.ev = ns.ev + [_m | combine({'leaf_type': 'document_evidence', 'provider': 'paperless_ngx',
+                            'evidence_id': doc.get('evidence_id') or ((doc.get('stack') or {}).get('evidence_id') if doc.get('stack') is mapping else '') or ('paperless_ngx:document:' ~ _did)})] -%}
                     {%- endif -%}
                   {%- endfor -%}
                   {{
@@ -1400,6 +1411,7 @@ script:
                       'result': {
                         'count': ns.matches | length,
                         'documents': ns.matches,
+                        'evidence': ns.ev,
                         'content_redacted': true,
                         'source_count': sc.get('count', 0),
                         'source_page_size': docs | length
@@ -4287,9 +4299,21 @@ script:
                   {%- endif -%}
                 {%- endfor -%}
                 {{ ns.ids }}
+              # #10681: location id -> its HA area, so each item is attributed
+              # to the area it is actually in, not every area asked about.
+              _ba_loc_area: >-
+                {%- set locs = _ba_locs_raw.get('result', []) if _ba_locs_raw is mapping else [] -%}
+                {%- set locs = locs if locs is sequence and locs is not string else [] -%}
+                {%- set ns = namespace(m={}) -%}
+                {%- for loc in locs if loc is mapping -%}
+                  {%- set loc_area = loc.get('userfields', {}).get('homeassistant_area', '') | string | lower | trim -%}
+                  {%- if loc_area != '' -%}{%- set ns.m = ns.m | combine({(loc.get('id') | int(-1) | string): loc_area}) -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.m }}
           else:
           - variables:
               _ba_area_loc_ids: []
+              _ba_loc_area: {}
         # Build anchor_contexts once from input ids (reused in each evidence item)
         - variables:
             _ba_anchor_contexts: >-
@@ -4316,15 +4340,16 @@ script:
                     {%- if v is mapping -%}
                       {%- set pid = v.get('product_id') | string | trim -%}
                       {%- set eid = 'grocy:catalog_item:' ~ (repeat.item.id | string) -%}
-                      {%- set ns = namespace(matched=false) -%}
+                      {%- set ns = namespace(matched=false, ids=[]) -%}
                       {%- if _ba_type == 'person' -%}
                         {%- set borrower = (v.get('loan_borrower') or '') | lower | trim -%}
-                        {%- if borrower != '' -%}
+                        {%- if borrower != '' and borrower not in ['none', 'null'] -%}
                           {%- for aid in _ba_ids -%}
                             {%- set norm = aid | lower | trim -%}
                             {%- set friendly = norm.split('.')[-1] | replace('_', ' ') if '.' in norm else norm -%}
                             {%- if borrower == norm or borrower == friendly or friendly in borrower or borrower in friendly -%}
                               {%- set ns.matched = true -%}
+                              {%- set ns.ids = ns.ids + [aid | string | trim] -%}
                             {%- endif -%}
                           {%- endfor -%}
                         {%- endif -%}
@@ -4334,24 +4359,60 @@ script:
                           {%- set norm = aid | lower | trim -%}
                           {%- if item_type == '' or norm == item_type or norm in item_type -%}
                             {%- set ns.matched = true -%}
+                            {%- set ns.ids = ns.ids + [aid | string | trim] -%}
                           {%- endif -%}
                         {%- endfor -%}
                       {%- elif _ba_type == 'area_id' -%}
                         {%- set loc_id = v.get('location_id') | int(-1) -%}
                         {%- if loc_id >= 0 and loc_id in _ba_area_loc_ids -%}
                           {%- set ns.matched = true -%}
+                          {%- set _la = _ba_loc_area.get(loc_id | string, '') if _ba_loc_area is mapping else '' -%}
+                          {%- set ns.ids = ns.ids + ([_la] if _la != '' else []) -%}
                         {%- endif -%}
                       {%- endif -%}
                       {%- if ns.matched -%}
+                        {#- #10681: Grocy stores an empty userfield as the string 'None'. -#}
                         {%- set _duri = v.get('digital_uri', '') | string | trim -%}
+                        {%- set _duri = '' if _duri | lower in ['none', 'null'] else _duri -%}
                         {%- set _svc  = v.get('preferred_service', '') | string | trim -%}
+                        {%- set _svc  = '' if _svc | lower in ['none', 'null'] else _svc -%}
                         {%- set _itype = v.get('item_type', '') | lower | trim -%}
                         {%- set _mtype = 'album' if _itype == 'music_recording' else ('movie' if _itype == 'video' else ('audiobook' if _itype == 'book' else ('podcast' if _itype == 'periodical' else none))) -%}
-                        {%- set _room  = (_ba_ids | first | string) if _ba_type == 'area_id' and _ba_ids | length > 0 else '' -%}
+                        {%- set _room  = (ns.ids | first | string) if _ba_type == 'area_id' and ns.ids | length > 0 else '' -%}
+                        {%- set _item_ctx = namespace(c=[]) -%}
+                        {%- for aid in (ns.ids | unique | list) -%}
+                          {%- set _item_ctx.c = _item_ctx.c + [{'type': _ba_type, 'id': aid, 'confidence': 'explicit', 'provider': 'library_catalog'}] -%}
+                        {%- endfor -%}
                         {%- set _hint  = {'uri': _duri, 'source': _svc if _svc != '' else 'catalog', 'media_type': _mtype, 'suggested_room': _room, 'suggested_volume': none} if _duri != '' and _mtype is not none else none -%}
-                        {{ prev + [{'evidence_id': eid, 'leaf_type': 'item_evidence', 'content_redacted': false, 'anchor_contexts': _ba_anchor_contexts, 'stack': {'provider': 'library_catalog', 'object_type': 'catalog_item', 'evidence_id': eid, 'lens_mode': 'by_anchor'}, 'playback_hint': _hint, 'content': {'evidence_id': eid, 'lens_mode': 'by_anchor', 'anchor_type': _ba_type, 'item_id': repeat.item.id | int, 'product_id': pid | int(none), 'loan_borrower': v.get('loan_borrower', ''), 'loan_date': v.get('loan_date', ''), 'loan_due': v.get('loan_due', ''), 'format': v.get('format', ''), 'creator': v.get('creator', ''), 'platform': v.get('platform', ''), 'isbn': v.get('isbn', ''), 'genre': v.get('genre', ''), 'series': v.get('series', ''), 'location_id': v.get('location_id') | int(none), 'digital_uri': _duri, 'preferred_service': _svc}}] }}
+                        {{ prev + [{'evidence_id': eid, 'leaf_type': 'item_evidence', 'content_redacted': false, 'anchor_contexts': (_item_ctx.c if _item_ctx.c | length > 0 else _ba_anchor_contexts), 'stack': {'provider': 'library_catalog', 'object_type': 'catalog_item', 'evidence_id': eid, 'lens_mode': 'by_anchor'}, 'playback_hint': _hint, 'content': {'evidence_id': eid, 'lens_mode': 'by_anchor', 'anchor_type': _ba_type, 'item_id': repeat.item.id | int, 'title': v.get('title', ''), 'item_type': _itype, 'product_id': pid | int(none), 'loan_borrower': v.get('loan_borrower', ''), 'loan_date': v.get('loan_date', ''), 'loan_due': v.get('loan_due', ''), 'format': v.get('format', ''), 'creator': v.get('creator', ''), 'platform': v.get('platform', ''), 'isbn': v.get('isbn', ''), 'genre': v.get('genre', ''), 'series': v.get('series', ''), 'location_id': v.get('location_id') | int(none), 'digital_uri': _duri, 'preferred_service': _svc}}] }}
                       {%- else -%}{{ prev }}{%- endif -%}
                     {%- else -%}{{ prev }}{%- endif -%}
+        # #10681: a title is the work's name (the Grocy product), not an item
+        # value. One lookup for the item types present, the way find does it.
+        - variables:
+            _ba_types_present: "{{ (_ba_evidence_acc | default([])) | map(attribute='content') | map(attribute='item_type') | reject('in', ['', none]) | unique | list }}"
+        - if: "{{ _ba_types_present | count > 0 }}"
+          then:
+          - action: script.zen_dojotools_inventory
+            response_variable: _ba_products_raw
+            continue_on_error: true
+            data:
+              mode: catalog_find_by_tag
+              ha_labels: "{{ _ba_types_present | join(',') }}"
+        - variables:
+            _ba_evidence_acc: >-
+              {%- set plist = _ba_products_raw if (_ba_products_raw is defined and _ba_products_raw is mapping) else {} -%}
+              {%- set plist = plist.get('products', plist.get('items', plist.get('result', []))) -%}
+              {%- set ns = namespace(d={}, out=[]) -%}
+              {%- for p in (plist if plist is sequence and plist is not string else []) if p is mapping -%}
+                {%- set ns.d = ns.d | combine({(p.get('id') | string): (p.get('name') or '')}) -%}
+              {%- endfor -%}
+              {%- for e in (_ba_evidence_acc | default([])) if e is mapping -%}
+                {%- set c = e.get('content', {}) if e.get('content') is mapping else {} -%}
+                {%- set t = c.get('title') or ns.d.get((c.get('product_id') | string), '') -%}
+                {%- set ns.out = ns.out + [e | combine({'content': c | combine({'title': t})})] -%}
+              {%- endfor -%}
+              {{ ns.out }}
         - variables:
             result:
               status: ok

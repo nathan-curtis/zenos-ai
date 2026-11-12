@@ -1,4 +1,4 @@
-# Zen DojoTools Library — v6.15.1
+# Zen DojoTools Library — v6.15.2
 
 *Knowledge broker and Lens owner for the Monastery*
 
@@ -255,6 +255,7 @@ The MCP-facing script is `zen_dojotools_library`. Consumers and agents call this
 
 | Version | Change |
 |---------|--------|
+| v6.15.2 | Lens evidence fixes. Paperless `stacks_by_anchor` returns `evidence[]` (`document_evidence`), the shape the bus reads. Catalog `by_anchor` attributes each item only to the area it is in, carries `title` and `item_type`, and gives a `playback_hint` only when the item has a real `digital_uri`. |
 | v6.12.2 | Fixed `by_anchor` returning zero results house-wide for every area/person/label anchor. `section_norm` defaulted to `stacks` whenever the caller omitted `section` (the Lens Bus dispatcher never passes it on generic provider calls), so every real `by_anchor` call landed in the wrong section; special-cased bare `by_anchor` to default to `catalog` instead. A second, separate defect then shadowed the fix: `section=catalog`'s own named-mode router had no case for `by_anchor` and fell through to its "unknown mode" default before ever reaching the real handler further down the file — excluded `by_anchor` from that router's entry gate. Also corrected a 3-way version self-report drift (header/description/manifest disagreed). |
 | v6.12.0 | `section=catalog mode=update` (safe partial update via `combine()`, never a blind overwrite; `title` renames the Grocy product directly). Paperless correspondent management (`stacks_correspondents_list/get/create/update`), bulk document edit `split`/`reprocess` methods, and `stacks_flag_for_review`. `catalog move`/`update`'s location lookups use a targeted `locations_find` query instead of paginated `locations_list`, which was silently missing locations past Grocy's ~250-item page cap. |
 | v5.9.0 | `books_loan`, `books_return`, `books_configure` modes. KFC schema v1.4.0 loan fields: `on_loan_to`, `loan_date`, `loan_due`, `loan_notes`. Loan uses `inventory_root` from borrower's profile as destination location. |

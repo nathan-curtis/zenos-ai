@@ -1,6 +1,14 @@
 #####################################################################
 # zen_dojotool_dispatcher — Event-driven dojotool dispatch layer
-# Version: 5.5.0
+# Version: 5.5.1
+#
+# v5.5.1 (#10681)
+#   + lens dispatch 1.2.1 records each provider's reply status; a provider that
+#     answers not_configured and returns nothing reads unavailable
+#     (provider_not_configured), not success with 0.
+#   + urgency handler also tags the ticket with the component slug, an anchor
+#     the Radar lens can find (the dedup tag lands now that Taskmaster 0.9.2
+#     returns the ticket number).
 #
 # v5.5.0
 #   + declared-act route: a tool with no hand route is called if its own
@@ -522,6 +530,17 @@ automation:
                         mode: ticket_tag
                         input_json: >-
                           {{ {'ticket_id': _result.get('ticket_number', ''), 'tag': _uh_dedup_tag} | tojson }}
+                    # #10681: also tag the component slug, an anchor the Radar lens
+                    # can find (most component slugs are also HA labels:
+                    # alert_manager, water_manager, camera_manager, taskmaster).
+                    - if: "{{ _uh_component != '' }}"
+                      then:
+                      - action: script.zen_dojotools_servicedesk
+                        continue_on_error: true
+                        data:
+                          mode: ticket_tag
+                          input_json: >-
+                            {{ {'ticket_id': _result.get('ticket_number', ''), 'tag': _uh_component | lower | regex_replace('[^a-z0-9]+', '_')} | tojson }}
                     # continue_on_error above would otherwise hide a failed tag
                     # write; surface it on the event bus so it is debuggable.
                     - variables:
@@ -1262,7 +1281,7 @@ script:
                     summary='Route a lens request to the registered providers',
                     display_name='Lens Dispatch',
                     tier='dojotools',
-                    version='1.2.0',
+                    version='1.2.1',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['sutra'],
                     optional_labels=[],
@@ -1491,7 +1510,8 @@ script:
                                           'provider': _provider_key,
                                           'anchor_type': _group_type,
                                           'evidence': (_provider_raw.get('evidence', []) if _provider_raw is defined and _provider_raw is mapping else []),
-                                          'count': (_provider_raw.get('count', 0) if _provider_raw is defined and _provider_raw is mapping else 0)
+                                          'count': (_provider_raw.get('count', 0) if _provider_raw is defined and _provider_raw is mapping else 0),
+                                          'reply_status': ((_provider_raw.get('status', '') if _provider_raw is defined and _provider_raw is mapping else '') | string | lower | trim)
                                         }] }}
                             default: []
 
@@ -1499,9 +1519,10 @@ script:
               _providers_response: >-
                 {%- set ns = namespace(providers={}) -%}
                 {%- for pkey, pdecl in _registered_providers.items() if _registered_providers is mapping and pdecl is mapping -%}
-                  {%- set doc_ns = namespace(docs=[], seen=[], was_called=false, call_counts={'label': 0, 'person': 0, 'area_id': 0, 'zone': 0, 'company': 0, 'family': 0, 'household': 0}) -%}
+                  {%- set doc_ns = namespace(docs=[], seen=[], was_called=false, not_configured=false, call_counts={'label': 0, 'person': 0, 'area_id': 0, 'zone': 0, 'company': 0, 'family': 0, 'household': 0}) -%}
                   {%- for out in _provider_outputs if out is mapping and out.get('provider', '') == pkey -%}
                     {%- set doc_ns.was_called = true -%}
+                    {%- if (out.get('reply_status', '') | string) == 'not_configured' -%}{%- set doc_ns.not_configured = true -%}{%- endif -%}
                     {%- set atype = out.get('anchor_type', '') | string | trim -%}
                     {%- set cnt = out.get('count', 0) | int(0) if out is mapping else 0 -%}
                     {%- if atype in doc_ns.call_counts -%}
@@ -1529,7 +1550,9 @@ script:
                   {%- set _p_reg_status = pdecl.get('status', 'available') | string | lower | trim -%}
                   {%- set _p_has_tool = pdecl.get('tool', '') | string | trim != '' -%}
                   {%- set _prov_status = 'disabled' if not _p_enabled else ('unavailable' if (_p_reg_status != 'available' or not _p_has_tool) else ('success' if doc_ns.was_called else 'empty')) -%}
+                  {%- set _prov_status = 'unavailable' if (_prov_status == 'success' and doc_ns.not_configured and doc_ns.docs | length == 0) else _prov_status -%}
                   {%- set _miss_reason = 'provider_disabled' if not _p_enabled else ('provider_no_tool' if not _p_has_tool else ('provider_offline' if _p_reg_status != 'available' else ('' if doc_ns.was_called else 'anchor_type_unsupported'))) -%}
+                  {%- set _miss_reason = 'provider_not_configured' if (doc_ns.not_configured and doc_ns.docs | length == 0) else _miss_reason -%}
                   {%- set _prov_entry = {
                     'status': _prov_status,
                     'department': pdecl.get('department', pdecl.get('section', '')),

@@ -1,7 +1,15 @@
 ###############################################################################
 # ZenOS-AI Plugin: Zammad — Fulfillment (Service Desk / Help Tickets)
 # Codename: Radar
-# Version: 0.5.3
+# Version: 0.5.4
+# v0.5.4: Lens fixes (#10681). tickets_by_anchor uses the lean
+#   query/page/per_page search (it sent no page= and read only the
+#   {tickets, assets} shape, so it missed a plain-list reply) and returns
+#   evidence[] (leaf_type ticket_evidence). zen_stack_radar carries the bus's
+#   top-level anchor_type / anchor_ids into input_json and answers by_anchor
+#   flat ({status, count, evidence}), the shape the Lens bus reads. An
+#   anchor is attributed by tag only; when the reply carries no tags and the
+#   query had several anchors, confidence is query_match.
 # v0.5.3: HA naming (2026.11): name outputs carry entity_name and device_name
 #   next to the legacy friendly_name (kept while HA still sets it), and
 #   composed names are built from those parts, so they survive HA dropping
@@ -384,7 +392,7 @@ script:
               message: "{{ _sd_help_message }}"
               tool: Zen DojoTools Fulfillment
               codename: Radar
-              version: "0.5.3"
+              version: "0.5.4"
               configured_url: "{{ _base_url }}"
               cases: "{{ cases_help }}"
               caller_token: "{{ caller_token_norm }}"
@@ -402,7 +410,7 @@ script:
                 summary='Help desk tickets (Radar)',
                 display_name='Service Desk / Zammad',
                 tier='dojotools',
-                version='0.5.3',
+                version='0.5.4',
                 health=_health,
                 required_labels=['zammad'],
                 optional_labels=['zammad', 'service_desk', 'tickets', 'fulfillment'],
@@ -2472,12 +2480,25 @@ script:
                 action_type: get
                 base_url: "{{ _base_url }}"
                 request_timeout: "{{ _request_timeout }}"
-                endpoint: "tickets/search?query={{ (_anc_query | urlencode) | replace('%20', '+') }}&per_page={{ _anc_limit }}"
+                # #10681: the lean query/page/per_page form, the one ticket_search
+                # uses. Zammad may answer a list of tickets instead of
+                # {tickets, assets}; both shapes are read below.
+                endpoint: "tickets/search?query={{ (_anc_query | urlencode) | replace('%20', '+') }}&page=1&per_page={{ _anc_limit }}"
             - variables:
                 _anc_content: "{{ _anc_raw.get('result', {}).get('content', {}) if _anc_raw is mapping else {} }}"
             - variables:
-                _anc_ticket_ids: "{{ _anc_content.get('tickets', []) if _anc_content is mapping else [] }}"
-                _anc_assets: "{{ _anc_content.get('assets', {}).get('Ticket', {}) if _anc_content is mapping else {} }}"
+                _anc_seq: "{{ _anc_content if _anc_content is sequence and _anc_content is not string and _anc_content is not mapping else [] }}"
+            - variables:
+                _anc_ticket_ids: >-
+                  {%- if _anc_content is mapping -%}{{ _anc_content.get('tickets', []) }}
+                  {%- else -%}{{ _anc_seq | selectattr('id', 'defined') | map(attribute='id') | list }}{%- endif -%}
+                _anc_assets: >-
+                  {%- if _anc_content is mapping -%}{{ _anc_content.get('assets', {}).get('Ticket', {}) }}
+                  {%- else -%}
+                    {%- set ns = namespace(m={}) -%}
+                    {%- for t in _anc_seq if t is mapping and t.get('id') is not none -%}{%- set ns.m = ns.m | combine({(t.get('id') | string): t}) -%}{%- endfor -%}
+                    {{ ns.m }}
+                  {%- endif -%}
                 _anc_documents: >-
                   {%- set docs = namespace(items=[]) -%}
                   {%- for tid, t in _anc_assets.items() if _anc_assets is mapping and t is mapping -%}
@@ -2485,17 +2506,20 @@ script:
                     {%- set _tags = t.get('tags', []) if t.get('tags', []) is sequence and t.get('tags', []) is not string else [] -%}
                     {%- set _matched = namespace(ids=[]) -%}
                     {%- for aid in _anc_ids -%}
-                      {%- if aid in _tags or (aid | string) in (t | string) -%}
+                      {#- #10681: tags only. A substring of the whole ticket matched words like 'agent' in field names. -#}
+                      {%- if aid in _tags -%}
                         {%- set _matched.ids = _matched.ids + [aid | string] -%}
                       {%- endif -%}
                     {%- endfor -%}
                     {%- set _matched_ids = _matched.ids if _matched.ids | length > 0 else _anc_ids -%}
+                    {#- The lean search reply carries no tags: the ticket matched the query (one of these anchors), not a known tag. -#}
+                    {%- set _conf = 'explicit_tag' if _matched.ids | length > 0 else ('explicit_tag' if _anc_ids | length == 1 else 'query_match') -%}
                     {%- set _anchors = namespace(items=[]) -%}
                     {%- for aid in _matched_ids -%}
                       {%- set _anchors.items = _anchors.items + [{
                         'type': _anc_type if _anc_type != '' else 'unknown',
                         'id': aid | string,
-                        'confidence': 'explicit_tag',
+                        'confidence': _conf,
                         'source': 'zammad_tag',
                         'provider': 'servicedesk'
                       }] -%}
@@ -2540,10 +2564,17 @@ script:
                   query: "{{ _anc_query }}"
                   ticket_ids: "{{ _anc_ticket_ids }}"
                   tickets: "{{ _anc_assets.values() | list if _anc_assets is mapping else [] }}"
-                  count: "{{ _anc_content.get('tickets_count', _anc_ticket_ids | length) if _anc_content is mapping else 0 }}"
+                  count: "{{ _anc_content.get('tickets_count', _anc_ticket_ids | length) if _anc_content is mapping else _anc_ticket_ids | length }}"
                   result:
                     count: "{{ _anc_documents | length }}"
                     documents: "{{ _anc_documents }}"
+                    # #10681: the Lens bus reads evidence[].
+                    evidence: >-
+                      {%- set ns = namespace(e=[]) -%}
+                      {%- for d in _anc_documents if d is mapping -%}
+                        {%- set ns.e = ns.e + [d | combine({'evidence_id': (d.get('stack') or {}).get('evidence_id', 'servicedesk:ticket:' ~ d.get('id', '')), 'leaf_type': 'ticket_evidence', 'provider': 'radar'})] -%}
+                      {%- endfor -%}
+                      {{ ns.e }}
                     content_redacted: true
                   trace:
                     http_status: "{{ _anc_raw.get('http_status', 0) if _anc_raw is mapping else 0 }}"
@@ -3579,22 +3610,39 @@ script:
       continue_on_error: true
       data:
         mode: '{{ _svc_mode }}'
+        # #10681: the Lens bus sends anchor_type / anchor_ids at the top level;
+        # carry them into input_json (an explicit input_json value wins).
         input_json: >-
           {%- set raw = input_json | default("", true) -%}
-          {%- if raw is mapping -%}{{ raw | tojson }}
-          {%- elif raw is string and raw | trim != "" -%}{{ raw | trim }}
-          {%- else -%}{{ {} | tojson }}{%- endif -%}
+          {%- set d = raw if raw is mapping else ((raw | from_json({})) if raw is string and raw | trim != "" else {}) -%}
+          {%- set d = d if d is mapping else {} -%}
+          {%- set _at = anchor_type | default("", true) | string | trim -%}
+          {%- set _ai = anchor_ids | default("", true) -%}
+          {%- set _ai = (_ai | from_json([])) if _ai is string and (_ai | trim)[:1] == "[" else _ai -%}
+          {%- set extra = {} -%}
+          {%- if _at != "" and "anchor_type" not in d -%}{%- set extra = extra | combine({"anchor_type": _at}) -%}{%- endif -%}
+          {%- if _ai not in ["", none, []] and "anchor_ids" not in d -%}{%- set extra = extra | combine({"anchor_ids": _ai}) -%}{%- endif -%}
+          {{ (d | combine(extra)) | tojson }}
         caller_token: '{{ caller_token | default("") }}'
     - variables:
         _provider_response: >-
           {%- set r = _radar_result if _radar_result is mapping else {} -%}
           {%- set r = r.get('result', r) if r is mapping else r -%}
-          {%- set out = r | combine({
-            "provider": "radar",
-            "stack": "radar",
-            "handler": "zen_stack_radar"
-          }, recursive=true) -%}
-          {{ out }}
+          {%- if _mode_norm == "by_anchor" and r is mapping -%}
+            {#- #10681: flat lens reply; the bus unwraps one .result and reads evidence/count. -#}
+            {%- set inner = r.get("result", {}) if r.get("result") is mapping else {} -%}
+            {{ {"status": r.get("status", "error"), "provider": "radar", "handler": "zen_stack_radar",
+                "anchor_type": r.get("anchor_type"), "anchor_ids": r.get("anchor_ids", []), "query": r.get("query", ""),
+                "count": inner.get("count", 0) | int(0), "evidence": inner.get("evidence", []),
+                "content_redacted": true} }}
+          {%- else -%}
+            {%- set out = r | combine({
+              "provider": "radar",
+              "stack": "radar",
+              "handler": "zen_stack_radar"
+            }, recursive=true) -%}
+            {{ out }}
+          {%- endif -%}
     - stop: radar stack provider complete
       response_variable: _provider_response
 
