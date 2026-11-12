@@ -48,6 +48,12 @@ That catalog is where the Library and Inventory meet, and they split the work th
 
 Put them together and a book stops being a row in a list. Its shelf is an Inventory location, the location is in a room, and the room is an area, so "what books are in the living room?" is an ordinary Lens query on the living room. A copy that also exists digitally points at it, and the evidence carries a playback hint in the same shape Media Manager uses, so the record album on the shelf and the album in the stream are one answer. A cookbook can point at its Mealie cookbook. Nothing about the book changed. It just joined the graph.
 
+<p align="center">
+  <img src="images/ch13_library.jpg" width="360" alt="Asked what she can tell about the household's library, Friday says the catalog lists 21 physical items: 18 books, one cassette, and two art prints. The books include a series collection, a fantasy novel, and several cookbooks, three by one author, and one cookbook copy is noted as signed, with an inscribed photo tucked inside. No items are checked out, some records are sparse, and a couple of titles appear more than once, so the catalog may need tidying." />
+</p>
+
+*Friday asked about the household's library. She answers the way a librarian would: holdings by type, what stands out, a note that belongs to one copy and not the title (the signed one), what is out on loan, and that the catalog needs tidying. Real 2026.11.0 output, November 2026; names and most titles redacted.*
+
 Providers own their data. The Library owns the rules for joining, because a knowledge source should be admitted once, under one contract, not wired by hand into every tool that might want it.
 
 The rules are strict on purpose. Providers consume typed anchors, return bounded evidence that is redacted by default, and declare their own health and failure policy. A lookup is a read. Creating or changing a record in a source is that tool's own mode, behind its own certifications, and never part of the bus.
