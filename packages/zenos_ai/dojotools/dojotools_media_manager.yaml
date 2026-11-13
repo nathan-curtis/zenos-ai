@@ -1,5 +1,20 @@
 ###############################################################################
-# zen_dojotools_media_manager v6.4.4 (codename: NyxMau5)
+# zen_dojotools_media_manager v6.5.1 (codename: NyxMau5)
+# v6.5.1: prefs_apply and activity_apply wake a target that is off before they
+#   apply the source and volume (the Universal Media Player for activity_apply),
+#   so the channel check sees a real source_list. A Paused room is never woken.
+#   Fixes: prefs_apply dry_run=true no longer sends source or volume to the
+#   device; activity_apply no longer actuates after its Paused, missing
+#   activity or missing Universal Media Player refusal. prefs_apply skips a
+#   source or volume step the device does not support and returns status
+#   partial with source_skipped / volume_skipped, not a raw service error.
+# v6.5.0: power_on and power_off modes (#10686). Allowed when the caller holds
+#   zenos.media.playback_control, the target is an available media player,
+#   and the device reports the power feature; power_on also refuses in a
+#   Paused room. No role label is required. source_set wakes a target that is off
+#   before it switches the source. discover and state_get say when a player
+#   can be powered on. source_set and sound_mode_set no longer call the
+#   device after their own missing-input refusal.
 # v6.4.4: the room provider match raises a search hit's confidence and
 #   notes it in the policy; both were lost inside the room loop.
 # v6.4.3: HA naming (2026.11): name outputs carry entity_name and device_name
@@ -126,7 +141,9 @@ script:
           label definitions: run once before labeling devices. label_suggest
           proposes zen_mm_* labels for room entities. resolve_debug traces the
           full selection chain. prefs_set teaches a context once: prefs_apply
-          uses it forever. help for full reference + label taxonomy.
+          uses it forever. power_on / power_off turn a room's TV or player on
+          or off (room= with target_role= or intent=). help for full
+          reference + label taxonomy.
         selector:
           select:
             options:
@@ -138,6 +155,8 @@ script:
               - source_set
               - sound_mode_get
               - sound_mode_set
+              - power_on
+              - power_off
               - state_get
               - now_playing
               - prefs_get
@@ -524,7 +543,7 @@ script:
                     summary='Play and control media by room and role',
                     display_name='Media Manager — Media Lens Surface',
                     tier='dojotools',
-                    version='6.4.3',
+                    version='6.5.1',
                     health=_h,
                     required_labels=['dojotools'],
                     optional_labels=['media_player', 'zen_mm_music_assistant', 'listen', 'watch', 'zen_home_mode'],
@@ -542,6 +561,7 @@ script:
                            'discover': 'discover', 'setup': 'setup', 'label_suggest': 'label_suggest',
                            'resolve_debug': 'resolve_debug', 'source_get': 'source_get', 'source_set': 'source_set',
                            'sound_mode_get': 'sound_mode_get', 'sound_mode_set': 'sound_mode_set',
+                           'power_on': 'power_on', 'power_off': 'power_off',
                            'state_get': 'state_get', 'now_playing': 'now_playing',
                            'prefs_get': 'prefs_get', 'prefs_set': 'prefs_set', 'prefs_apply': 'prefs_apply',
                            'room_default_get': 'room_default_get', 'room_default_set': 'room_default_set',
@@ -580,8 +600,8 @@ script:
                        'live_ack_required_for': [],
                        'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.media.prefs_edit (or zen_dojotools_identity mode=cert_list to see current status)'},
                       {'cert': 'zenos.media.playback_control', 'display_name': 'Media Playback Control',
-                       'description': "Play music and control the TVs and speakers", 'detail': '2026-09-10, household: steel-mag pattern -- actual AV actuation (play_media, queue_command/remove/play_item/clear_from_here/unfavorite, source_set, sound_mode_set, activity_set/apply/end). Cert-only, no live-ack tier. Renamed from flat zenos.media.playback_control to the zenos.* OID namespace 2026-09-18 (#10407) -- no active grant existed at rename time (confirmed via cert_list).',
-                       'max_level': 1, 'gates': ['mode=play_media/queue_*/source_set/sound_mode_set/activity_set/activity_apply/activity_end'],
+                       'description': "Play music and control the TVs and speakers", 'detail': '2026-09-10, household: steel-mag pattern -- actual AV actuation (play_media, queue_command/remove/play_item/clear_from_here/unfavorite, source_set, sound_mode_set, power_on, power_off, activity_set/apply/end). Cert-only, no live-ack tier. Renamed from flat zenos.media.playback_control to the zenos.* OID namespace 2026-09-18 (#10407) -- no active grant existed at rename time (confirmed via cert_list).',
+                       'max_level': 1, 'gates': ['mode=play_media/queue_*/source_set/sound_mode_set/power_on/power_off/activity_set/activity_apply/activity_end'],
                        'live_ack_required_for': [],
                        'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.media.playback_control (or zen_dojotools_identity mode=cert_list to see current status)',
                        'bundle': ['zenos_agent_basic']}
@@ -747,6 +767,13 @@ script:
                else (_intent_resolved if _intent_resolved != ''
                else _role_resolved) }}
 
+      # Power features of the resolved target (media_player feature bits:
+      # TURN_ON 128, TURN_OFF 256).
+      - variables:
+          _pw_features: "{{ (state_attr(_resolved_entity, 'supported_features') | int(0)) if _resolved_entity != '' else 0 }}"
+          _pw_can_on: "{{ _pw_features | bitwise_and(128) > 0 }}"
+          _pw_can_off: "{{ _pw_features | bitwise_and(256) > 0 }}"
+
       # ── 0d2. Room Manager v3 PAUSED awareness ──────────────────────────────
       # A room's room_control_manager select set to 'Paused' means a human
       # hit the brakes on that room — REFLEX itself won't fire scenes there,
@@ -785,7 +812,8 @@ script:
               zenos.media.prefs_edit
             {%- elif _mode in ['play_media', 'queue_command', 'queue_remove', 'queue_play_item',
                                 'queue_clear_from_here', 'queue_unfavorite', 'source_set',
-                                'sound_mode_set', 'activity_set', 'activity_apply', 'activity_end',
+                                'sound_mode_set', 'power_on', 'power_off',
+                                'activity_set', 'activity_apply', 'activity_end',
                                 'volume_set', 'group_volume_set', 'queue_transfer', 'queue_restore', 'queue_sync'] -%}
               zenos.media.playback_control
             {%- else -%}
@@ -836,7 +864,7 @@ script:
                 status: ok
                 tool: zen_dojotools_media_manager
                 codename: NyxMau5
-                version: "6.1.4"
+                version: "6.5.1"
                 what_friday_can_do: >-
                   Say 'put on Disney in the LR for the kids' and this tool handles
                   it — discover the room layout once, teach a pref, apply it forever.
@@ -918,13 +946,15 @@ script:
                   label_suggest: "Analyzes room entities by name + integration and proposes zen_mm_* label assignments. Returns suggestions for review — does NOT apply labels."
                   resolve_debug: "Traces the full entity selection chain for a room + optional intent/role/source. Returns selection_chain, selected entity, reason, and warnings. Read-only."
                   source_get: "See what's playing + full source_list for a device. Good before source_set."
-                  source_set: "Switch input source + confirms. target_role=zen_mm_television for streaming apps."
+                  source_set: "Switch input source + confirms. target_role=zen_mm_television for streaming apps. A target that is off is turned on first (powered_on: true in the result). On a streaming TV this opens the app; it does not start a named show."
                   sound_mode_get: "Current sound_mode + full sound_mode_list."
                   sound_mode_set: "Set AVR/TV sound mode + confirms. target_role=zen_mm_av_tuner for the AVR."
+                  power_on: "Turn a media player on. room= with target_role= or intent= (or entity_id=). Needs zenos.media.playback_control and a device that reports power-on. No role label required. Refuses in a Paused room. dry_run=true previews. Returns state_before, state, changed, confirmed."
+                  power_off: "Turn a media player off. Same targeting and rules as power_on, except a Paused room does not block it."
                   state_get: "Full device snapshot — source, sound_mode, volume, mute, media title."
                   prefs_get: "Read all stored prefs for a room — see every context and what it maps to."
                   prefs_set: "Teach a preference: room + home_context + source (+ optional volume + target_role). Stores role as the resolver — entity_id is fallback/debug only."
-                  prefs_apply: "Apply stored pref for room. Reads the zen_home_mode-labeled entity automatically if no context given. Re-resolves device from stored role label live — entity IDs can change."
+                  prefs_apply: "Apply stored pref for room. Reads the zen_home_mode-labeled entity automatically if no context given. Re-resolves device from stored role label live — entity IDs can change. A target that is off is turned on first (powered_on: true), except in a Paused room (wake_skipped_paused). dry_run makes no device call and reports would_wake."
                   room_default_get: "Read the stored default role for a room + what it resolves to + what the auto chain would pick. Good for auditing."
                   room_default_set: "Store a target_role as this room's default resolver. Future calls without target_role hit this role first. Pass target_role=auto to clear back to auto chain."
                   now_playing: "Full playback snapshot for a room or entity. Returns playback{state, title, artist, album, uri, provider, volume, shuffle, repeat, artwork_url, group_members}, search_metadata (MA track match with artists + album_uri), and lyrics_hint. Pass room= or entity_id=. Wired into Room Manager +media context slice."
@@ -962,7 +992,8 @@ script:
                 example_flows:
                   whole_home_overview: "discover (no room) → every area with media players, default entity per room, roles found"
                   discover_a_room: "discover room='Living Room' → roles, source lists, unlabeled. source_list values = exact strings for source_set."
-                  put_on_disney: "source_set room='Living Room' target_role=zen_mm_television source='Disney+'"
+                  put_on_disney: "source_set room='Living Room' target_role=zen_mm_television source='Disney+' (wakes the TV first if it is off)"
+                  turn_on_the_tv: "power_on room='Living Room' target_role=zen_mm_television (or intent=watch). power_off the same way."
                   teach_kids_mode: "prefs_set room='Living Room' home_context=kids target_role=zen_mm_television source='Disney+' volume=35"
                   apply_kids_mode: "prefs_apply room='Living Room' home_context=kids — or omit home_context and it reads the room"
                   confirm_first: "prefs_apply room='Living Room' dry_run=true — preview before touching hardware"
@@ -977,6 +1008,8 @@ script:
                   - "prefs_set stores target_role as the resolver. entity_id in prefs is fallback/debug only — role is what matters."
                   - "dry_run=true on prefs_apply shows would_set_source + would_set_volume before committing."
                   - "source_set and sound_mode_set both return confirmed: true/false — the agent knows if it took."
+                  - "A TV that is off shows no source_list. discover marks it can_power_on: power_on (or source_set) wakes it, then the inputs appear."
+                  - "Power goes through power_on / power_off here, not HassTurnOn / HassTurnOff: a household can leave its TVs unexposed to Assist and still let the agent run them."
                   - "Always pass target_role=zen_mm_av_tuner when switching AVR inputs. Without it, source_set hits the default entity (universal_media_player) which does not support select_source."
                 self_triage:
                   source_set_fails:
@@ -1169,6 +1202,8 @@ script:
                     {%- set _m_snd = state_attr(match, 'sound_mode_list') | default([], true) -%}
                     {%- set _m_vol = state_attr(match, 'volume_level') -%}
                     {%- set _m_gm = state_attr(match, 'group_members') | default([], true) -%}
+                    {%- set _m_feat = state_attr(match, 'supported_features') | int(0) -%}
+                    {%- set _m_pon = _m_feat | bitwise_and(128) > 0 -%}
                     {%- set entry = {
                       'role': rl,
                       'entity_id': match,
@@ -1178,7 +1213,9 @@ script:
                       'source_list': _m_src,
                       'sound_mode': state_attr(match, 'sound_mode') | default(none, true),
                       'volume_pct': ((_m_vol | float(0)) * 100) | round(0) | int if _m_vol is not none else none,
-                      'actionable': _m_src | length > 0 or _m_snd | length > 0 or _m_vol is not none,
+                      'actionable': _m_src | length > 0 or _m_snd | length > 0 or _m_vol is not none or _m_pon,
+                      'can_power_on': _m_pon,
+                      'can_power_off': _m_feat | bitwise_and(256) > 0,
                       'group_size': _m_gm | length,
                       'is_group_master': _m_gm | length > 1 and _m_gm | first == match
                     } -%}
@@ -1254,6 +1291,7 @@ script:
                 {%- set sm = _sg_snd_list | length -%}
                 {%- set hv = _sg_vol is not none -%}
                 {%- set actionable = sc > 0 or sm > 0 or hv -%}
+                {%- set is_off = states(_resolved_entity) in ['off', 'standby'] -%}
                 {%- set parts = [] -%}
                 {%- if sc > 0 -%}{%- set parts = parts + [sc | string + ' inputs'] -%}{%- endif -%}
                 {%- if sm > 0 -%}{%- set parts = parts + [sm | string + ' sound modes'] -%}{%- endif -%}
@@ -1265,9 +1303,12 @@ script:
                   'sound_mode_count': sm,
                   'volume_control': hv,
                   'mute': _sg_mute_attr is not none,
-                  'actionable': actionable,
+                  'power_on': _pw_can_on,
+                  'power_off': _pw_can_off,
+                  'actionable': actionable or _pw_can_on or _pw_can_off,
                   'hint': ('Full AV control: ' + (parts | join(', ')) + '.') if actionable
-                           else 'No inputs, sound modes, or volume exposed — power-only via this integration.'
+                           else ('It is off. mode=power_on turns it on; inputs, sound modes and volume appear once it is on.') if (is_off and _pw_can_on)
+                           else 'No inputs, sound modes, or volume exposed: power only via this integration.'
                 } }}
 
           # Situation: group membership, co-playing detection, rooms in sync, role labels
@@ -1552,33 +1593,62 @@ script:
           # response so a caller isn't surprised a screen mid-info-board
           # got a source switch. Fails soft: any error/unexposed-tool case
           # just means no warning, never blocks source_set. ──
-          - action: script.zen_dojotools_display
-            continue_on_error: true
-            response_variable: _ss_display_status_raw
-            data:
-              mode: status
-              entity_id: "{{ _resolved_entity }}"
-          - variables:
-              _ss_display_active: >-
-                {%- set r = _ss_display_status_raw.get('result', {}) if _ss_display_status_raw is mapping else {} -%}
-                {{ r.get('active', false) if r is mapping else false }}
-          - action: media_player.select_source
-            target:
-              entity_id: "{{ _resolved_entity }}"
-            data:
-              source: "{{ _source }}"
-          - delay:
-              milliseconds: 800
-          - variables:
-              _result:
-                status: ok
-                entity_id: "{{ _resolved_entity }}"
-                target_role: "{{ _target_role if _target_role != '' else 'auto' }}"
-                source_requested: "{{ _source }}"
-                active_source: "{{ state_attr(_resolved_entity, 'source') | default(none, true) }}"
-                confirmed: "{{ state_attr(_resolved_entity, 'source') == _source }}"
-                display_surface_interrupted: "{{ _ss_display_active }}"
-                caller_token: "{{ _caller_token }}"
+          - if: "{{ _result is not defined }}"
+            then:
+              - action: script.zen_dojotools_display
+                continue_on_error: true
+                response_variable: _ss_display_status_raw
+                data:
+                  mode: status
+                  entity_id: "{{ _resolved_entity }}"
+              - variables:
+                  _ss_display_active: >-
+                    {%- set r = _ss_display_status_raw.get('result', {}) if _ss_display_status_raw is mapping else {} -%}
+                    {{ r.get('active', false) if r is mapping else false }}
+                  _ss_state_before: "{{ states(_resolved_entity) }}"
+                  _ss_wake: "{{ states(_resolved_entity) in ['off', 'standby'] and _pw_can_on }}"
+              # A target that is off has no source list and ignores a source
+              # switch. Turn it on first and give it up to 15 seconds.
+              - if: "{{ _ss_wake }}"
+                then:
+                  - action: media_player.turn_on
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ _resolved_entity }}"
+                  - wait_template: "{{ states(_resolved_entity) not in ['off', 'standby', 'unavailable', 'unknown'] }}"
+                    timeout:
+                      seconds: 15
+                    continue_on_timeout: true
+                  - delay:
+                      seconds: 1
+              - action: media_player.select_source
+                target:
+                  entity_id: "{{ _resolved_entity }}"
+                data:
+                  source: "{{ _source }}"
+              # A device that just woke takes longer to report its new source.
+              - if: "{{ _ss_wake }}"
+                then:
+                  - wait_template: "{{ state_attr(_resolved_entity, 'source') == _source }}"
+                    timeout:
+                      seconds: 10
+                    continue_on_timeout: true
+                else:
+                  - delay:
+                      milliseconds: 800
+              - variables:
+                  _result:
+                    status: ok
+                    entity_id: "{{ _resolved_entity }}"
+                    target_role: "{{ _target_role if _target_role != '' else 'auto' }}"
+                    source_requested: "{{ _source }}"
+                    active_source: "{{ state_attr(_resolved_entity, 'source') | default(none, true) }}"
+                    confirmed: "{{ state_attr(_resolved_entity, 'source') == _source }}"
+                    powered_on: "{{ _ss_wake }}"
+                    state_before: "{{ _ss_state_before }}"
+                    state: "{{ states(_resolved_entity) }}"
+                    display_surface_interrupted: "{{ _ss_display_active }}"
+                    caller_token: "{{ _caller_token }}"
 
       # ── 6. sound_mode_get ─────────────────────────────────────────────────
       - if: "{{ _result is not defined and _mode == 'sound_mode_get' }}"
@@ -1614,22 +1684,123 @@ script:
                     caller_token: "{{ _caller_token }}"
               - variables:
                   _result: "{{ _err }}"
-          - action: media_player.select_sound_mode
-            target:
-              entity_id: "{{ _resolved_entity }}"
-            data:
-              sound_mode: "{{ _sound_mode }}"
-          - delay:
-              milliseconds: 800
+          - if: "{{ _result is not defined }}"
+            then:
+              - action: media_player.select_sound_mode
+                target:
+                  entity_id: "{{ _resolved_entity }}"
+                data:
+                  sound_mode: "{{ _sound_mode }}"
+              - delay:
+                  milliseconds: 800
+              - variables:
+                  _result:
+                    status: ok
+                    entity_id: "{{ _resolved_entity }}"
+                    target_role: "{{ _target_role if _target_role != '' else 'auto' }}"
+                    sound_mode_requested: "{{ _sound_mode }}"
+                    active_sound_mode: "{{ state_attr(_resolved_entity, 'sound_mode') | default(none, true) }}"
+                    confirmed: "{{ state_attr(_resolved_entity, 'sound_mode') == _sound_mode }}"
+                    caller_token: "{{ _caller_token }}"
+
+      # ── 7b. power_on / power_off ──────────────────────────────────────────
+      # Turns a media player on or off. The cert gate above already ran
+      # (zenos.media.playback_control). On top of that the target must be an
+      # available media player that reports the power feature. No role label
+      # is required, so an unlabeled player can still be powered. power_on also
+      # honors a Paused room, like play_media; power_off does not. The room
+      # for that check is the room passed, else the target's own area.
+      - if: "{{ _result is not defined and _mode in ['power_on', 'power_off'] }}"
+        then:
           - variables:
-              _result:
-                status: ok
-                entity_id: "{{ _resolved_entity }}"
-                target_role: "{{ _target_role if _target_role != '' else 'auto' }}"
-                sound_mode_requested: "{{ _sound_mode }}"
-                active_sound_mode: "{{ state_attr(_resolved_entity, 'sound_mode') | default(none, true) }}"
-                confirmed: "{{ state_attr(_resolved_entity, 'sound_mode') == _sound_mode }}"
-                caller_token: "{{ _caller_token }}"
+              _pw_want: "{{ 'on' if _mode == 'power_on' else 'off' }}"
+              _pw_exists: "{{ _resolved_entity.startswith('media_player.') and states[_resolved_entity] is not none }}"
+          - variables:
+              _pw_before: "{{ states(_resolved_entity) if _pw_exists else '' }}"
+              _pw_room: "{{ _room_slug if _room_slug != '' else ((area_id(_resolved_entity) or '') if _pw_exists else '') }}"
+          - variables:
+              _pw_room_control: >-
+                {{ (label_entities('room_control_manager') | intersect(label_entities(_pw_room)) | list | first) | default('', true)
+                   if _pw_room != '' else '' }}
+          - variables:
+              _pw_room_paused: "{{ _pw_room_control != '' and is_state(_pw_room_control, 'Paused') }}"
+              _pw_already: >-
+                {{ (_pw_before not in ['off', 'standby', 'unavailable', 'unknown', '']) if _pw_want == 'on'
+                   else (_pw_before in ['off', 'standby']) }}
+          - if: "{{ _resolved_entity == '' }}"
+            then:
+              - variables:
+                  _result: {status: error, reason: "guarded: no media player resolved; pass room= (with target_role= or intent=) or entity_id=", caller_token: "{{ _caller_token }}"}
+          - if: "{{ _result is not defined and not _pw_exists }}"
+            then:
+              - variables:
+                  _result: {status: error, reason: "guarded: {{ _resolved_entity }} is not a media player on this system", entity_id: "{{ _resolved_entity }}", caller_token: "{{ _caller_token }}"}
+          - if: "{{ _result is not defined and _pw_before == 'unavailable' }}"
+            then:
+              - variables:
+                  _result: {status: error, reason: "guarded: {{ _resolved_entity }} is unavailable", entity_id: "{{ _resolved_entity }}", caller_token: "{{ _caller_token }}"}
+          - if: "{{ _result is not defined and _pw_want == 'on' and _pw_room_paused }}"
+            then:
+              - variables:
+                  _result: {status: error, reason: "guarded: room '{{ _pw_room }}' is Paused (room_control_manager). A person stopped automation in this room, so nothing is turned on there. Un-pause the room first if this is intended.", entity_id: "{{ _resolved_entity }}", room_control_entity: "{{ _pw_room_control }}", caller_token: "{{ _caller_token }}"}
+          - if: "{{ _result is not defined and not _pw_already and not (_pw_can_on if _pw_want == 'on' else _pw_can_off) }}"
+            then:
+              - variables:
+                  _result: {status: error, reason: "guarded: {{ _resolved_entity }} does not report a power-{{ _pw_want }} feature", entity_id: "{{ _resolved_entity }}", state: "{{ _pw_before }}", caller_token: "{{ _caller_token }}"}
+          - if: "{{ _result is not defined and (_dry_run or _pw_already) }}"
+            then:
+              - variables:
+                  _result:
+                    status: success
+                    mode: "{{ _mode }}"
+                    entity_id: "{{ _resolved_entity }}"
+                    target_role: "{{ _target_role if _target_role != '' else 'auto' }}"
+                    room: "{{ _pw_room }}"
+                    dry_run: "{{ _dry_run }}"
+                    state_before: "{{ _pw_before }}"
+                    state: "{{ _pw_before }}"
+                    changed: false
+                    would_call: "{{ ('media_player.turn_' ~ _pw_want) if not _pw_already else none }}"
+                    note: "{{ ('Already ' ~ _pw_want ~ '. No call made.') if _pw_already else 'dry_run: no call made.' }}"
+                    caller_token: "{{ _caller_token }}"
+          - if: "{{ _result is not defined }}"
+            then:
+              - if: "{{ _pw_want == 'on' }}"
+                then:
+                  - action: media_player.turn_on
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ _resolved_entity }}"
+                else:
+                  - action: media_player.turn_off
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ _resolved_entity }}"
+              - wait_template: >-
+                  {{ (states(_resolved_entity) not in ['off', 'standby', 'unavailable', 'unknown']) if _pw_want == 'on'
+                     else (states(_resolved_entity) in ['off', 'standby', 'unavailable']) }}
+                timeout:
+                  seconds: 15
+                continue_on_timeout: true
+              - variables:
+                  _pw_after: "{{ states(_resolved_entity) }}"
+              - variables:
+                  _pw_confirmed: >-
+                    {{ (_pw_after not in ['off', 'standby', 'unavailable', 'unknown']) if _pw_want == 'on'
+                       else (_pw_after in ['off', 'standby', 'unavailable']) }}
+              - variables:
+                  _result:
+                    status: "{{ 'success' if _pw_confirmed else 'error' }}"
+                    mode: "{{ _mode }}"
+                    entity_id: "{{ _resolved_entity }}"
+                    target_role: "{{ _target_role if _target_role != '' else 'auto' }}"
+                    room: "{{ _pw_room }}"
+                    state_before: "{{ _pw_before }}"
+                    state: "{{ _pw_after }}"
+                    changed: "{{ _pw_after != _pw_before }}"
+                    confirmed: "{{ _pw_confirmed }}"
+                    reason: "{{ none if _pw_confirmed else ('the call was sent but the player still reads ' ~ _pw_after ~ ' after 15 seconds; check mode=state_get before trying again') }}"
+                    caller_token: "{{ _caller_token }}"
 
       # ── 8. prefs_get ──────────────────────────────────────────────────────
       - if: "{{ _result is not defined and _mode == 'prefs_get' }}"
@@ -1855,7 +2026,19 @@ script:
               _apply_entry:  "{{ _contexts.get(_matched_ctx, {}) }}"
               _apply_source: "{{ _apply_entry.get('source', '') if _apply_entry is mapping else '' }}"
               _apply_volume: "{{ _apply_entry.get('volume', -1) | int(-1) if _apply_entry is mapping else -1 }}"
-          - if: "{{ _dry_run }}"
+          # A target that is off and can be turned on is woken before the
+          # source and volume are applied. A Paused room is never woken.
+          - variables:
+              _ap_feat: "{{ (state_attr(_target_entity, 'supported_features') | int(0)) if _target_entity != '' else 0 }}"
+          - variables:
+              _ap_state_before: "{{ states(_target_entity) if _target_entity != '' else '' }}"
+              _ap_wants_wake: >-
+                {{ _target_entity != '' and (_apply_source != '' or _apply_volume >= 0)
+                   and states(_target_entity) in ['off', 'standby']
+                   and (_ap_feat | bitwise_and(128) > 0) }}
+          - variables:
+              _ap_wake: "{{ _ap_wants_wake and not _room_paused }}"
+          - if: "{{ _result is not defined and _dry_run }}"
             then:
               - variables:
                   _result:
@@ -1867,8 +2050,10 @@ script:
                     context_matched: "{{ _matched_ctx }}"
                     would_set_source: "{{ _apply_source }}"
                     would_set_volume: "{{ _apply_volume if _apply_volume >= 0 else 'no change' }}"
+                    would_wake: "{{ _ap_wake }}"
+                    wake_skipped_paused: "{{ _ap_wants_wake and _room_paused }}"
                     caller_token: "{{ _caller_token }}"
-          - if: "{{ _target_entity == '' }}"
+          - if: "{{ _result is not defined and _target_entity == '' }}"
             then:
               - variables:
                   _err:
@@ -1880,35 +2065,70 @@ script:
                     caller_token: "{{ _caller_token }}"
               - variables:
                   _result: "{{ _err }}"
-          - if: "{{ _apply_source != '' }}"
+          - if: "{{ _result is not defined }}"
             then:
-              - action: media_player.select_source
-                target:
-                  entity_id: "{{ _target_entity }}"
-                data:
-                  source: "{{ _apply_source }}"
-          - if: "{{ _apply_volume >= 0 }}"
-            then:
-              - action: media_player.volume_set
-                target:
-                  entity_id: "{{ _target_entity }}"
-                data:
-                  volume_level: "{{ _apply_volume / 100 }}"
-          - delay:
-              milliseconds: 800
-          - variables:
-              _result:
-                status: ok
-                room: "{{ _room_slug }}"
-                entity_id: "{{ _target_entity }}"
-                target_role: "{{ _stored_role if _stored_role != '' else none }}"
-                intent_resolver: "{{ _stored_intent if _stored_intent != '' else none }}"
-                context_matched: "{{ _matched_ctx }}"
-                source_applied: "{{ _apply_source }}"
-                volume_applied: "{{ _apply_volume if _apply_volume >= 0 else 'unchanged' }}"
-                active_source: "{{ state_attr(_target_entity, 'source') | default(none, true) }}"
-                confirmed: "{{ state_attr(_target_entity, 'source') == _apply_source if _apply_source != '' else none }}"
-                caller_token: "{{ _caller_token }}"
+              - if: "{{ _ap_wake }}"
+                then:
+                  - action: media_player.turn_on
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ _target_entity }}"
+                  - wait_template: "{{ states(_target_entity) not in ['off', 'standby', 'unavailable', 'unknown'] }}"
+                    timeout:
+                      seconds: 15
+                    continue_on_timeout: true
+                  - delay:
+                      seconds: 1
+              # Read what the device can do after any wake (feature bits:
+              # VOLUME_SET 4, SELECT_SOURCE 2048). A device that lacks one
+              # gets that step skipped and reported, not a raw service error.
+              - variables:
+                  _ap_feat_now: "{{ state_attr(_target_entity, 'supported_features') | int(0) }}"
+              - variables:
+                  _ap_can_src: "{{ _ap_feat_now | bitwise_and(2048) > 0 }}"
+                  _ap_can_vol: "{{ _ap_feat_now | bitwise_and(4) > 0 }}"
+              - if: "{{ _apply_source != '' and _ap_can_src }}"
+                then:
+                  - action: media_player.select_source
+                    target:
+                      entity_id: "{{ _target_entity }}"
+                    data:
+                      source: "{{ _apply_source }}"
+              - if: "{{ _apply_volume >= 0 and _ap_can_vol }}"
+                then:
+                  - action: media_player.volume_set
+                    target:
+                      entity_id: "{{ _target_entity }}"
+                    data:
+                      volume_level: "{{ _apply_volume / 100 }}"
+              - if: "{{ _ap_wake and _apply_source != '' and _ap_can_src }}"
+                then:
+                  - wait_template: "{{ state_attr(_target_entity, 'source') == _apply_source }}"
+                    timeout:
+                      seconds: 10
+                    continue_on_timeout: true
+                else:
+                  - delay:
+                      milliseconds: 800
+              - variables:
+                  _result:
+                    status: "{{ 'partial' if ((_apply_source != '' and not _ap_can_src) or (_apply_volume >= 0 and not _ap_can_vol)) else 'ok' }}"
+                    room: "{{ _room_slug }}"
+                    entity_id: "{{ _target_entity }}"
+                    target_role: "{{ _stored_role if _stored_role != '' else none }}"
+                    intent_resolver: "{{ _stored_intent if _stored_intent != '' else none }}"
+                    context_matched: "{{ _matched_ctx }}"
+                    source_applied: "{{ _apply_source if _ap_can_src else '' }}"
+                    source_skipped: "{{ 'this device does not support source selection' if (_apply_source != '' and not _ap_can_src) else none }}"
+                    volume_applied: "{{ (_apply_volume if _ap_can_vol else 'unchanged') if _apply_volume >= 0 else 'unchanged' }}"
+                    volume_skipped: "{{ 'this device does not support volume setting' if (_apply_volume >= 0 and not _ap_can_vol) else none }}"
+                    active_source: "{{ state_attr(_target_entity, 'source') | default(none, true) }}"
+                    confirmed: "{{ state_attr(_target_entity, 'source') == _apply_source if (_apply_source != '' and _ap_can_src) else none }}"
+                    powered_on: "{{ _ap_wake }}"
+                    wake_skipped_paused: "{{ _ap_wants_wake and _room_paused }}"
+                    state_before: "{{ _ap_state_before }}"
+                    state: "{{ states(_target_entity) }}"
+                    caller_token: "{{ _caller_token }}"
 
       # ── 11. room_default_get ──────────────────────────────────────────────
       - if: "{{ _result is not defined and _mode == 'room_default_get' }}"
@@ -3605,8 +3825,30 @@ script:
               # letting HA raise a raw ServiceValidationError.
               _ap_channel_valid: >-
                 {{ _ap_channel != '' and _ap_channel in (state_attr(_ump_entity, 'source_list') | default([], true)) }}
-          - if: "{{ not (dry_run | default(false)) }}"
+              # An off Universal Media Player has no source_list, so the
+              # channel check above fails until it is on. Wake it first
+              # (the Paused refusal above already stopped a paused room).
+              _ap_ump_state_before: "{{ states(_ump_entity) if _ump_entity != '' else '' }}"
+              _ap_wake: >-
+                {{ _ump_entity != '' and states(_ump_entity) in ['off', 'standby']
+                   and ((state_attr(_ump_entity, 'supported_features') | int(0)) | bitwise_and(128) > 0) }}
+          - if: "{{ _result is not defined and not (dry_run | default(false)) }}"
             then:
+              - if: "{{ _ap_wake }}"
+                then:
+                  - action: media_player.turn_on
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ _ump_entity }}"
+                  - wait_template: "{{ states(_ump_entity) not in ['off', 'standby', 'unavailable', 'unknown'] }}"
+                    timeout:
+                      seconds: 15
+                    continue_on_timeout: true
+                  - delay:
+                      seconds: 1
+                  - variables:
+                      _ap_channel_valid: >-
+                        {{ _ap_channel != '' and _ap_channel in (state_attr(_ump_entity, 'source_list') | default([], true)) }}
               - if: "{{ _ap_lock_room }}"
                 then:
                   - action: script.zen_dojotools_room_manager
@@ -3683,21 +3925,26 @@ script:
                     response_variable: _ap_lights
                   - variables:
                       _ap_chain: "{{ dict(_ap_chain, lights=_ap_lights) }}"
-          - variables:
-              _result:
-                status: ok
-                room: "{{ _room_slug }}"
-                activity_name: "{{ _act_name }}"
-                channel: "{{ _ap_channel }}"
-                channel_skipped: >-
-                  {{ ('Taught channel ' ~ _ap_channel ~ ' is not in ' ~ _ump_entity ~ '\'s source_list -- skipped. Likely meant the Music Assistant proxy entity, not the universal receiver.') if (_ap_channel != '' and not _ap_channel_valid) else none }}
-                ump_entity: "{{ _ump_entity }}"
-                lock_room: "{{ _ap_lock_room }}"
-                light_context: "{{ _ap_light_context if _ap_light_context != '' else none }}"
-                media_id: "{{ _ap_media_id if _ap_media_id != '' else none }}"
-                chained_results: "{{ _ap_chain }}"
-                dry_run: "{{ dry_run | default(false) }}"
-                caller_token: "{{ _caller_token }}"
+          - if: "{{ _result is not defined }}"
+            then:
+              - variables:
+                  _result:
+                    status: ok
+                    room: "{{ _room_slug }}"
+                    activity_name: "{{ _act_name }}"
+                    channel: "{{ _ap_channel }}"
+                    channel_skipped: >-
+                      {{ ('Taught channel ' ~ _ap_channel ~ ' is not in ' ~ _ump_entity ~ '\'s source_list -- skipped. Likely meant the Music Assistant proxy entity, not the universal receiver.') if (_ap_channel != '' and not _ap_channel_valid and not (_ap_wake and (dry_run | default(false)))) else none }}
+                    ump_entity: "{{ _ump_entity }}"
+                    powered_on: "{{ _ap_wake and not (dry_run | default(false)) }}"
+                    would_wake: "{{ _ap_wake if (dry_run | default(false)) else none }}"
+                    state_before: "{{ _ap_ump_state_before }}"
+                    lock_room: "{{ _ap_lock_room }}"
+                    light_context: "{{ _ap_light_context if _ap_light_context != '' else none }}"
+                    media_id: "{{ _ap_media_id if _ap_media_id != '' else none }}"
+                    chained_results: "{{ _ap_chain }}"
+                    dry_run: "{{ dry_run | default(false) }}"
+                    caller_token: "{{ _caller_token }}"
 
       # ── 21b. activity_end ────────────────────────────────────────────────
       # The generic "off" counterpart to activity_apply's lock_room -- clears
@@ -3828,7 +4075,8 @@ script:
               message: >-
                 Unknown mode '{{ _mode }}'. Valid: discover, setup, label_suggest,
                 resolve_debug, source_get, source_set, sound_mode_get,
-                sound_mode_set, state_get, prefs_get, prefs_set, prefs_apply,
+                sound_mode_set, power_on, power_off, state_get, prefs_get,
+                prefs_set, prefs_apply,
                 room_default_get, room_default_set, stacks_by_anchor, search,
                 activity_get, activity_set, activity_apply, activity_snapshot,
                 register, unregister, health, audit, help

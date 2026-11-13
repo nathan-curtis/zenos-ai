@@ -1,6 +1,6 @@
 # ZenOS-AI Media Manager (NyxMau5)
 
-**Version:** 6.4.4
+**Version:** 6.5.1
 **Script:** `zen_dojotools_media_manager`
 **Codename:** NyxMau5
 
@@ -239,9 +239,10 @@ Apply to any entity that serves this purpose. Multiple tools (Postman, Dispatche
 | Mode | Description |
 |------|-------------|
 | `source_get` | Current source + full `source_list` for a device. Call before `source_set` to see exact source strings. |
-| `source_set` | Switch input source. Exact string match required — copy from `source_list`. Use `target_role=zen_mm_television` for streaming apps, `target_role=zen_mm_av_tuner` for physical inputs. Consults `zen_dojotools_display mode=status` first (read-only, fails soft) — response's `display_surface_interrupted` flags whether a Display Surface session on that target got switched away, but the switch always proceeds regardless; this tool has no authority over display sessions and doesn't gain any by asking. |
+| `source_set` | Switch input source. Exact string match required — copy from `source_list`. Use `target_role=zen_mm_television` for streaming apps, `target_role=zen_mm_av_tuner` for physical inputs. Consults `zen_dojotools_display mode=status` first (read-only, fails soft) — response's `display_surface_interrupted` flags whether a Display Surface session on that target got switched away, but the switch always proceeds regardless; this tool has no authority over display sessions and doesn't gain any by asking. A target that is off is woken first (`powered_on` in the result). |
 | `sound_mode_get` | Current `sound_mode` + full `sound_mode_list`. Call before `sound_mode_set`. |
 | `sound_mode_set` | Set AVR or TV sound mode. Use `target_role=zen_mm_av_tuner` for the receiver. |
+| `power_on` / `power_off` | Turn a media player on or off. Needs `zenos.media.playback_control`, an available `media_player.*` that reports the power feature, and no role label. `power_on` refuses in a Paused room; `power_off` does not. Already in the wanted state: no call, `changed: false`. After a call it waits up to 15 s and reports `state_before`, `state`, `changed` and `confirmed` (an unconfirmed change is an error). `dry_run=true` previews. A streaming TV wakes, but this does not start a named show. |
 | `state_get` | Full device snapshot: source, sound mode, volume, mute, media title, group membership, adjacent room co-playing detection, acoustic zone context. |
 | `volume_set` | Set the volume of one player, 0-100. Needs the `zenos.media.playback_control` certification. |
 | `play_media` | Play media via Music Assistant. When `media_id` is blank and `query` is provided, `query` is passed directly as `media_id` to MA — MA resolves by name. |
@@ -252,7 +253,7 @@ Apply to any entity that serves this purpose. Multiple tools (Postman, Dispatche
 |------|-------------|
 | `prefs_get` | Read all stored preferences for a room — see every context and what source/volume it maps to. |
 | `prefs_set` | Teach a preference: `room` + `home_context` + `source` (+ optional `volume` + `target_role`). Stores role as the resolver — not entity ID — so it survives entity renames. |
-| `prefs_apply` | Apply stored preference for a room. Reads the `zen_home_mode`-labeled entity automatically if no `home_context` given. Re-resolves device from stored role label live. Supports `dry_run=true`. |
+| `prefs_apply` | Apply stored preference for a room. Reads the `zen_home_mode`-labeled entity automatically if no `home_context` given. Re-resolves device from stored role label live. Wakes a target that is off first (never in a Paused room), and skips a source or volume step the device doesn't support (`status: partial`, `source_skipped` / `volume_skipped`). Supports `dry_run=true`, which changes nothing. |
 | `room_default_get` | Read stored default role for a room. Shows what it resolves to and what auto-chain would pick. |
 | `room_default_set` | Store a `target_role` as the room's default resolver. Pass `target_role=auto` to clear back to automatic chain. |
 
@@ -313,7 +314,7 @@ This is passive — no writes to Room Manager. Configure transmission values via
 
 ### Activity Orchestration
 
-An activity is a named, per-room preset stored under household cabinet key `media_activities_<room>`. `activity_set` teaches one (`activity_name`, `channel`, and optionally `light_context`, `lock_room`, `media_id`); `activity_get`/`activity_snapshot` read them back; `activity_apply` runs the whole scene in one call instead of just switching a source:
+An activity is a named, per-room preset stored under household cabinet key `media_activities_<room>`. `activity_apply` wakes the Universal Media Player first if it is off, since an off player has no source list for the channel check (a Paused room is never woken). `activity_set` teaches one (`activity_name`, `channel`, and optionally `light_context`, `lock_room`, `media_id`); `activity_get`/`activity_snapshot` read them back; `activity_apply` runs the whole scene in one call instead of just switching a source:
 
 * **`channel`** — source string, passed to the room's `zen_mm_universal` `select_source`. What that entity has to do with it is the [Universal Media Player spec](zen_mm_universal_spec.md).
 * **`media_id`** — played via the room's `zen_mm_music_assistant`-labeled entity (falling back to the UMP) using `zen_sutra_music_assistant mode=play_media` directly — **not** a self-call back into `zen_dojotools_media_manager`, which deadlocks (a `mode: queued` script self-invoking from inside its own run returns an empty `{}` response, no error).
