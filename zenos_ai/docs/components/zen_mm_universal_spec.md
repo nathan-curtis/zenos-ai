@@ -116,6 +116,10 @@ media_player:
       # ... etc
 ```
 
+Each command is **one action**, not a list of actions. A list stops the platform loading: the entity comes back restored or unavailable, with no error in the log, and a config check still passes. To power several devices from one command, use one action whose `target.entity_id` is a list, or call a script.
+
+Media Manager's `power_on` and `power_off` run this entity's `turn_on` and `turn_off` when a call names only the room. If your `turn_on` powers only part of the room (an AVR but not the TV), callers should name the TV with `target_role=zen_mm_television`.
+
 ### Your Route Script
 
 `script.your_room_route_activity` receives the activity name and handles all sequencing:

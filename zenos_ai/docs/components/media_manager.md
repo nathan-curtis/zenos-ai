@@ -1,6 +1,6 @@
 # ZenOS-AI Media Manager (NyxMau5)
 
-**Version:** 6.5.1
+**Version:** 6.5.2
 **Script:** `zen_dojotools_media_manager`
 **Codename:** NyxMau5
 
@@ -242,7 +242,7 @@ Apply to any entity that serves this purpose. Multiple tools (Postman, Dispatche
 | `source_set` | Switch input source. Exact string match required — copy from `source_list`. Use `target_role=zen_mm_television` for streaming apps, `target_role=zen_mm_av_tuner` for physical inputs. Consults `zen_dojotools_display mode=status` first (read-only, fails soft) — response's `display_surface_interrupted` flags whether a Display Surface session on that target got switched away, but the switch always proceeds regardless; this tool has no authority over display sessions and doesn't gain any by asking. A target that is off is woken first (`powered_on` in the result). |
 | `sound_mode_get` | Current `sound_mode` + full `sound_mode_list`. Call before `sound_mode_set`. |
 | `sound_mode_set` | Set AVR or TV sound mode. Use `target_role=zen_mm_av_tuner` for the receiver. |
-| `power_on` / `power_off` | Turn a media player on or off. Needs `zenos.media.playback_control`, an available `media_player.*` that reports the power feature, and no role label. `power_on` refuses in a Paused room; `power_off` does not. Already in the wanted state: no call, `changed: false`. After a call it waits up to 15 s and reports `state_before`, `state`, `changed` and `confirmed` (an unconfirmed change is an error). `dry_run=true` previews. A streaming TV wakes, but this does not start a named show. |
+| `power_on` / `power_off` | Turn a media player on or off. Needs `zenos.media.playback_control`, an available `media_player.*` that reports the power feature, and no role label. `power_on` refuses in a Paused room; `power_off` does not. Already in the wanted state: no call, `changed: false`. After a call it waits up to 45 s (`power_off` 20 s), since a TV can take a minute to report in, and reports `state_before`, `state`, `changed` and `confirmed` (an unconfirmed change is an error). `dry_run=true` previews. A streaming TV wakes, but this does not start a named show. **For a TV, pass `target_role=zen_mm_television` or `intent=watch`.** `room=` alone resolves the room's default surface, which may be a Universal Media Player whose own `turn_on` powers a different device; when the target is one, the result names its `active_child`, the room's `other_power_targets` (shadow players left out) and a `hint`. |
 | `state_get` | Full device snapshot: source, sound mode, volume, mute, media title, group membership, adjacent room co-playing detection, acoustic zone context. |
 | `volume_set` | Set the volume of one player, 0-100. Needs the `zenos.media.playback_control` certification. |
 | `play_media` | Play media via Music Assistant. When `media_id` is blank and `query` is provided, `query` is passed directly as `media_id` to MA — MA resolves by name. |
