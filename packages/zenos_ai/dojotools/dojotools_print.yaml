@@ -1,6 +1,17 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Print Shop
-# Version: 0.3.0-experimental
+# Version: 0.4.0-experimental
+# v0.4.0: read-only 3D printer support (Bambu Lab, through the installed
+#   ha-bambulab integration). printers now lists 3D printers with a kind
+#   (epson_ipp, fdm_bambu, fdm_octoprint) and whether control is available.
+#   status for a 3D printer (printer_entity = its 'Print status' sensor from
+#   mode=printers) returns a digest: state, stage, progress, remaining time,
+#   layers, temperatures, job, nozzle, AMS trays and humidity, alarms (HMS and
+#   print error), door, SD card, firmware, connection, control and camera.
+#   New mode readiness: device checks plus the human checks a sensor cannot
+#   make (clear build plate, someone watching). Control is reported from the
+#   printer's own sensors and fails closed; nothing here sends a command to a
+#   3D printer. OctoPrint printers are listed only.
 # v0.3.0: status merges every source a printer has. The IPP sensors give the
 #   job state, the paper reason (paper_empty) and the ink markers with the
 #   printer's own low-level threshold (ink_low); the epson_workforce sensors of
@@ -109,6 +120,7 @@ script:
               - print_image
               - status
               - printers
+              - readiness
               - list_jobs
               - clean
               - nozzle_check
@@ -191,7 +203,7 @@ script:
             status: ok
             tool: zen_dojotools_print_shop
             display_name: Print Shop
-            version: 0.3.0-experimental
+            version: 0.4.0-experimental
             tier: dojotools
             required_labels: ['dojotools']
             optional_labels: ['printer']
@@ -250,6 +262,149 @@ script:
         _content: "{{ content | default('') }}"
         _ts: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
         _final_orient: "{{ _orient if _orient != '' else _ps.get('orientation', 'portrait') }}"
+    # Printer kind: a printer entity that belongs to the Bambu Lab integration
+    # is a 3D printer (read-only adapter, see mode=status / readiness); anything
+    # else is the paper (IPP) path this tool always had.
+    - variables:
+        _pe_in: "{{ printer_entity | default('', true) }}"
+    - variables:
+        _kind: >-
+          {%- if _pe_in != '' and _pe_in in integration_entities('bambu_lab') -%}fdm_bambu
+          {%- elif _pe_in != '' and _pe_in in integration_entities('octoprint') -%}fdm_octoprint
+          {%- else -%}epson_ipp{%- endif -%}
+    # Read-only digest of a Bambu Lab printer, built from its own entities
+    # (found by device and entity name, no entity ids hardcoded). Control is
+    # reported from the printer's own sensors and fails closed: anything
+    # unknown or unavailable reads as read-only.
+    - variables:
+        _bl_json: >-
+          {%- if _kind != 'fdm_bambu' or _mode not in ['status', 'readiness'] -%}
+            {}
+          {%- else -%}
+            {%- set pe = _pe_in -%}
+            {%- set dev = device_id(pe) -%}
+            {%- set pdev = ((device_attr(dev, 'name') or '') | lower) -%}
+            {%- set want = {
+              'print status': 'state', 'current stage': 'stage', 'print progress': 'progress_pct',
+              'remaining time': 'remaining_h', 'chamber temperature': 'chamber_c',
+              'bed temperature': 'bed_c', 'bed target temperature': 'bed_target_c', 'target bed temperature': 'bed_target_c',
+              'nozzle temperature': 'nozzle_c', 'nozzle target temperature': 'nozzle_target_c',
+              'task name': 'task', 'gcode filename': 'file', 'current layer': 'layer',
+              'total layer count': 'layers', 'print weight': 'est_weight_g', 'print length': 'est_length_m',
+              'online': 'online', 'door': 'door_open', 'sd card status': 'sd_card',
+              'extruder filament': 'extruder_filament', 'hms errors': 'hms_problem',
+              'print error': 'print_error', 'firmware': 'firmware_update',
+              'developer lan mode': 'developer_lan_mode', 'mqtt encryption': 'mqtt_encryption',
+              'hybrid mqtt control blocked': 'hybrid_blocked', 'mqtt connection mode': 'connection_mode',
+              'nozzle size': 'nozzle_mm', 'nozzle type': 'nozzle_type', 'active tray': 'active_tray',
+              'speed profile': 'speed_profile', 'total usage': 'total_usage_h', 'external spool': 'external_spool'
+            } -%}
+            {%- set ns = namespace(v={}, cam='', hms=0) -%}
+            {%- for e in (device_entities(dev) if dev else []) -%}
+              {%- set n = ((entity_name(e) if entity_name is defined else '') or '') | lower | trim -%}
+              {%- if n in want -%}
+                {%- set ns.v = ns.v | combine({want[n]: states(e)}) -%}
+                {%- if n == 'hms errors' -%}
+                  {%- set ns.hms = state_attr(e, 'Count') | int(0) -%}
+                {%- endif -%}
+              {%- elif n == 'camera' and e.startswith('camera.') -%}
+                {%- set ns.cam = e -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- set ams = namespace(trays=[], hum={}) -%}
+            {%- for e in integration_entities('bambu_lab') -%}
+              {%- set d = device_id(e) -%}
+              {%- if d and d != dev and ((device_attr(d, 'name') or '') | lower).startswith(pdev ~ '_ams') -%}
+                {%- set n = ((entity_name(e) if entity_name is defined else '') or '') | lower | trim -%}
+                {%- set an = ((device_attr(d, 'name') or '') | lower) | replace(pdev ~ '_', '') -%}
+                {%- if n.startswith('tray ') -%}
+                  {%- set rm = state_attr(e, 'remain') -%}
+                  {%- set ams.trays = ams.trays + [{
+                    'ams': an, 'slot': state_attr(e, 'slot'), 'filament': states(e),
+                    'type': state_attr(e, 'type'), 'color': state_attr(e, 'color'),
+                    'remaining_pct': (rm if (rm is number and rm >= 0) else none),
+                    'active': state_attr(e, 'active'), 'empty': state_attr(e, 'empty'),
+                    'unknown': state_attr(e, 'unknown') == true
+                  }] -%}
+                {%- elif n == 'humidity index' -%}
+                  {%- set ams.hum = ams.hum | combine({an: states(e) | int(none)}) -%}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- set v = ns.v -%}
+            {%- set enc = v.get('mqtt_encryption') -%}
+            {%- set dl = v.get('developer_lan_mode') -%}
+            {%- set hy = v.get('hybrid_blocked') -%}
+            {%- set known = enc in ['on', 'off'] and dl in ['on', 'off'] and hy in ['on', 'off'] -%}
+            {%- set ctrl = known and (enc == 'off' or dl == 'on') and hy == 'off' -%}
+            {%- set reason = '' if ctrl else (
+              'Control state is unknown (a sensor is missing or unavailable), so this printer is treated as read-only.' if not known else (
+              'MQTT encryption is on and Developer LAN mode is off, so Home Assistant can only read this printer.' if (enc == 'on' and dl != 'on') else
+              'The printer connection mode blocks control from Home Assistant.')) -%}
+            {%- set st = v.get('state') -%}
+            {# A slot the printer cannot identify (type "?") is not counted as loaded. #}
+            {%- set filled = ams.trays | rejectattr('empty') | rejectattr('unknown') | list | length -%}
+            {%- set cam_state = states(ns.cam) if ns.cam != '' else 'none' -%}
+            {%- set checks = [
+              {'check': 'online', 'ok': v.get('online') == 'on', 'detail': v.get('online')},
+              {'check': 'idle_or_finished', 'ok': st in ['idle', 'finish'], 'detail': st},
+              {'check': 'no_hardware_alarms', 'ok': v.get('hms_problem') == 'off', 'detail': (ns.hms | string) ~ ' HMS errors'},
+              {'check': 'no_print_error', 'ok': v.get('print_error') == 'off', 'detail': v.get('print_error')},
+              {'check': 'door_closed', 'ok': v.get('door_open') == 'off', 'detail': v.get('door_open')},
+              {'check': 'sd_card', 'ok': v.get('sd_card') == 'normal', 'detail': v.get('sd_card')},
+              {'check': 'filament_available', 'ok': (filled > 0 or v.get('extruder_filament') == 'on'), 'detail': (filled | string) ~ ' of ' ~ (ams.trays | length | string) ~ ' AMS slots loaded and identified'},
+              {'check': 'camera', 'ok': cam_state not in ['none', 'unavailable', 'unknown'], 'detail': cam_state}
+            ] -%}
+            {%- set ready = checks | rejectattr('ok') | list | length == 0 -%}
+            {{ {
+              'digest': {
+                'printer_state': st,
+                'stage': v.get('stage'),
+                'progress_pct': v.get('progress_pct') | float(0),
+                'remaining_minutes': ((v.get('remaining_h') | float(0)) * 60) | round(0) | int,
+                'layer': (v.get('layer') | string) ~ '/' ~ (v.get('layers') | string),
+                'temperatures_c': {
+                  'nozzle': v.get('nozzle_c') | float(none), 'nozzle_target': v.get('nozzle_target_c') | float(none),
+                  'bed': v.get('bed_c') | float(none), 'bed_target': v.get('bed_target_c') | float(none),
+                  'chamber': v.get('chamber_c') | float(none)
+                },
+                'job': {
+                  'task': v.get('task'), 'file': v.get('file'),
+                  'estimated_weight_g': v.get('est_weight_g') | float(none),
+                  'estimated_length_m': v.get('est_length_m') | float(none)
+                },
+                'nozzle': {'size_mm': v.get('nozzle_mm') | float(none), 'type': v.get('nozzle_type')},
+                'filament': {
+                  'active_tray': v.get('active_tray'), 'extruder_has_filament': v.get('extruder_filament') == 'on',
+                  'external_spool': v.get('external_spool'), 'ams_trays': ams.trays, 'ams_humidity_index': ams.hum
+                },
+                'alarms': {'hms_problem': v.get('hms_problem') == 'on', 'hms_count': ns.hms, 'print_error': v.get('print_error') == 'on'},
+                'door_closed': v.get('door_open') == 'off',
+                'sd_card': v.get('sd_card'),
+                'firmware_update_available': v.get('firmware_update') == 'on',
+                'total_print_hours': v.get('total_usage_h') | float(none),
+                'connection': {'mode': v.get('connection_mode'), 'developer_lan_mode': dl, 'mqtt_encryption': enc, 'hybrid_blocked': hy},
+                'control': {'available': ctrl, 'reason': reason},
+                'camera': cam_state,
+                'name': device_attr(dev, 'name'),
+                'model': device_attr(dev, 'model')
+              },
+              'readiness': {
+                'ready_for_a_job': ready,
+                'checks': checks,
+                'control_available': ctrl,
+                'control_reason': reason,
+                'can_start_remotely': ready and ctrl,
+                'human_checks_always_needed': [
+                  'The build plate is clear and the right plate is installed.',
+                  'Someone can watch the print and stop it.',
+                  'The loaded filament matches the job.'
+                ]
+              }
+            } | tojson }}
+          {%- endif -%}
+    - variables:
+        _bl: "{{ _bl_json | from_json({}) }}"
     - variables:
         _img_w: "{{ 800 if _final_orient in ['portrait', 'reverse-portrait'] else 1200 }}"
         _img_h: "{{ 1200 if _final_orient in ['portrait', 'reverse-portrait'] else 800 }}"
@@ -445,6 +600,79 @@ script:
                   job: "{{ _print_result.get('job', {}) if _print_result is mapping else {} }}"
                   error: "{{ _print_result if _print_result is string else '' }}"
 
+        # ── status / readiness: 3D printer (Bambu Lab, read-only) ────────────────
+        # Pass printer_entity = the printer's 'Print status' sensor, as listed by
+        # mode=printers. Everything is read from the printer's own entities.
+        # Control is reported (control.available / reason), never used here.
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'status' and _kind == 'fdm_bambu' }}"
+          sequence:
+            - variables:
+                final_response:
+                  status: ok
+                  mode: status
+                  kind: fdm_bambu
+                  printer_entity: "{{ _pe_in }}"
+                  name: "{{ _bl.digest.name }}"
+                  model: "{{ _bl.digest.model }}"
+                  printer_state: "{{ _bl.digest.printer_state }}"
+                  stage: "{{ _bl.digest.stage }}"
+                  progress_pct: "{{ _bl.digest.progress_pct }}"
+                  remaining_minutes: "{{ _bl.digest.remaining_minutes }}"
+                  layer: "{{ _bl.digest.layer }}"
+                  temperatures_c: "{{ _bl.digest.temperatures_c }}"
+                  job: "{{ _bl.digest.job }}"
+                  nozzle: "{{ _bl.digest.nozzle }}"
+                  filament: "{{ _bl.digest.filament }}"
+                  alarms: "{{ _bl.digest.alarms }}"
+                  door_closed: "{{ _bl.digest.door_closed }}"
+                  sd_card: "{{ _bl.digest.sd_card }}"
+                  firmware_update_available: "{{ _bl.digest.firmware_update_available }}"
+                  total_print_hours: "{{ _bl.digest.total_print_hours }}"
+                  connection: "{{ _bl.digest.connection }}"
+                  control: "{{ _bl.digest.control }}"
+                  camera: "{{ _bl.digest.camera }}"
+
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'readiness' and _kind == 'fdm_bambu' }}"
+          sequence:
+            - variables:
+                final_response:
+                  status: ok
+                  mode: readiness
+                  kind: fdm_bambu
+                  printer_entity: "{{ _pe_in }}"
+                  ready_for_a_job: "{{ _bl.readiness.ready_for_a_job }}"
+                  checks: "{{ _bl.readiness.checks }}"
+                  control_available: "{{ _bl.readiness.control_available }}"
+                  control_reason: "{{ _bl.readiness.control_reason }}"
+                  can_start_remotely: "{{ _bl.readiness.can_start_remotely }}"
+                  human_checks_always_needed: "{{ _bl.readiness.human_checks_always_needed }}"
+                  note: "A printer that looks ready is not safe to start remotely: the sensors cannot see an empty build plate or who is watching."
+
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode in ['status', 'readiness'] and _kind == 'fdm_octoprint' }}"
+          sequence:
+            - variables:
+                final_response:
+                  status: error
+                  mode: "{{ _mode }}"
+                  kind: fdm_octoprint
+                  message: "OctoPrint printers are listed by mode=printers, but status and readiness for them are not built yet."
+
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'readiness' }}"
+          sequence:
+            - variables:
+                final_response:
+                  status: error
+                  mode: readiness
+                  message: "readiness is available for 3D printers only. Pass printer_entity from mode=printers, or use mode=status for a paper printer."
+
         # ── status ───────────────────────────────────────────────────────────────
         - conditions:
             - condition: template
@@ -590,7 +818,54 @@ script:
                         'state': states(e),
                         'selected': e == _printer_entity,
                         'labels': labels(e),
-                        'telemetry_sensors': cnt.n
+                        'telemetry_sensors': cnt.n,
+                        'kind': 'epson_ipp'
+                      }] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- for e in integration_entities('bambu_lab') -%}
+                    {%- set en = ((entity_name(e) if entity_name is defined else '') or '') | lower | trim -%}
+                    {%- if e.startswith('sensor.') and en == 'print status' -%}
+                      {%- set dev = device_id(e) -%}
+                      {%- set c = namespace(enc='', dl='', hy='') -%}
+                      {%- for s in (device_entities(dev) if dev else []) -%}
+                        {%- set sn = ((entity_name(s) if entity_name is defined else '') or '') | lower | trim -%}
+                        {%- if sn == 'mqtt encryption' -%}
+                          {%- set c.enc = states(s) -%}
+                        {%- elif sn == 'developer lan mode' -%}
+                          {%- set c.dl = states(s) -%}
+                        {%- elif sn == 'hybrid mqtt control blocked' -%}
+                          {%- set c.hy = states(s) -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- set known = c.enc in ['on', 'off'] and c.dl in ['on', 'off'] and c.hy in ['on', 'off'] -%}
+                      {%- set ns.out = ns.out + [{
+                        'printer_entity': e,
+                        'name': (device_attr(dev, 'name') or '') if dev else '',
+                        'model': (device_attr(dev, 'model') or '') if dev else '',
+                        'area': area_name(e) or '',
+                        'state': states(e),
+                        'selected': false,
+                        'labels': labels(e),
+                        'kind': 'fdm_bambu',
+                        'control_available': known and (c.enc == 'off' or c.dl == 'on') and c.hy == 'off'
+                      }] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- for e in integration_entities('octoprint') -%}
+                    {%- set en = ((entity_name(e) if entity_name is defined else '') or '') | lower | trim -%}
+                    {%- if e.startswith('sensor.') and 'printer state' in en -%}
+                      {%- set dev = device_id(e) -%}
+                      {%- set ns.out = ns.out + [{
+                        'printer_entity': e,
+                        'name': (device_attr(dev, 'name') or '') if dev else '',
+                        'model': 'OctoPrint',
+                        'area': area_name(e) or '',
+                        'state': states(e),
+                        'selected': false,
+                        'labels': labels(e),
+                        'kind': 'fdm_octoprint',
+                        'control_available': none
                       }] -%}
                     {%- endif -%}
                   {%- endfor -%}
@@ -720,7 +995,8 @@ script:
                   print_text: "Print plain text. Field: content (required)."
                   print_image: "Print a generated image from a named slot (canvas default). Field: slot."
                   status: "Printer state, paper, ink (with low colors), maintenance level and page counters, merged from the IPP and epson_workforce sensors. Reads HA entity states, no IPP call. Field: printer_entity for a specific printer."
-                  printers: "List every IPP printer with its area, labels and companion sensor count. Read-only."
+                  printers: "List every printer: paper (IPP) and 3D (Bambu Lab, OctoPrint) with its kind, area, labels, and for 3D whether control is available. Read-only."
+                  readiness: "3D printer only, read-only. Device checks (online, idle, alarms, door, SD card, filament, camera) plus the human checks a sensor cannot make. Field: printer_entity from mode=printers."
                   list_jobs: "All jobs via IPP. Field: job_filter (all|incomplete|complete, default all)."
                   clean: "Trigger WF-7840 head cleaning via printer HTTP. ~3 minutes."
                   nozzle_check: "Print nozzle check page via printer HTTP."
@@ -737,7 +1013,7 @@ script:
                   status: help
                   message: "{{ _ps_help_message }}"
                   mode: help
-                  version: "0.3.0-experimental"
+                  version: "0.4.0-experimental"
                   modes: "{{ _ps_modes }}"
                   modes_full:
                     configure: "Seed print_shop cabinet. Fields: epson_ip, epson_entity."
@@ -745,12 +1021,14 @@ script:
                     print_text: "Print plain text. Field: content (required)."
                     print_image: "Print a generated image from a named slot (canvas default). Field: slot."
                     status: "Printer state, paper, ink (with low colors), maintenance level and page counters, merged from the IPP and epson_workforce sensors. Reads HA entity states, no IPP call. Field: printer_entity for a specific printer."
-                    printers: "List every IPP printer with its area, labels and companion sensor count. Read-only."
+                    printers: "List every printer: paper (IPP) and 3D (Bambu Lab, OctoPrint) with its kind, area, labels, and for 3D whether control is available. Read-only."
+                    readiness: "3D printer only, read-only. Device checks (online, idle, alarms, door, SD card, filament, camera) plus the human checks a sensor cannot make. Field: printer_entity from mode=printers."
                     list_jobs: "All jobs via IPP. Field: job_filter (all|incomplete|complete, default all)."
                     clean: "Trigger WF-7840 head cleaning via printer HTTP. ~3 minutes."
                     nozzle_check: "Print nozzle check page via printer HTTP."
                     help: "This help response."
                   notes:
+                    - "3D printers (Bambu Lab) are read-only here: status and readiness read the printer's own entities, and control is reported (control.available, control.reason) from its MQTT encryption, Developer LAN mode and connection-mode sensors. A printer that looks ready is never safe to start remotely: a clear build plate and someone watching are human checks."
                     - "PDF/binary printing not supported in v0.1 — text only."
                     - "clean/nozzle_check hit printer IP directly (not CUPS). Must configure epson_ip first."
                     - "printer_entity field overrides cabinet default for multi-printer use."

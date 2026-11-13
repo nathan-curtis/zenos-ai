@@ -1,4 +1,4 @@
-# Zen DojoTools Print Shop — v0.3.0-experimental
+# Zen DojoTools Print Shop — v0.4.0-experimental
 
 *IPP-based printer control: submit text print jobs and trigger maintenance on household printers*
 
@@ -31,6 +31,8 @@ Without all four steps, most modes will either no-op or fail against an unconfig
 
 **Optional, Epson printers:** the `epson_workforce` HACS integration (`ha-epson-workforce`, sensor-only) adds maintenance-box level, page counters and scanner status. `status` matches it to the same printer by device model, so no entity IDs are configured. It has no print path and no job state, so the IPP integration stays the print target. Without it, `status` still answers from IPP alone (`sources.maintenance: not available`).
 
+**3D printers (read-only):** a Bambu Lab printer from the `ha-bambulab` integration is listed by `printers` as `fdm_bambu`. Pass its "Print status" sensor as `printer_entity` and `status` returns a digest built from the printer's own entities, found by device and entity name: state, stage, progress, remaining minutes, layers, temperatures, job, nozzle, AMS trays (each with an `unknown` flag) and humidity, alarms, door, SD card, firmware, connection, control and camera. **Nothing sends a command to a 3D printer.** Control is reported and fails closed: `control.available` is true only when MQTT encryption is off or Developer LAN mode is on, hybrid control is not blocked, and all three sensors are known. ZenOS works with whatever mode you have enabled and never asks you to change a printer's setup. OctoPrint printers are listed only; their status is not built yet.
+
 **Labels:** put `printer` only on each printer's IPP sensors (status, ink, uptime). The default printer is the first `printer`-labeled sensor that has an IPP address, so an ink sensor carrying the label is never picked.
 
 ---
@@ -44,7 +46,8 @@ Without all four steps, most modes will either no-op or fail against an unconfig
 | `print_text` | Render and print the `content` field as plain text |
 | `print_image` | Print a generated image from a named slot (`canvas`, `portrait`, `wallpaper`, `id_pic`, `dashboard_snap`, `home_state`) — reads from `/config/www/zen_images/<slot>.jpg` via the local HA `/local/` path |
 | `status` | One answer from every source the printer has: state and job state, `paper_empty` (from the IPP paper reason), ink levels with the printer's own low threshold (`ink_low`), and, with `epson_workforce`, `maintenance` (maintenance-box level, page counters, scanner status). `sources` says where each part came from. `printer_ip` comes from the printer's own IPP address. Reads HA entity state only — no IPP call |
-| `printers` | Every IPP printer with its area, labels and companion sensor count. Read-only |
+| `printers` | Every printer with its `kind` (`epson_ipp`, `fdm_bambu`, `fdm_octoprint`), area, labels and companion sensor count; for a 3D printer, whether control is available. Read-only |
+| `readiness` | 3D printers only, read-only. Device checks (online, idle, no alarms, door, SD card, filament loaded and identified, camera) plus `human_checks_always_needed` (clear build plate, someone watching, filament matches the job). `can_start_remotely` needs a ready printer and control |
 | `list_jobs` | All IPP jobs (`job_filter`: `all` \| `incomplete` \| `complete`) |
 | `clean` | Trigger a head-cleaning cycle via the printer's HTTP maintenance UI (~3 minutes) |
 | `nozzle_check` | Trigger a nozzle-check pattern via the printer's HTTP maintenance UI |
@@ -144,6 +147,7 @@ zen_dojotools_print_shop:
 
 | Version | Change |
 |---|---|
+| 0.4.0-experimental | Read-only 3D printer support (Bambu Lab): `printers` reports `kind` and control, `status` returns a 3D digest, new `readiness` mode. Nothing is sent to a 3D printer; control fails closed. AMS slots the printer cannot identify are not counted as loaded. |
 | 0.3.0-experimental | `status` merges IPP and `epson_workforce` for the same printer (matched by device model): `paper_empty`, `ink_low`, `maintenance`, `sources`. No entity names are hardcoded, so a second printer works the same way. `printer_ip` from the printer's IPP address. Default printer must have an IPP address. New read-only `printers` mode. |
 | 0.1.1-experimental | Printer falls back to the `printer`-labeled sensor when `epson_entity` isn't configured, instead of a fixed entity ID. |
 | 0.1.0-experimental | Initial release. Text + image printing via IPP/Rudd-O, WF-7840-specific maintenance triggers. |
