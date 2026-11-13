@@ -1,6 +1,16 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Print Shop
-# Version: 0.2.2-experimental
+# Version: 0.3.0-experimental
+# v0.3.0: status merges every source a printer has. The IPP sensors give the
+#   job state, the paper reason (paper_empty) and the ink markers with the
+#   printer's own low-level threshold (ink_low); the epson_workforce sensors of
+#   the same physical printer, matched by device model, add the maintenance
+#   level and page counters and fill any ink color IPP does not report. No
+#   entity names are hardcoded, so a second printer works the same
+#   way as the first. printer_ip now comes from the printer's own IPP address.
+#   The default printer is the first 'printer'-labeled sensor that is a printer
+#   (has an IPP uri), not just the first labeled sensor. New read-only mode
+#   printers lists every IPP printer with its area, labels and sensor count.
 # v0.2.2: HA naming (2026.11): name outputs carry entity_name and device_name
 #   next to the legacy friendly_name (kept while HA still sets it), and
 #   composed names are built from those parts, so they survive HA dropping
@@ -34,7 +44,8 @@
 #   configure    — write print_shop cabinet drawer (epson_ip + epson_entity)
 #   test_page    — print a timestamped plain-text test page
 #   print_text   — print arbitrary text (content field)
-#   status       — printer state + ink levels (reads HA entity state, no IPP call)
+#   status       — printer state, paper, ink, maintenance (reads HA entity state, no IPP call)
+#   printers     — list every IPP printer with area, labels and sensor count
 #   list_jobs    — all jobs (complete + incomplete) via IPP
 #   clean        — trigger head cleaning cycle via printer HTTP maintenance UI
 #   nozzle_check — trigger nozzle check via printer HTTP maintenance UI
@@ -45,7 +56,7 @@
 #     from Jinja2 templates — requires a future bridge layer)
 #   - clean/nozzle_check URLs are best-guess Epson WF-7840 embedded web server
 #     paths — validate on first run and adjust if needed
-#   - status ink sensors are hardcoded to WF-7840 sibling entity naming pattern
+#   - clean/nozzle_check use the single epson_ip in the print_shop cabinet
 #
 ###############################################################################
 
@@ -97,6 +108,7 @@ script:
               - print_text
               - print_image
               - status
+              - printers
               - list_jobs
               - clean
               - nozzle_check
@@ -179,7 +191,7 @@ script:
             status: ok
             tool: zen_dojotools_print_shop
             display_name: Print Shop
-            version: 0.2.2-experimental
+            version: 0.3.0-experimental
             tier: dojotools
             required_labels: ['dojotools']
             optional_labels: ['printer']
@@ -218,7 +230,23 @@ script:
           {%- set _d = _vars.get('print_shop', {}) | default({}, true) -%}
           {{ (_d.get('value', _d) if _d is mapping else {}) | default({}, true) }}
     - variables:
-        _printer_entity: "{{ printer_entity | default(_ps.get('epson_entity') or (label_entities('printer') | select('match', 'sensor\\.') | list | first | default('', true)), true) }}"
+        # An explicit printer_entity wins, then the cabinet's entity, then the
+        # first 'printer'-labeled sensor that is a printer itself (it has an IPP
+        # uri), so an ink or uptime sensor carrying the label is never chosen.
+        _printer_entity: >-
+          {%- if (printer_entity | default('', true)) != '' -%}
+            {{ printer_entity }}
+          {%- elif _ps.get('epson_entity') -%}
+            {{ _ps.get('epson_entity') }}
+          {%- else -%}
+            {%- set ns = namespace(p='') -%}
+            {%- for e in label_entities('printer') | select('match', 'sensor\\.') | list -%}
+              {%- if ns.p == '' and state_attr(e, 'uri_supported') is not none -%}
+                {%- set ns.p = e -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.p }}
+          {%- endif -%}
         _content: "{{ content | default('') }}"
         _ts: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
         _final_orient: "{{ _orient if _orient != '' else _ps.get('orientation', 'portrait') }}"
@@ -422,21 +450,160 @@ script:
             - condition: template
               value_template: "{{ _mode == 'status' }}"
           sequence:
+            # One answer from every source the printer has. The IPP sensors
+            # give the job state, the paper reason and the ink markers (with
+            # the printer's own low-level threshold). The epson_workforce
+            # sensors of the same physical printer (matched by device model,
+            # no entity ids) add the maintenance level and page counters, and
+            # fill any ink color IPP does not report. Nothing is hardcoded to
+            # one printer's entity names.
             - variables:
-                _base: "{{ _printer_entity | replace('sensor.', '') | replace('_series', '') }}"
+                _pr_json: >-
+                  {%- set pe = _printer_entity -%}
+                  {%- set dev = device_id(pe) if pe != '' else none -%}
+                  {%- set model = ((device_attr(dev, 'model') or '') | lower | replace(' series', '') | trim) if dev else '' -%}
+                  {%- set alias = {'c': 'cyan', 'm': 'magenta', 'y': 'yellow', 'k': 'black', 'bk': 'black', 'mb': 'black', 'pb': 'photoblack', 'gy': 'gray'} -%}
+                  {%- set ns = namespace(ipp={}, thr={}, wf={}, mt={}, up='unknown', wf_n=0) -%}
+                  {%- for e in (device_entities(dev) if dev else []) -%}
+                    {%- if e.startswith('sensor.') -%}
+                      {%- set raw = ((entity_name(e) if entity_name is defined else '') or (state_attr(e, 'friendly_name') or '')) | lower -%}
+                      {%- if state_attr(e, 'marker_type') is not none -%}
+                        {%- set nm = raw | replace((device_attr(dev, 'name') or 'zzz') | lower, '') | replace(' ink', '') | trim -%}
+                        {%- set c = alias.get(nm, nm) | replace(' ', '_') -%}
+                        {%- set ns.ipp = ns.ipp | combine({c: states(e) | int(none)}) -%}
+                        {%- set ns.thr = ns.thr | combine({c: state_attr(e, 'marker_low_level') | int(15)}) -%}
+                      {%- elif 'uptime' in raw -%}
+                        {%- set ns.up = states(e) -%}
+                      {%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- if model != '' -%}
+                    {%- for e in integration_entities('epson_workforce') -%}
+                      {%- if model in ((device_attr(device_id(e), 'model') or '') | lower) -%}
+                        {%- set ns.wf_n = ns.wf_n + 1 -%}
+                        {%- set raw = ((entity_name(e) if entity_name is defined else '') or (state_attr(e, 'friendly_name') or '')) | lower -%}
+                        {%- set v = states(e) -%}
+                        {%- if 'ink level ' in raw -%}
+                          {%- set c = raw | regex_replace('^.*ink level ', '') | trim | replace(' ', '_') -%}
+                          {%- set ns.wf = ns.wf | combine({c: v | int(none)}) -%}
+                        {%- elif raw.endswith('cleaning level') -%}
+                          {%- set ns.mt = ns.mt | combine({'cleaning_level_pct': v | int(none)}) -%}
+                        {%- elif raw.endswith('total pages printed') -%}
+                          {%- set ns.mt = ns.mt | combine({'pages_total': v | int(none)}) -%}
+                        {%- elif raw | regex_search('b.{0,6}w pages printed') -%}
+                          {%- set ns.mt = ns.mt | combine({'pages_bw': v | int(none)}) -%}
+                        {%- elif raw.endswith('color pages printed') -%}
+                          {%- set ns.mt = ns.mt | combine({'pages_color': v | int(none)}) -%}
+                        {%- elif raw.endswith('printer status') -%}
+                          {%- set ns.mt = ns.mt | combine({'device_status': v}) -%}
+                        {%- elif raw.endswith('scanner status') -%}
+                          {%- set ns.mt = ns.mt | combine({'scanner_status': v}) -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                  {%- set ink = namespace(d=ns.wf) -%}
+                  {%- for k, v in ns.ipp.items() -%}
+                    {%- if v is not none -%}
+                      {%- set ink.d = ink.d | combine({k: v}) -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set low = namespace(l=[]) -%}
+                  {%- for k, v in ink.d.items() -%}
+                    {%- if v is not none and v <= (ns.thr.get(k, 15)) -%}
+                      {%- set low.l = low.l + [k] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {%- set uri = (state_attr(pe, 'uri_supported') or '') if pe != '' else '' -%}
+                  {%- set ips = uri | regex_findall('://([^:/,]+)') -%}
+                  {%- set reason = (state_attr(pe, 'state_reason') or '') | string if pe != '' else '' -%}
+                  {{ {
+                    'ink': ink.d,
+                    'ink_low': low.l,
+                    'maintenance': ns.mt,
+                    'uptime': ns.up,
+                    'ip': (ips | first) if ips | length > 0 else '',
+                    'reason': reason,
+                    'paper_empty': ('media-empty' in reason or 'media-needed' in reason),
+                    'ink_source': 'ipp' if ns.ipp else ('epson_workforce' if ns.wf else 'none'),
+                    'telemetry_sensors': ns.wf_n
+                  } | tojson }}
+            - variables:
+                _pr: "{{ _pr_json | from_json({}) }}"
+            - if: "{{ _printer_entity == '' }}"
+              then:
+                - variables:
+                    final_response:
+                      status: error
+                      mode: status
+                      message: "No printer found. Label a printer's IPP status sensor 'printer', pass printer_entity, or run mode=configure."
+            - if: "{{ final_response is not defined }}"
+              then:
+                - variables:
+                    final_response:
+                      status: ok
+                      mode: status
+                      printer_entity: "{{ _printer_entity }}"
+                      printer_state: "{{ states(_printer_entity) }}"
+                      printer_name: "{{ ((([device_name(_printer_entity) if device_id(_printer_entity) else '', entity_name(_printer_entity)] | select | unique | join(' ')) if entity_name is defined else '') or (state_attr(_printer_entity, 'friendly_name') | default(_printer_entity))) }}"
+                      printer_ip: "{{ _pr.ip if _pr.ip != '' else _ps.get('epson_ip', 'not configured') }}"
+                      paper_empty: "{{ _pr.paper_empty }}"
+                      state_reason: "{{ _pr.reason if _pr.reason not in ['', 'None'] else none }}"
+                      ink: "{{ _pr.ink }}"
+                      ink_low: "{{ _pr.ink_low }}"
+                      maintenance: "{{ _pr.maintenance }}"
+                      uptime_secs: "{{ _pr.uptime }}"
+                      sources:
+                        state: ipp
+                        ink: "{{ _pr.ink_source }}"
+                        maintenance: "{{ 'epson_workforce' if _pr.telemetry_sensors > 0 else 'not available' }}"
+                        telemetry_sensors: "{{ _pr.telemetry_sensors }}"
+
+        # ── printers ─────────────────────────────────────────────────────────────
+        # Every IPP printer the house has, with the area, its labels and how
+        # many companion telemetry sensors it has, so labeling and areas can be
+        # checked at a glance. Read-only.
+        - conditions:
+            - condition: template
+              value_template: "{{ _mode == 'printers' }}"
+          sequence:
+            - variables:
+                _printer_list: >-
+                  {%- set ns = namespace(out=[]) -%}
+                  {%- for e in integration_entities('ipp') -%}
+                    {%- if e.startswith('sensor.') and state_attr(e, 'uri_supported') is not none -%}
+                      {%- set dev = device_id(e) -%}
+                      {%- set model = ((device_attr(dev, 'model') or '') | lower | replace(' series', '') | trim) if dev else '' -%}
+                      {%- set cnt = namespace(n=0) -%}
+                      {%- if model != '' -%}
+                        {%- for w in integration_entities('epson_workforce') -%}
+                          {%- if model in ((device_attr(device_id(w), 'model') or '') | lower) -%}
+                            {%- set cnt.n = cnt.n + 1 -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                      {%- endif -%}
+                      {%- set ns.out = ns.out + [{
+                        'printer_entity': e,
+                        'name': ((([device_name(e) if dev else '', entity_name(e)] | select | unique | join(' ')) if entity_name is defined else '') or (state_attr(e, 'friendly_name') | default(e))),
+                        'model': (device_attr(dev, 'model') or '') if dev else '',
+                        'area': area_name(e) or '',
+                        'state': states(e),
+                        'selected': e == _printer_entity,
+                        'labels': labels(e),
+                        'telemetry_sensors': cnt.n
+                      }] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.out | tojson }}
+            - variables:
+                _printers_parsed: "{{ _printer_list | from_json([]) }}"
+            - variables:
                 final_response:
                   status: ok
-                  mode: status
-                  printer_entity: "{{ _printer_entity }}"
-                  printer_state: "{{ states(_printer_entity) }}"
-                  printer_name: "{{ ((([device_name(_printer_entity) if device_id(_printer_entity) else '', entity_name(_printer_entity)] | select | unique | join(' ')) if entity_name is defined else '') or (state_attr(_printer_entity, 'friendly_name') | default(_printer_entity))) }}"
-                  printer_ip: "{{ _ps.get('epson_ip', 'not configured') }}"
-                  ink:
-                    black: "{{ states(_printer_entity ~ '_black_ink') | default('unknown') }}"
-                    cyan: "{{ states(_printer_entity ~ '_cyan_ink') | default('unknown') }}"
-                    magenta: "{{ states(_printer_entity ~ '_magenta_ink') | default('unknown') }}"
-                    yellow: "{{ states(_printer_entity ~ '_yellow_ink') | default('unknown') }}"
-                  uptime_secs: "{{ states(_printer_entity ~ '_uptime') | default('unknown') }}"
+                  mode: printers
+                  printers: "{{ _printers_parsed }}"
+                  printer_count: "{{ _printers_parsed | length }}"
+                  selected: "{{ _printer_entity }}"
 
         # ── print_image ──────────────────────────────────────────────────────────
         # Prints a generated image from a named slot (/config/www/zen_images/<slot>.jpg).
@@ -552,7 +719,8 @@ script:
                   test_page: "Print a timestamped test page. No extra fields needed."
                   print_text: "Print plain text. Field: content (required)."
                   print_image: "Print a generated image from a named slot (canvas default). Field: slot."
-                  status: "Printer state + ink levels. Reads HA entity states — no IPP call."
+                  status: "Printer state, paper, ink (with low colors), maintenance level and page counters, merged from the IPP and epson_workforce sensors. Reads HA entity states, no IPP call. Field: printer_entity for a specific printer."
+                  printers: "List every IPP printer with its area, labels and companion sensor count. Read-only."
                   list_jobs: "All jobs via IPP. Field: job_filter (all|incomplete|complete, default all)."
                   clean: "Trigger WF-7840 head cleaning via printer HTTP. ~3 minutes."
                   nozzle_check: "Print nozzle check page via printer HTTP."
@@ -569,14 +737,15 @@ script:
                   status: help
                   message: "{{ _ps_help_message }}"
                   mode: help
-                  version: "0.2.2-experimental"
+                  version: "0.3.0-experimental"
                   modes: "{{ _ps_modes }}"
                   modes_full:
                     configure: "Seed print_shop cabinet. Fields: epson_ip, epson_entity."
                     test_page: "Print a timestamped test page. No extra fields needed."
                     print_text: "Print plain text. Field: content (required)."
                     print_image: "Print a generated image from a named slot (canvas default). Field: slot."
-                    status: "Printer state + ink levels. Reads HA entity states — no IPP call."
+                    status: "Printer state, paper, ink (with low colors), maintenance level and page counters, merged from the IPP and epson_workforce sensors. Reads HA entity states, no IPP call. Field: printer_entity for a specific printer."
+                    printers: "List every IPP printer with its area, labels and companion sensor count. Read-only."
                     list_jobs: "All jobs via IPP. Field: job_filter (all|incomplete|complete, default all)."
                     clean: "Trigger WF-7840 head cleaning via printer HTTP. ~3 minutes."
                     nozzle_check: "Print nozzle check page via printer HTTP."
@@ -585,7 +754,9 @@ script:
                     - "PDF/binary printing not supported in v0.1 — text only."
                     - "clean/nozzle_check hit printer IP directly (not CUPS). Must configure epson_ip first."
                     - "printer_entity field overrides cabinet default for multi-printer use."
-                    - "status ink sensors derived from printer_entity name pattern (_black_ink etc)."
+                    - "status reads the printer's own IPP sensors plus the epson_workforce sensors of the same physical printer (matched by device model). Label both 'print_shop' and 'epson_printer'; only the IPP status sensor carries 'printer' (it is the print target)."
+                    - "status: ink_low lists colors at or under the printer's own low-level threshold; paper_empty comes from the IPP state reason; maintenance is the epson_workforce cleaning level and page counters."
+                    - "clean and nozzle_check still use the epson_ip in the print_shop cabinet (one printer)."
                     - "configure/test_page/print_text/print_image/clean/nozzle_check require zenos.media.print_control cert level 1. status/list_jobs/help stay open."
                   examples:
                     - "mode=configure epson_ip=192.0.2.10 epson_entity=sensor.epson_wf_7840_series"

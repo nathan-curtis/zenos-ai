@@ -1,4 +1,4 @@
-# Zen DojoTools Print Shop — v0.2.1-experimental
+# Zen DojoTools Print Shop — v0.3.0-experimental
 
 *IPP-based printer control: submit text print jobs and trigger maintenance on household printers*
 
@@ -29,6 +29,10 @@ Print Shop submits plain-text print jobs and triggers basic maintenance (head cl
 
 Without all four steps, most modes will either no-op or fail against an unconfigured/unreachable printer.
 
+**Optional, Epson printers:** the `epson_workforce` HACS integration (`ha-epson-workforce`, sensor-only) adds maintenance-box level, page counters and scanner status. `status` matches it to the same printer by device model, so no entity IDs are configured. It has no print path and no job state, so the IPP integration stays the print target. Without it, `status` still answers from IPP alone (`sources.maintenance: not available`).
+
+**Labels:** put `printer` only on each printer's IPP sensors (status, ink, uptime). The default printer is the first `printer`-labeled sensor that has an IPP address, so an ink sensor carrying the label is never picked.
+
 ---
 
 ## Modes
@@ -39,7 +43,8 @@ Without all four steps, most modes will either no-op or fail against an unconfig
 | `test_page` | Render and print a timestamped test page (printer name, state, time) |
 | `print_text` | Render and print the `content` field as plain text |
 | `print_image` | Print a generated image from a named slot (`canvas`, `portrait`, `wallpaper`, `id_pic`, `dashboard_snap`, `home_state`) — reads from `/config/www/zen_images/<slot>.jpg` via the local HA `/local/` path |
-| `status` | Printer state + ink levels. Reads HA entity state only — no IPP call |
+| `status` | One answer from every source the printer has: state and job state, `paper_empty` (from the IPP paper reason), ink levels with the printer's own low threshold (`ink_low`), and, with `epson_workforce`, `maintenance` (maintenance-box level, page counters, scanner status). `sources` says where each part came from. `printer_ip` comes from the printer's own IPP address. Reads HA entity state only — no IPP call |
+| `printers` | Every IPP printer with its area, labels and companion sensor count. Read-only |
 | `list_jobs` | All IPP jobs (`job_filter`: `all` \| `incomplete` \| `complete`) |
 | `clean` | Trigger a head-cleaning cycle via the printer's HTTP maintenance UI (~3 minutes) |
 | `nozzle_check` | Trigger a nozzle-check pattern via the printer's HTTP maintenance UI |
@@ -84,7 +89,7 @@ There is no direct text-to-printer path — everything is rasterized to an image
 
 - **No PDF/binary printing.** Only text (rendered as an image) and pre-existing local images under `/config/www/zen_images/<slot>.jpg`.
 - **Maintenance URLs are best-guess Epson WF-7840 paths.** `clean`/`nozzle_check` were written against that specific model's embedded web server. Validate on first run against your hardware and expect to adjust the URLs for a different printer.
-- **Ink-level sensors are hardcoded to the WF-7840 sibling-entity naming pattern** (`<entity>_black_ink`, `_cyan_ink`, etc). `mode=status` will report `unknown` for any printer whose IPP integration doesn't create ink sensors in that exact naming shape.
+- **`clean` and `nozzle_check` use the single `epson_ip` in the cabinet,** not each printer's own address, so they reach only the configured printer.
 - Single-printer defaults are baked into the cabinet drawer; use `printer_entity` per-call for anything beyond the configured default.
 
 ---
@@ -139,5 +144,6 @@ zen_dojotools_print_shop:
 
 | Version | Change |
 |---|---|
+| 0.3.0-experimental | `status` merges IPP and `epson_workforce` for the same printer (matched by device model): `paper_empty`, `ink_low`, `maintenance`, `sources`. No entity names are hardcoded, so a second printer works the same way. `printer_ip` from the printer's IPP address. Default printer must have an IPP address. New read-only `printers` mode. |
 | 0.1.1-experimental | Printer falls back to the `printer`-labeled sensor when `epson_entity` isn't configured, instead of a fixed entity ID. |
 | 0.1.0-experimental | Initial release. Text + image printing via IPP/Rudd-O, WF-7840-specific maintenance triggers. |
