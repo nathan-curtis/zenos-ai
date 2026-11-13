@@ -8,9 +8,15 @@ I learned this the expensive way. Early on I deliberately exposed far more of th
 
 Here is what that configuration looks like, and what it can still do:
 
-<!-- screenshot: ch10_zero_entities.png -->
-> **Screenshot to come.** The Expose list with zero entities exposed, and Friday turning off a room's lights through ZenLux in the same session. Real 2026.11.0 output; personal details redacted.
-<!-- /screenshot -->
+<p align="center">
+  <img src="images/ch10_expose_tools_only.png" width="300" alt="Home Assistant's Expose list for the conversation agent, grouped by domain: 63 entities, all in the Script group, every one a ZenOS tool in the AI Toolbox area, from Zen DojoTools Alarm Panel through ZenOS IT Console. No device, sensor, light or media player is exposed. The middle of the list is cut down to a note reading 49 more, every one a ZenOS tool." />
+</p>
+
+<p align="center">
+  <img src="images/ch10_tv_off.jpg" width="420" alt="Asked whether she knows how to turn off the living room TV, Friday answers: Done, the living room TV is off." />
+</p>
+
+*Above: everything this agent is shown. Sixty-three entries, every one a ZenOS tool script, and not a single device; the middle of the list is cut down here. Below: Friday asked to turn off the living room TV, which is not on that list. She does it anyway, through Media Manager, behind its certification. Real 2026.11.0 output, November 2026.*
 
 ## 10.1 Two ways to reach the house
 
