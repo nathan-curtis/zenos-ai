@@ -1,4 +1,4 @@
-# Zen DojoTools FileCabinet — v6.37.1
+# Zen DojoTools FileCabinet — v6.38.0
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 **ZenOS Release:** 2026.11.0 'This Is Spinal Tap'
@@ -273,9 +273,11 @@ fc_args: >
   }
 ```
 
-Tool calls are gated by a whitelist stored in `sensor.zenos_system_cabinet` (`fc_mount_callout_whitelist`). If the drawer's `fc_args.tool`/mode combination is not covered by the whitelist, the read returns `tool_call_blocked`.
+Tool calls are gated by a whitelist stored in `sensor.zenos_system_cabinet` (`fc_mount_callout_whitelist`). If the drawer's `fc_args.tool`/mode combination is not covered by the whitelist, the read returns `tool_call_blocked`, unless the tool is certified for it.
 
-**Stage `l` (live drawer) cert check.** The drawer's tool runs as the agent responsible for the household (the prime, else the default agent). When the drawer's mode is one the tool gates in its `certs_required`, that agent must hold the cert with stage `l`. `help`, `tool_manifest`, `kfc_manifest` and a bare call are ungated. `seed_cert_mode` decides what a miss does: in audit (the default when the drawer is missing) FileCabinet fires `zen_event` `live_cert_audit` with `would_deny` and runs the call; in enforce it refuses with `live_cert_required`. A tool lists `l` in a cert's `st_ok` before that stage can be granted. No shipped tool does yet, and no shipped live drawer runs a gated mode.
+**A certified tool (6.38.0).** On a whitelist miss, FileCabinet asks the drawer's tool for its `tool_manifest`. The read goes ahead when a `certs_required` entry lists the drawer's mode in `modes` and allows `l` in `st_ok`, and the agent the drawer runs as holds that cert at that level with stage `l`. This check is strict whatever `seed_cert_mode` says, since nothing stands behind it. `zen_admintools_*` never qualifies, a drawer whose `tool` and `action_type` name different scripts is still refused, and any error leaves the read blocked. `zen_event` `live_cert_yield` records each one. Print Shop's `summary` is the first such mode: `{cert: zenos.media.print_status, level: 1, modes: ['summary'], st_ok: 'isl'}`.
+
+**Stage `l` (live drawer) cert check.** The drawer's tool runs as the agent responsible for the household (the prime, else the default agent). When the drawer's mode is one the tool gates in its `certs_required`, that agent must hold the cert with stage `l`. `help`, `tool_manifest`, `kfc_manifest` and a bare call are ungated. `seed_cert_mode` decides what a miss does: in audit (the default when the drawer is missing) FileCabinet fires `zen_event` `live_cert_audit` with `would_deny` and runs the call; in enforce it refuses with `live_cert_required`. A tool lists `l` in a cert's `st_ok` before that stage can be granted. Print Shop's `zenos.media.print_status` is the first.
 
 A live drawer whose tool call reads the same drawer back, directly or through another mount (A reads B, B reads A), is refused with `tool_call_cycle_detected`. While a resolution is in flight, FileCabinet keeps a `<key>/mount_resolving` marker on the volume and clears it on every exit. The marker is only checked when the cache misses, and one left behind by a crashed run expires after 30 seconds.
 
@@ -972,7 +974,7 @@ Check `_h.get('writeable', true)` in the health snapshot. A cabinet that is `onl
 Two drawers are pointing at each other via `mount_point`. Use `remove_mount` to clear one of the pointers and re-wire the chain. The traversal aborts at depth 8 even without a strict loop.
 
 ### LiveDrawer returns `tool_call_blocked`
-The `fc_args.action_type` or `fc_args.tool` is not in the `fc_mount_callout_whitelist` stored in `sensor.zenos_system_cabinet`. Check the whitelist value in Developer Tools, add the tool to the allowed list, then retry.
+The `fc_args.action_type` or `fc_args.tool` is not in the `fc_mount_callout_whitelist` stored in `sensor.zenos_system_cabinet`. Check the whitelist value in Developer Tools, add the tool to the allowed list, or have the tool declare the mode with a cert that allows stage `l` (see above), then retry.
 
 ### dismount_cabinet blocked: pipeline is live
 Turn off the summarizer pipeline switches first. The error message names the specific switches that are on. Use `zen_dojotools_systemtools` (tool=select_control, mode=toggle) or the HA helper UI to disable them, then retry the dismount.

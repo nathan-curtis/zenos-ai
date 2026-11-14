@@ -19,7 +19,7 @@ The Scheduler owns a core set of trigger IDs:
 | Home | `home_mode_updates`, `home_occupancy_change`, `start_home_wake`, `start_home_evening` |
 | Openings | `door_opens_or_closes`, `window_opens_or_closes`, `garage_door`, `lock_changes` (legacy: they watch `group.all_doors` and its siblings) |
 | Labels | `zen_leak`, `zen_smoke`, `zen_door`, `zen_power`, `zen_appliance`, `alarm_panel` |
-| Devices | `vacuum_started`, `vacuum_docked`, `persistent_notification` |
+| Devices | `vacuum_started`, `vacuum_docked`, `print_done`, `persistent_notification` |
 | System | `ha_start`, `force_summary`, `force_ninja`, `force_supersummary`, `force_gc`, `force_identity_manifest`, `deferred_script_reload`, `deferred_reload_all` |
 
 The force triggers correspond to `zen_event` kinds (`summary_force`, `ninja_force`, `supersummary_force`) that anything can fire to request a run now.

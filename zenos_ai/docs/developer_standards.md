@@ -639,6 +639,22 @@ Folder rules:
 | Shared OS primitive used by unrelated components | Core file in the appropriate ZenOS system package |
 | One-time migration or historic repair | `maint/`, never bundled into the public capability surface |
 
+### A complete tool and component: the reference pattern
+
+Print Shop (`dojotools_print.yaml`, 0.6.x) is the worked example of a new tool that hosts its own component. A new tool and KFC is done when it has all of these:
+
+1. **Adapters driven by capability.** It finds devices by integration, device, and entity name or feature, never by a hardcoded entity ID, so a second device works like the first.
+2. **One tool, modes by kind.** Different hardware (a paper printer, a 3D printer) is a `kind` inside one tool, not a tool each.
+3. **A cert declared with its stages, and the seed tagged.** `certs_required` names the cert, its `level`, the `modes` it covers and `st_ok`. The seed mode is tagged in `seed_modes` (`'summary@zenos.media.print_status:1'`).
+4. **The component requires the same cert.** `meta.requires` names it, so the component runs and appears in the prompt only for an agent that holds it.
+5. **A scored seed.** Each item carries `urgency`, `action_required` and real entity IDs, and the instructions are short and exact. A seed without real IDs invites the model to invent them.
+6. **Every costly or noisy step is optional and off.** A vision call, a second summary or a push is a setting in the tool's own drawer, off by default, and not a new helper entity. Read modes never run an inference step.
+7. **Triggers go through the Scheduler.** A trigger fires `zen_event` `summary_force` with `component: <kata_key>`, or is a registered trigger the component subscribes to. Nothing calls the Ninja directly.
+8. **Help is the default.** A bare call returns help.
+9. **Proven before anything is written.** Built on the test box first and byte-identical to production, with a forced Ninja run using `post_to_kata_cabinet=false` before it writes a Kata.
+
+A device that can be controlled stays read-only until the user enables control, and the tool reports control from the device's own state and fails closed. ZenOS works with whatever mode the user has set and never asks them to change a device's setup.
+
 ## 7. Exposure and Security Rules
 
 ### Default exposure matrix

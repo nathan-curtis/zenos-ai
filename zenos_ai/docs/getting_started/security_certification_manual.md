@@ -281,7 +281,7 @@ If you grant broad allow scope and later regret it, remove the specific entry as
 | `m` | SuperSummary | Reserved. SuperSummary calls no gated tool, and reads katas the Ninja already filtered. |
 | `c` | scheduler | Reserved. The scheduler only calls housekeeping. |
 
-No tool allows `l`, `m` or `c` in its `st_ok` yet, so a grant can't ask for them. A tool that adds `l` to a cert's `st_ok` makes that cert grantable for its live drawers. No shipped live drawer runs a gated mode.
+No tool allows `m` or `c` in its `st_ok`, so a grant can't ask for them. One tool allows `l`: Print Shop's `zenos.media.print_status` (`st_ok: isl`), for its `summary` mode. A tool opts a mode in by listing it in the cert entry's `modes` with `l` in `st_ok`; FileCabinet then reads a live drawer on that mode even when the tool isn't on the callout whitelist, if the agent the drawer runs as holds the cert with stage `l`. The admin plane never qualifies. Granting `l` raises the same phone acknowledgement as any other stage.
 
 - A grant stores its stages as `st`. A grant without one is interactive only, which is every grant made before 11.0.
 - Each tool declares the stages its certs allow (`st_ok` in its `certs_required`). A grant can't ask for a stage its tool doesn't allow.

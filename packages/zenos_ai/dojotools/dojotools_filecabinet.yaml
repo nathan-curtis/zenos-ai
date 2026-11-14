@@ -1,7 +1,15 @@
 ###############################################################################
 # ZenOS-AI: FileCabinet DojoTool + FileCabinet Sutra
 # File: dojotools_filecabinet.yaml
-# Version: 6.37.1
+# Version: 6.38.0
+# v6.38.0: the live-drawer callout whitelist yields to a certified tool. A
+#   drawer on a non-whitelisted zen_* tool is read when the tool's
+#   tool_manifest certs_required has an entry whose modes list the drawer's
+#   mode and whose st_ok allows stage l, and the agent the drawer runs as holds
+#   that cert at that level with stage l (checked strictly, never audit;
+#   zen_admintools_* never yields). zen_event live_cert_yield records it. A
+#   whitelisted tool is unchanged. The manifest version and the live-drawer
+#   help text say so (the whitelist is no longer the only gate).
 # v6.37.1: move and copy carry the drawer ACL, and copy carries meta
 #   (expiry etc.), for the drawer and every child. A copy or move never
 #   declassifies a drawer.
@@ -1663,6 +1671,82 @@ script:
                 {{- {'status': _st, 'entry': _t0.get('entry'), 'depth': _t0.get('depth', 0), 'visited': _t0.get('visited', []),
                      'entity': _t0.get('vol', _vol), 'reason': _t0.get('reason', ''), 'loop_at': _t0.get('loop_at', ''), 'fc_args': none} -}}
               {%- endif -%}
+        # CERT YIELD (6.38.0): the callout whitelist yields to a certified tool.
+        # A whitelist miss is not final when the drawer's tool declares the call
+        # mode live-readable: its tool_manifest certs_required has an entry whose
+        # modes list the mode and whose st_ok allows stage l, and the agent the
+        # drawer runs as holds that cert at that level with stage l. The cert is
+        # checked strictly here (never audit: nothing stands behind it). The
+        # admin plane (zen_admintools_*) never yields, a lens verb is not a
+        # script, a tool/action_type conflict is still refused, and any error
+        # leaves the call blocked.
+        - variables:
+            _gy_fa: "{{ (_t.get('fc_args') if _t is mapping else none) or {} }}"
+        - variables:
+            _gy_tool: "{{ (((_gy_fa.get('tool') or '') | string | trim) or ((_gy_fa.get('action_type') or '') | string | trim)) if _gy_fa is mapping else '' }}"
+            _gy_conflict: "{{ _gy_fa is mapping and ((_gy_fa.get('tool') or '') | string | trim) != '' and ((_gy_fa.get('action_type') or '') | string | trim) != '' and ((_gy_fa.get('tool') or '') | string | trim) != ((_gy_fa.get('action_type') or '') | string | trim) }}"
+            _gy_mode: "{{ (((_gy_fa.get('params') or {}).get('mode', '') if _gy_fa is mapping else '') | string | lower | trim) }}"
+        - variables:
+            _gy_try: >-
+              {{ _g_trav is mapping and _g_trav.get('status') == 'tool_call_blocked'
+                 and _t is mapping and _t.get('status') == 'live'
+                 and (_gy_tool | regex_search('^zen_')) and not (_gy_tool | regex_search('^zen_admintools_'))
+                 and not _gy_conflict
+                 and _gy_mode not in ['', 'kfc_manifest', 'tool_manifest', 'help'] }}
+        - if: "{{ _gy_try }}"
+          then:
+          - action: "script.{{ _gy_tool }}"
+            data:
+              mode: tool_manifest
+            continue_on_error: true
+            response_variable: _gy_tm
+          - variables:
+              _gy_req: >-
+                {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                {%- set ns = namespace(r=(_gy_tm if _gy_tm is mapping else {})) -%}
+                {%- for _ in range(3) -%}
+                  {%- if 'certs_required' not in ns.r and ns.r.get('result') is mapping -%}{%- set ns.r = ns.r.get('result') -%}{%- endif -%}
+                {%- endfor -%}
+                {%- set _cr = ns.r.get('certs_required', []) -%}
+                {%- set hit = namespace(r={}) -%}
+                {%- for c in (_cr if _cr is sequence and _cr is not string else []) -%}
+                  {%- set _ms = c.get('modes') if (c is mapping and c.get('modes') is sequence and c.get('modes') is not string) else [] -%}
+                  {%- if hit.r | count == 0 and _gy_mode in (_ms | map('string') | map('lower') | list) and 'l' in (ID.stage_letters(c.get('st_ok') or 'i') | from_json).st -%}
+                    {%- set hit.r = {'cert': (c.get('cert') or '') | string, 'level': ([c.get('level') | int(1), 1] | max)} -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ hit.r }}
+          - variables:
+              _gy_ok: >-
+                {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                {%- if _gy_req is mapping and _gy_req.get('cert', '') != '' -%}
+                  {{- (ID.caller(_gy_req.cert, _gy_req.level, states('sensor.zen_default_household_cabinet_resolved'), 'l') | from_json).get('cert_ok', false) -}}
+                {%- else -%}false{%- endif -%}
+          - if: "{{ _gy_ok | bool(false) }}"
+            then:
+            - variables:
+                _g_trav:
+                  status: tool_call_required
+                  reason: ''
+                  entry: "{{ _t.get('entry') }}"
+                  fc_args: "{{ _gy_fa }}"
+                  depth: "{{ _t.get('depth', 0) }}"
+                  visited: "{{ _t.get('visited', []) }}"
+                  entity: "{{ _t.get('vol', _vol) }}"
+                  loop_at: ''
+                  cert_yield: true
+            - event: zen_event
+              event_data:
+                event:
+                  kind: live_cert_yield
+                  component: filecabinet
+                  tool: "{{ _gy_tool }}"
+                  mode: "{{ _gy_mode }}"
+                  cert: "{{ _gy_req.cert }}"
+                  level: "{{ _gy_req.level }}"
+                  stage: l
+                  drawer: "{{ _vol }}/{{ _key }}"
+                  severity: info
         - choose:
           - conditions:
             - condition: template
@@ -5660,7 +5744,7 @@ script:
                 summary='Read and write cabinet drawers and the wiki',
                 display_name='FileCabinet — Knowledge Stack Surface',
                 tier='dojotools',
-                version='6.36.3',
+                version='6.38.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['cabinet', 'wiki_js', 'knowledge', 'documents'],
@@ -5830,7 +5914,7 @@ script:
                     "set_mount": {
                       "two_mount_types": {
                         "cross_cabinet": "target_guid points to another cabinet volume. FC follows the chain at read time and returns that cabinet's drawer value.",
-                        "live_drawer": "fc_args with no target_guid. FC executes the whitelisted tool inline and returns its result as the drawer value. Caller sees a normal drawer — no redirect. Also called a live drawer."
+                        "live_drawer": "fc_args with no target_guid. FC executes the whitelisted (or certified) tool inline and returns its result as the drawer value. Caller sees a normal drawer — no redirect. Also called a live drawer."
                       },
                       "required_fields": ["path — drawer key to create the mount at in volume_entity_id", "volume_entity_id — cabinet to create the mount in", "EITHER target_guid (cross-cabinet) OR fc_args (virtual mount) — one is required"],
                       "optional_fields": ["force_action — overwrite a non-mount drawer at path (default: blocked)"],
@@ -5855,11 +5939,11 @@ script:
                       "response_errors": "mount_traversal: {status: 'loop_detected'|'depth_limit_exceeded'|'error'|'tool_call_blocked', reason, depth, visited}"
                     },
                     "fc_args_tool_call_mount": {
-                      "what_it_is": "A LIVE DRAWER — a drawer backed by a live tool call instead of cabinet data. FC executes the whitelisted tool inline and returns its result as the drawer value. No caller-side handling required. Terminology: 'virtual drawer' = cross-cabinet pointer (target_guid); 'live drawer' = tool-backed (fc_args). Both are transparent to the reader.",
+                      "what_it_is": "A LIVE DRAWER — a drawer backed by a live tool call instead of cabinet data. FC executes the whitelisted (or certified) tool inline and returns its result as the drawer value. No caller-side handling required. Terminology: 'virtual drawer' = cross-cabinet pointer (target_guid); 'live drawer' = tool-backed (fc_args). Both are transparent to the reader.",
                       "fc_args_format": {"tool": "REQUIRED — zen_* script name, must be in fc_mount_callout_whitelist. Use 'tool' not 'action_type'. action_type is accepted as a fallback alias but must still be a zen_* script name — lens verbs like 'read' return tool_call_blocked.", "params": "OPTIONAL — dict passed as-is to the target script. Include any fields the target tool accepts.", "cache": "OPTIONAL — {ttl_seconds: int, digest_fields: [dot.path, ...]}. Cache the result in the cabinet for ttl_seconds. digest_fields limits what gets stored."},
                       "whitelist_management": {"drawer": "fc_mount_callout_whitelist in sensor.zenos_system_cabinet — field: value.allowed_action_types (list)","tool": "zen_admintools_prompt_loader (SUPPORTED METHOD — system cabinet is hard read-only, use this tool)","how_to_list": {"action": "script.zen_admintools_prompt_loader", "data": {"mode": "whitelist", "whitelist_type": "fc", "action_type": "list"}},"how_to_add": {"action": "script.zen_admintools_prompt_loader", "data": {"mode": "whitelist", "whitelist_type": "fc", "action_type": "add", "item": "<tool_name>"}},"how_to_remove": {"action": "script.zen_admintools_prompt_loader", "data": {"mode": "whitelist", "whitelist_type": "fc", "action_type": "remove", "item": "<tool_name>"}},"how_to_reset": {"action": "script.zen_admintools_prompt_loader", "data": {"mode": "whitelist", "whitelist_type": "fc", "action_type": "reset"}},"note": "tool name must exactly match the script name (e.g. zen_dojotools_inventory). Unrecognised tools return tool_call_blocked at traversal time. FC write via upsert is blocked — always use zen_admintools_prompt_loader."},
                       "caller_receives": "Normal drawer value = live tool result. mount_traversal block shows {status: 'resolved_via_tool_call', tool_called, depth, visited}. Zero special handling required by the caller.",
-                      "execution": "FC dispatches to `script.<tool>` dynamically — any whitelisted tool fires automatically. The whitelist is the ONLY gate. To add a new tool: add it to the whitelist (syscab fc_mount_callout_whitelist or _hard_wl fallback in YAML). No code changes required. tool_call_required only appears when the tool is NOT whitelisted (blocked).",
+                      "execution": "FC dispatches to `script.<tool>` dynamically — any whitelisted tool fires automatically. A tool that is not whitelisted is also read when its tool_manifest certs_required names the drawer's mode in modes with stage l in st_ok, and the agent the drawer runs as holds that cert with stage l (6.38.0; zen_admintools_* never). To add a tool: add it to the whitelist (syscab fc_mount_callout_whitelist or _hard_wl fallback in YAML), or declare the cert in the tool. tool_call_blocked appears when neither applies.",
                       "patterns": {
                         "index_mount": {"desc": "Live entity graph by label", "fc_args": {"tool": "zen_dojotools_index", "params": {"label_1": "<label>", "mode": "hypergraph", "expand_entities": true}}},
                         "wiki_mount": {"desc": "Wiki page content inline in cabinet drawer", "fc_args": {"tool": "zen_dojotools_filecabinet", "params": {"action_type": "get", "stack": "wiki", "path": "<wiki/page/path>"}}},
