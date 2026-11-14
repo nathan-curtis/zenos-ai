@@ -1,6 +1,6 @@
 # Taskmaster — KFC Guide
 
-> **dojotools 0.9.2** | ZenOS-AI 2026.11.0 'This Is Spinal Tap'
+> **dojotools 0.9.3** | ZenOS-AI 2026.11.1 'This Is Spinal Tap'
 
 > **Meds have their own summary (0.9.0).** `briefing` takes `case`: `household` (everything but medications), `medications` (only medications), or none (everything, as before). The `taskmaster` summary seeds `household`, and the new `taskmaster_meds` summary seeds `medications`, which carries the read cert `zenos.health.read`. Bare `briefing` is no longer a seed mode; a summary that still seeds it keeps working, mapped to `briefing:household` through Taskmaster's `seed_aliases` (0.9.1), with a one-time notice saying so. Under `seed_cert_mode` enforce, meds reach a background summary only while that cert is granted with stage `s`.
 
@@ -16,7 +16,7 @@ Taskmaster does **not** merge Radar, Inventory, CRM, and To Do into one data mod
 
 | Tier | Backend | When it's used |
 |------|---------|-----------------|
-| Base | O365 To Do (`zen_dojotools_todo`) | Always available — every household gets this with zero config. |
+| Base | O365 To Do (`zen_dojotools_todo`) | Always available — every household gets this with zero config. The list is the one you name with `list_name`, else the To Do list labeled `taskmaster_default`, else the first list labeled `taskmaster` (sorted). |
 | + Radar | Zammad service desk (`zen_dojotools_servicedesk`) | When configured, task creation upgrades to a real tracked ticket with lifecycle/triage. |
 | + Inventory | Grocy (`zen_dojotools_inventory`) | When configured, chore-shaped recurring tasks upgrade to Grocy chores/tasks tied to product/location/stock. A chore is a persistent recurring *definition*, not a fresh record per occurrence — Taskmaster looks the chore up by name first: if it already exists, it executes it (logs the occurrence, advances `next_due`); it only creates a new chore when genuinely new. |
 | + CRM | Rolodex/Twenty (`zen_dojotools_rolodex`) | Explicit contact/company context always wins the routing decision, regardless of shape. |

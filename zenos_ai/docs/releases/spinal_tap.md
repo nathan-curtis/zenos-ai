@@ -450,8 +450,17 @@ Fixes found running 2026.11.0 on live installs.
 ### Read this before upgrading
 
 - **Ectoplasm results say `mode`.** Every Ectoplasm result carries `mode: <the mode called>` where it carried `action_type`. Anything that reads `action_type` from an Ectoplasm result needs updating. The `action_type` input still works.
+- **Label Taskmaster's default To Do list.** With no `list_name`, Taskmaster used a list name written in the file. It now uses the To Do list labeled `taskmaster_default`, else the first list labeled `taskmaster`. Label the list you want it to use.
+
+### Added
+
+- **To Do names one item by `uid`.** `update` and `delete` take `{uid: <uid>}`, the uid a read shows, to name one item when several share a name. See [To Do](../scripts/zen_dojotools_todo_readme.md).
+- **Inventory sets up a tare-weight product.** `update_product_meta` takes `tare_weight` and `enable_tare_weight_handling`. See [Tare-Weight Products](../../../packages/zenos_ai/plugins/grocy/readme.md#tare-weight-products-593-to-596).
 
 ### Fixed
 
 - **Ectoplasm names an unknown mode.** A mode it doesn't have answers "Unknown mode", where it answered that the call had hit a bug.
+- **Room Manager assigns floors and deletes areas again.** Its calls to Ectoplasm passed the area as `area_id`, which Ectoplasm doesn't read, so floor assignment on `area_create` and `area_update`, and `area_delete`, were refused for having no area. `area_delete` also previewed without deleting.
+- **Inventory books the amount you give it on a tare-weight product.** A purchase was refused, a consume was read as a new total, and an inventory count left out the container. `amount` is now the net quantity in every stock write.
+- **To Do refuses a name more than one item carries.** On an MS365 list, `update` and `delete` by a shared name picked one item. They now change nothing and answer `ambiguous_item` with each matching uid.
 - **Ectoplasm fields left out stay empty.** `area_name`, `floor_id`, `floor_name`, `device_id` and `label_id` share names with Home Assistant template functions, and when they were left out, they read as the function. `area_create` without a floor printed `floor_id=<function ...>` in its advisory.
