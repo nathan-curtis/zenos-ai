@@ -461,6 +461,7 @@ Fixes found running 2026.11.0 on live installs.
 
 - **Ectoplasm names an unknown mode.** A mode it doesn't have answers "Unknown mode", where it answered that the call had hit a bug.
 - **Room Manager assigns floors and deletes areas again.** Its calls to Ectoplasm passed the area as `area_id`, which Ectoplasm doesn't read, so floor assignment on `area_create` and `area_update`, and `area_delete`, were refused for having no area. `area_delete` also previewed without deleting.
+- **Pausing the TV pauses the TV.** Media Manager sent every transport command to the room's Music Assistant player, so in a room with a universal player, pausing a TV paused the receiver. `play`, `pause`, `stop`, `next` and `previous` now go to what is playing. See [Media Manager](../components/media_manager.md).
 - **Inventory books the amount you give it on a tare-weight product.** A purchase was refused, a consume was read as a new total, and an inventory count left out the container. `amount` is now the net quantity in every stock write.
 - **To Do refuses a name more than one item carries.** On an MS365 list, `update` and `delete` by a shared name picked one item. They now change nothing and answer `ambiguous_item` with each matching uid.
 - **Ectoplasm fields left out stay empty.** `area_name`, `floor_id`, `floor_name`, `device_id` and `label_id` share names with Home Assistant template functions, and when they were left out, they read as the function. `area_create` without a floor printed `floor_id=<function ...>` in its advisory.
