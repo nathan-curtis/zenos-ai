@@ -1,4 +1,4 @@
-# Zen DojoTools ToDo — v5.4.1
+# Zen DojoTools ToDo — v5.4.3
 
 **File:** `packages/zenos_ai/dojotools/dojotools_todo.yaml`
 **Script:** `zen_dojotools_todo`
@@ -32,7 +32,7 @@ Wraps HA todo services with `continue_on_error` isolation so auth failures (401s
 |-------|------|-------------|
 | `mode` | select | `read`, `create`, `update`, `delete`, `help`. Deprecated aliases: `action_type`, `action`. |
 | `list_name` | text | Friendly name or `todo.*` entity ID. Omit or `*` = wildcard (all lists). Alias: `list_id`. |
-| `items` | list | Strings or `{item, status, due_date, description, rename}` objects. Bulk complete: multiple strings + `status=completed`. |
+| `items` | list | Strings or `{item, status, due_date, description, rename}` objects. Bulk complete: multiple strings + `status=completed`. On `update` and `delete`, `{uid: <uid>}` names one item exactly: the `uid` a read shows (an MS365 read always carries it; a multi-list read needs `+task_ids`). |
 | `status` | text | `needs_action` (default) or `completed`. Complete: `mode=update items=['Name'] status=completed list_name='X'`. Bulk update: applies to all `items`. |
 | `due_date` | text | ISO `YYYY-MM-DD`. Create or single-item update only. |
 | `description` | text | Notes text. Create or single-item update only. |
@@ -122,6 +122,7 @@ items:
 | `list_not_found` | `list_name` doesn't match any `todo.*` entity | Check spelling; wildcard read returns all valid names |
 | `auth_failure` | Integration token expired (401) | Re-authenticate via Settings → Integrations; verify list after write |
 | `bulk_complex` | Bulk update with multi-field edit attempted | Send one item at a time for multi-field edits |
+| `ambiguous_item` | An `update` or `delete` named an item by a name more than one item on the list carries. Nothing was changed; the error lists each matching `uid` and its due date | Send the one you mean as `{uid: <uid>}` |
 
 ---
 
@@ -129,6 +130,7 @@ items:
 
 | Version | Change |
 |---------|--------|
+| v5.4.3 | 2026.11.1: `update` and `delete` take `{uid: <uid>}` to name one item exactly, and refuse a name more than one item carries (`ambiguous_item`, with the matching uids) instead of picking one. Delete still needs `todo_control` level 2. |
 | v5.2.2 | 2026.10.1: `create` and `update` gated by `todo_control` level 1 instead of `pii_disclosure_control`; `label_targets` read fixed. |
 | v5.2.0 | 2026.10.0: `delete` gated on the new `todo_control` certification (level 2). Response wrapped in the standard OS envelope. Header/`tool_manifest`/`help` versions aligned (previously 5.1.1 / 5.2.0 / 2.5.0). Description trimmed to point at `mode=help`. |
 | v2.5.1 | `mode` is now the primary selector, matching the project-wide standard. `action_type`/`action` remain as deprecated, fully-supported aliases. |
