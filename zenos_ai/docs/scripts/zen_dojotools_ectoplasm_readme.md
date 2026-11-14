@@ -1,4 +1,4 @@
-# Zen DojoTools Ectoplasm — v6.6.0
+# Zen DojoTools Ectoplasm — v6.6.1
 
 > **2026.11.0:** `entity_expose` (Assist; `zenos.registry.lifecycle_control` level 2) and `entity_unexpose` (Assist, Alexa and Google; level 1, it only tightens) wrap Spook's expose actions. Both preview without `confirm_action`. `entity_expose` always refuses the admin plane (any `script.zen_admintools_*`, `prompt_loader`, anything labeled `zen_never_expose`) before it reads a cert, and emits `ectoplasm_expose_refused`. See [The admin plane](../getting_started/security_certification_manual.md#67-the-admin-plane).
 
@@ -44,14 +44,14 @@ This pattern is intentional. Structural operations (deleting an area, renaming a
 # Preview (no-op)
 action: script.zen_dojotools_ectoplasm
 data:
-  action_type: area_create
+  mode: area_create
   area_name: "Guest Suite"
   floor_id: ground_floor
 
 # Execute
 action: script.zen_dojotools_ectoplasm
 data:
-  action_type: area_create
+  mode: area_create
   area_name: "Guest Suite"
   floor_id: ground_floor
   confirm_action: true
@@ -90,10 +90,10 @@ data:
 | Action | What It Does | Key Fields |
 |---|---|---|
 | `area_create` | Create a new area. Optionally assign to a floor. | `area_name`, `floor_id` (optional) |
-| `area_delete` | Delete an area by ID. | `area_id` |
-| `area_assign_device` | Assign a device to an area. | `area_id`, `device_id` |
+| `area_delete` | Delete an area by ID. | `target_area` |
+| `area_assign_device` | Assign a device to an area. | `target_area`, `device_id` |
 | `area_unassign_device` | Remove a device from its current area. | `device_id` |
-| `area_assign_entity` | Assign an entity to an area. | `area_id`, `entity_id` |
+| `area_assign_entity` | Assign an entity to an area. | `target_area`, `entity_id` |
 | `area_unassign_entity` | Remove an entity from its current area. | `entity_id` |
 
 ---
@@ -104,8 +104,8 @@ data:
 |---|---|---|
 | `floor_create` | Create a new floor. | `floor_name`, `floor_level` (optional), `floor_id` (optional — auto-generated if blank) |
 | `floor_delete` | Delete a floor by ID. Does not delete its areas. | `floor_id` |
-| `floor_assign_area` | Assign an area to a floor. | `floor_id`, `area_id` |
-| `floor_unassign_area` | Remove an area from its floor. | `area_id` |
+| `floor_assign_area` | Assign an area to a floor. | `floor_id`, `target_area` |
+| `floor_unassign_area` | Remove an area from its floor. | `target_area` |
 
 **Floor level convention:** `0` = ground, `1` = first/upper, `-1` = basement. Optional — purely informational.
 
@@ -142,8 +142,8 @@ These actions assign and unassign HA labels to areas and devices. Entity-level l
 
 | Action | What It Does | Key Fields |
 |---|---|---|
-| `label_assign_area` | Assign a label to an area. | `label_id`, `area_id` |
-| `label_unassign_area` | Remove a label from an area. | `label_id`, `area_id` |
+| `label_assign_area` | Assign a label to an area. | `label_id`, `target_area` |
+| `label_unassign_area` | Remove a label from an area. | `label_id`, `target_area` |
 | `label_assign_device` | Assign a label to a device. | `label_id`, `device_id` |
 | `label_unassign_device` | Remove a label from a device. | `label_id`, `device_id` |
 
@@ -192,7 +192,7 @@ Same confirm-gate pattern as everything else here — preview first, `confirm_ac
 | `issue_description` | Conditional | `repair_create` | Repair body text |
 | `severity` | No | `repair_create` | `error`, `warning`, `info`. Default: `warning` |
 | `domain` | No | `repair_create`, `repair_list` | HA integration domain. Defaults to `zenos` for create. Filter for list. |
-| `area_id` | Conditional | Area/floor/label ops | HA area ID (slug) |
+| `target_area` | Conditional | Area/floor/label ops | HA area ID (slug). The field is `target_area`, not `area_id`: `area_id` is a Home Assistant template function, so `area_delete area_id=x` answers that it requires an area. |
 | `area_name` | Conditional | `area_create` | Human-readable area name |
 | `floor_id` | Conditional | Floor ops, `area_create` | HA floor ID (slug) |
 | `floor_name` | Conditional | `floor_create` | Human-readable floor name |
@@ -209,17 +209,21 @@ Same confirm-gate pattern as everything else here — preview first, `confirm_ac
 
 ## Event Emission
 
-All write actions (on execute, not preview) fire a `zen_event` with kind `ectoplasm_<action_type>`:
+Write actions (on execute, not preview) fire a `zen_event` whose payload sits under `event:` and keys on `kind: ectoplasm_<mode>`, with the fields of that write, a `severity` and a one-line `summary`. For `area_create`:
 
 ```json
 {
-  "kind": "ectoplasm_area_create",
-  "action_type": "area_create",
-  "area_name": "Guest Suite",
-  "caller_token": "...",
-  "status": "ok"
+  "event": {
+    "kind": "ectoplasm_area_create",
+    "area_name": "Guest Suite",
+    "floor_id": "ground_floor",
+    "severity": "info",
+    "summary": "Area created: Guest Suite"
+  }
 }
 ```
+
+The result returned to the caller carries `mode: <the mode called>` (v6.6.1; earlier versions returned it as `action_type`).
 
 Read operations do not emit events.
 
@@ -243,4 +247,4 @@ Read operations do not emit events.
 | Dependency | Purpose |
 |---|---|
 | Spook integration | All write operations — Spook exposes the extended HA service surface |
-| `script.zen_dojotools_event_emitter` | Post-write event emission |
+| `zen_event` (fired directly) | Post-write event emission |

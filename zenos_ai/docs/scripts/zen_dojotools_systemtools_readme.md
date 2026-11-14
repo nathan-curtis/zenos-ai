@@ -1,4 +1,4 @@
-# Zen DojoTools SystemTools — v5.4.0
+# Zen DojoTools SystemTools — v5.4.1
 
 *`zen_dojotools_ha_log_viewer` v1.1.0 · `zen_dojotools_event_emitter` v1.0.0 (same file).*
 
@@ -179,13 +179,13 @@ Dismiss a persistent notification by ID. Requires `notif_id`.
 
 List all active HA repairs (issues). Reads via the Jinja `issues()` global — the only way to reach HA's Issue Registry from a template; there is no REST endpoint for it (confirmed 404 on `/api/repairs/issues`, WebSocket-only). Returns `{count, issues[]}` where each entry has only `issue_id`, `domain`, `created`, `dismissed_version`, `is_persistent` — `issues()`'s real shape does **not** expose `severity`/`is_fixable`/`title`, so the response no longer fabricates them.
 
-Fixable issues: use `ectoplasm action_type=repair_remove` or `repair_ignore_all` with the `domain`+`issue_id` from this list. Spook-created issues have `domain: spook` (not `zenos`).
+Fixable issues: use `ectoplasm mode=repair_remove` or `mode=repair_ignore_all` with the `domain`+`issue_id` from this list. Spook-created issues have `domain: spook` (not `zenos`).
 
 ---
 
 #### `repair_fix`
 
-Fix a single HA repair issue. Delegates to `script.zen_dojotools_ectoplasm` with `action_type: repair_remove`. Requires `confirm: true`, `repair_domain`, and `issue_id`. Returns the ectoplasm result.
+Fix a single HA repair issue. Delegates to `script.zen_dojotools_ectoplasm` with `mode: repair_remove`. Requires `confirm: true`, `repair_domain`, and `issue_id`. Returns the ectoplasm result.
 
 ---
 
@@ -431,6 +431,7 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 
 | Version | Change |
 |---------|--------|
+| v5.4.1 | `repair_fix` calls Ectoplasm with `mode:` in place of the deprecated `action_type:` alias, and the `repair_list` hint names `mode=`. |
 | v5.4.0 | `zen_health_report` has a `certs` section that says what the agent may do and whose problem a cert gap is. `agent_side` lists each cert the household's responsible agent lacks, at the level and stage it needs and what it holds back; a request fixes these, and `next_step` says which (`zen_dojotools_persona_editor mode=cert_req_grant`, or the `zenos_agent_parity` bundle for several read certs). `system_side` lists what no request can fix (identity policy, a responsible agent that is not onboarded, the ACL schema, the vault, the approval path); tell a person. `tool_side` lists an act a tool cannot take. `posture` shows `seed_cert_mode`, the console override, and components still on the 11 legacy lists that 12 removes. The diagnosis leads with it, and `onboarding_required` from agent health counts as an issue. The pre-approval view carries `certs.system_side`. |
 | v5.3.2 | The zen_system KFC uses the health check's staleness thresholds: `zen_summary` is stale past 25 minutes and critically stale past 45, not 15 and 30. A skipped SuperSummary run no longer reads as a critical stale summary. `kfc_manifest` reports the current version. Text only. |
 | (2026-08-14) | New `envelope_check` pilot diagnostic — see above. Dispatches on `tool=`, not `mode=`; tool_manifest version wasn't bumped for this addition, flagging per the known version-source normalization gap. |
