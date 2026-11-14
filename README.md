@@ -52,6 +52,7 @@ The full design record is [The Book of Friday, Volume 2](zenos_ai/docs/architect
 - **Certs in plain words.** Every cert lives under `zenos.*`, is dated, and asks on your phone in plain language. [More](zenos_ai/docs/releases/spinal_tap.md#certs-renamed-and-readable)
 - **The background asks first.** Summaries act as a named agent, read private data only with a cert you approved, and act only through what a tool declares. [More](zenos_ai/docs/releases/spinal_tap.md#the-pipeline-gets-a-pass)
 - **Names in parts.** ZenOS follows Home Assistant's new naming model and child devices. [More](zenos_ai/docs/releases/spinal_tap.md#names-in-parts)
+- **The merch table.** Every band needs merch. Print Shop knows every printer in the house, 3D printers included, and uses nearly every part of 11: the pass, a cert for three stages, its own summary, a trigger, a live drawer, and every costly step off until you turn it on. [More](zenos_ai/docs/releases/spinal_tap.md#the-merch-table)
 
 **Upgrading?** Approve your agent, let Flynn run the ACL migration, and read [Read this before upgrading](zenos_ai/docs/releases/spinal_tap.md#read-this-before-upgrading) first.
 

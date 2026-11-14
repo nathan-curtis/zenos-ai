@@ -41,6 +41,7 @@ Don't touch it. Don't look at it. Don't EVEN point at it. In 11, a cabinet your 
 - **Locks on the cabinets.** One access record per cabinet, default rules for every class of cabinet, built-in locks on certs and approvals, and one gate that checks every hop of a mount. See [The Locks](#the-locks).
 - **FileCabinet, rebuilt to be lockable.** One exit, honest writes, stated merges, and an admin door for structural writes. See [FileCabinet, Rebuilt to Be Lockable](#filecabinet-rebuilt-to-be-lockable).
 - **Names in parts.** ZenOS follows Home Assistant's new naming model and child devices. See [Names in Parts](#names-in-parts).
+- **The merch table.** Print Shop knows every printer in the house, 3D printers included, and uses nearly everything this release built. See [The Merch Table](#the-merch-table).
 - **What the new security unlocks.** Unattended camera scans, summary chains, label triggers and more, each off until you approve it. See [What the New Security Unlocks](#what-the-new-security-unlocks).
 
 ---
@@ -200,6 +201,23 @@ Each of these was unsafe, or a dead path, before 11. Now each one ships switched
 - **One approval covers an upgrade.** `zenos_agent_parity` replaces chasing individual grants, and read certs start in audit on an upgrade, so a working install does nothing.
 
 See [Building a KFC](../kung_fu/building_a_kfc.md#kf6-acts-chains-read-certs-and-triggers-2026110) and the [Security & Certification manual](../getting_started/security_certification_manual.md#66-read-certs-and-parity).
+
+---
+
+## The Merch Table
+
+Every band needs merch. Ours is the Print Shop, and it's the one tool in 11 that uses nearly everything this release built, so it doubles as the worked example of how a tool should be put together now.
+
+- **It finds the printers itself.** It reads them from their integrations and device names, Epson over IPP and Bambu Lab 3D printers alike, with no entity IDs to configure. A second printer works like the first, and names follow Home Assistant's naming model.
+- **It's behind the backstage pass.** An agent you haven't approved gets its help and nothing else, and a bare call answers help.
+- **One cert covers three stages.** `zenos.media.print_status` lets your agent read the printer summary when you ask, in a background summary, and through a live drawer. Each stage is a separate approval on your phone.
+- **It brings its own summary.** The `print_shop` component runs, and shows up in the agent's prompt, only once you've granted that cert. It scores each printer (a failed print or an alarm first, then a finished job, then paper and ink) and hands the summarizer real entity IDs.
+- **It asks before it spends.** The camera look when a print ends, a summary of the job and a push to your phone are each a setting, all off until you turn them on. The push goes out through Postman, behind Postman's own cert.
+- **It wakes on its own trigger.** The Scheduler registers `print_done` (a 3D print finished or failed), and the component subscribes only while you've asked for job-end summaries.
+- **It's readable from a live drawer.** Its cert names the `summary` mode with the live-drawer stage, so FileCabinet reads it without a whitelist entry.
+- **It watches, and doesn't touch.** A 3D printer is read-only: status, readiness, a one-line brief and a filament estimate. Whether it could be controlled is reported from the printer's own settings and fails closed, and ZenOS never asks you to change them. The filament estimate proposes an Inventory entry for you to confirm; it never changes stock.
+
+See [Print Shop](../scripts/zen_dojotools_print_readme.md) and [the reference pattern](../developer_standards.md#a-complete-tool-and-component-the-reference-pattern).
 
 ---
 
