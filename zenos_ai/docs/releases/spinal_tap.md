@@ -437,3 +437,21 @@ Later: the admission-token contract with `zen_root_authentik` (it needs an OIDC 
 - **The 4.5.6 `run_repair` actions** and the cabinet factory's `family_guid` field.
 - **The CABS `cabinet_acls` and `drawer_acl` macros.** Use `acl_record` and `acl_for`.
 - **Cabinet admin's `expand_drawer`,** with its `source_cabinet`, `source_drawer` and `space_threshold` fields. It moved one drawer without making the slot an expansion. FileCabinet's `expand_drawer` and `collapse_drawer` are the only way to make and undo one.
+
+---
+
+## 2026.11.1 — Patch
+
+**Status:** Beta 1 (patch on 2026.11.0, `feat/2026.11.1`)
+**ETA:** Saturday, November 21, 2026
+
+Fixes found running 2026.11.0 on live installs.
+
+### Read this before upgrading
+
+- **Ectoplasm results say `mode`.** Every Ectoplasm result carries `mode: <the mode called>` where it carried `action_type`. Anything that reads `action_type` from an Ectoplasm result needs updating. The `action_type` input still works.
+
+### Fixed
+
+- **Ectoplasm names an unknown mode.** A mode it doesn't have answers "Unknown mode", where it answered that the call had hit a bug.
+- **Ectoplasm fields left out stay empty.** `area_name`, `floor_id`, `floor_name`, `device_id` and `label_id` share names with Home Assistant template functions, and when they were left out, they read as the function. `area_create` without a floor printed `floor_id=<function ...>` in its advisory.
