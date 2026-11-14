@@ -1,5 +1,5 @@
 # ZenOS Universal Media Player Spec
-**Contract version:** 1.0.0  
+**Contract version:** 1.1.0  
 **Owned by:** zen_dojotools_media_manager  
 **Status:** Required for activity system participation
 
@@ -40,13 +40,23 @@ data:
 
 Your UMP must translate that source string into whatever multi-device sequence is needed. ZenOS does not know — and must not need to know — about HDMI ports, boot times, AVR inputs, or sequencing delays. That is entirely your responsibility.
 
-### 3. Must Reflect Current Activity in `source` Attribute
+**A UMP without `select_source` is valid.** A music-only room (children such as a voice player and a PC, no sources to route) can leave out `select_source` and have an empty `source_list`. Activities are for a UMP that routes sources; on one that doesn't, `activity_apply` reports `channel_skipped` and does nothing else. A music-only UMP needs only the label, power, and volume and transport commands.
+
+### 3. Must Define `turn_on` (and `turn_off`), Each as One Action
+
+ZenOS wakes the UMP before it switches anything. `activity_apply`, `prefs_apply` and `source_set` turn an off or standby UMP on, wait up to 15 seconds for it to leave off, read `source_list` again, and only then call `select_source`. An off UMP has no `source_list`, so without the wake the channel check would fail. Media Manager's `power_on` and `power_off` also run these commands when a call names only the room.
+
+- **The wake needs `turn_on` defined.** Media Manager wakes only an entity that reports the turn-on feature. An off `platform: universal` entity usually has no active child to borrow it from, so it reports turn-on only when `turn_on` is in its `commands`. Without it, the wake is silently skipped.
+- **Each command is one action.** See the note under the example below.
+- **Your route script must not assume the room's state.** It can be called with the room off or already on.
+
+### 4. Must Reflect Current Activity in `source` Attribute
 
 After an activity is applied, `state_attr(entity, 'source')` should return the active activity name (or a string close enough that `activity_snapshot` can capture it meaningfully).
 
 This is what `activity_snapshot` reads to propose a saved activity. If `source` is a raw FireTV package ID instead of "YouTube", the snapshot will save noise.
 
-### 4. Must Enumerate Activities in `source_list`
+### 5. Must Enumerate Activities in `source_list`
 
 `state_attr(entity, 'source_list')` should return the list of valid activity names. This is what `discover` shows users when they ask what's available in a room.
 
@@ -54,7 +64,7 @@ This is what `activity_snapshot` reads to propose a saved activity. If `source` 
 source_list: ["Xbox", "YouTube", "Netflix", "Media Player", "AV Receiver UI", "Music", "HDMI2"]
 ```
 
-### 5. Standard Media Controls Must Route Correctly
+### 6. Standard Media Controls Must Route Correctly
 
 | Command | Expected behavior |
 |---------|------------------|
@@ -164,7 +174,7 @@ your_room_route_activity:
         # ... one block per activity
 ```
 
-**Key pattern:** `wait_template` after power-on before source select. This is why ZenOS does not do this itself — only you know how long your TV takes to boot, and HA `wait_template` with a timeout is the correct primitive.
+**Key pattern:** `wait_template` after power-on before source select. ZenOS wakes the UMP itself and waits for it to leave off, but it doesn't sequence the devices behind it: only you know how long your TV takes to boot, and HA `wait_template` with a timeout is the correct primitive.
 
 ---
 
@@ -178,6 +188,7 @@ your_room_route_activity:
 | LLM-facing activity name surface | Power-on/off order |
 | `discover` room topology | AVR input routing |
 | Volume/skip routing via active_child | Conflict resolution (Friday interrupts music) |
+| Waking an off UMP before an activity or source (`turn_on`, then a wait) | A `turn_on` command that actually powers the room |
 
 ---
 
@@ -312,9 +323,11 @@ These integrations typically DO expose physical HDMI inputs in `source_list` as 
 - [ ] `source` attribute reflects current activity name after switching
 - [ ] `source_list` enumerates valid activity names
 - [ ] Volume commands route to AVR (or room volume authority)
-- [ ] `turn_on` / `turn_off` work
+- [ ] `turn_on` / `turn_off` work, each **one action** (a list stops the platform loading, with no log error)
+- [ ] `turn_on` defined, or ZenOS's wake before an activity is skipped
+- [ ] Every child, and every entity named in `active_child_template`, `attributes` and `commands`, exists and is available. A renamed child leaves the UMP `unavailable` with no log error, and a config check still passes. `mode=discover room=<room>` shows the UMP's state; check it first
 - [ ] `active_child_template` returns correct child for play/pause/skip routing
-- [ ] Activity names registered in ZenOS cabinet via `activity_set`
+- [ ] Activity names registered in ZenOS cabinet via `activity_set` (only for a UMP that routes sources; try one with `dry_run=true` first). To remove all of a room's activities, delete its `media_activities_<room>` drawer with FileCabinet; Media Manager has no delete mode
 - [ ] If a templated `source_list` doesn't appear in state: hardcoded instead
 
 ---
