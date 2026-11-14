@@ -17,7 +17,7 @@ ZenOS defines this contract. You build the implementation. ZenOS never touches y
 
 ### 1. Required Label
 
-Your UMP entity **must** carry the label `zen_mm_universal` in the room it serves.
+Your UMP entity **must** carry two labels: `zen_mm_universal`, and the room's label (the same slug as the area, e.g. `back_office`).
 
 ```yaml
 # Applied via zen_dojotools_labels or HA UI
@@ -25,6 +25,10 @@ Your UMP entity **must** carry the label `zen_mm_universal` in the room it serve
 label: zen_mm_universal
 label: living_room   # your room area label
 ```
+
+**The room label is required, not just the area.** `activity_apply` finds the room's UMP by intersecting `zen_mm_universal` with the room's label. With only the area set, a room-only `power_off` can still find the UMP, but `activity_apply` refuses with "No zen_mm_universal entity found in room <room>". Add the room label and it resolves.
+
+**Set the area on the entity itself.** A `platform: universal` entity has no device, so it doesn't inherit an area. Assign it directly, or `discover` for the room won't list it.
 
 ### 2. Must Accept `select_source` with Activity Names
 
@@ -38,7 +42,7 @@ data:
   source: "Xbox"   # the activity name, verbatim
 ```
 
-Your UMP must translate that source string into whatever multi-device sequence is needed. ZenOS does not know — and must not need to know — about HDMI ports, boot times, AVR inputs, or sequencing delays. That is entirely your responsibility.
+Your UMP must translate that source string into whatever multi-device sequence is needed. A route script is the recommended pattern for several devices, but not required: a single-device UMP whose TV exposes real inputs can point `select_source` straight at the TV (`source: "{{ source }}"`) and pass the TV's own `source_list` through. ZenOS does not know — and must not need to know — about HDMI ports, boot times, AVR inputs, or sequencing delays. That is entirely your responsibility.
 
 **A UMP without `select_source` is valid.** A music-only room (children such as a voice player and a PC, no sources to route) can leave out `select_source` and have an empty `source_list`. Activities are for a UMP that routes sources; on one that doesn't, `activity_apply` reports `channel_skipped` and does nothing else. A music-only UMP needs only the label, power, and volume and transport commands.
 
@@ -318,7 +322,8 @@ These integrations typically DO expose physical HDMI inputs in `source_list` as 
 
 ## Compliance Checklist
 
-- [ ] Entity labeled `zen_mm_universal` + room area label
+- [ ] Entity carries **two labels**, `zen_mm_universal` and the room's label (same slug as the area). Without the room label, `activity_apply` says "No zen_mm_universal entity found in room <room>"
+- [ ] Area set on the entity itself (a universal entity has no device to inherit it from)
 - [ ] `select_source` routes to your activity script
 - [ ] `source` attribute reflects current activity name after switching
 - [ ] `source_list` enumerates valid activity names

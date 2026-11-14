@@ -1,10 +1,10 @@
-# Zen DojoTools Print Shop — v0.6.4-experimental
+# Zen DojoTools Print Shop — v1.0.0
 
-*IPP-based printer control: submit text print jobs and trigger maintenance on household printers*
+*Household printers: paper, ink and maintenance status, 3D print status (read-only), text and image printing, and a certified `print_shop` summary*
 
 ---
 
-> **EXPERIMENTAL.** This is a v0.1 print path built on a HACS integration and a manual-configuration workflow. It has known gaps (no PDF/binary printing, best-guess maintenance URLs, hardcoded ink-sensor naming). Treat it as "may work for your printer," not a supported feature. Per the file's own header: if `test_page` doesn't produce real output on your hardware, this path is considered abandoned.
+> **1.0.0.** Print Shop is out of experimental. Status, printers, readiness, brief, filament and the `print_shop` component are supported. Printing still rides a HACS integration and has known limits (no PDF/binary printing; `clean` and `nozzle_check` use best-guess Epson URLs and the single cabinet `epson_ip`); see [Known Limitations](#known-limitations).
 
 ---
 
@@ -100,7 +100,7 @@ There is no direct text-to-printer path — everything is rasterized to an image
 
 ---
 
-## Known Limitations (v0.1)
+## Known Limitations
 
 - **No PDF/binary printing.** Only text (rendered as an image) and pre-existing local images under `/config/www/zen_images/<slot>.jpg`.
 - **Maintenance URLs are best-guess Epson WF-7840 paths.** `clean`/`nozzle_check` were written against that specific model's embedded web server. Validate on first run against your hardware and expect to adjust the URLs for a different printer.
@@ -159,6 +159,7 @@ zen_dojotools_print_shop:
 
 | Version | Change |
 |---|---|
+| 1.0.0 | Promoted out of experimental. No behavior change from 0.6.4. |
 | 0.6.4-experimental | The component subscribes to `print_done` while `job_end_summary` is on; Postman is suggested only when `notify_on_job_end` is on; a 3D `finish` counts as done for 12 hours. |
 | 0.6.3-experimental | The `print_status` cert names its mode (`modes: ['summary']`), so a live drawer on `summary` is allowed by the cert. |
 | 0.6.2-experimental | `zenos.media.print_status` allows stage `l`. |

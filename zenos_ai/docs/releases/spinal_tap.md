@@ -206,7 +206,7 @@ See [Building a KFC](../kung_fu/building_a_kfc.md#kf6-acts-chains-read-certs-and
 
 ## The Merch Table
 
-Every band needs merch. Ours is the Print Shop, and it's the one tool in 11 that uses nearly everything this release built, so it doubles as the worked example of how a tool should be put together now.
+Every band needs merch. Ours is the Print Shop, out of experimental at 1.0.0, and it's the one tool in 11 that uses nearly everything this release built, so it doubles as the worked example of how a tool should be put together now.
 
 - **It finds the printers itself.** It reads them from their integrations and device names, Epson over IPP and Bambu Lab 3D printers alike, with no entity IDs to configure. A second printer works like the first, and names follow Home Assistant's naming model.
 - **It's behind the backstage pass.** An agent you haven't approved gets its help and nothing else, and a bare call answers help.
