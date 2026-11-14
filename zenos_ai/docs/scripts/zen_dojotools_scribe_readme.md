@@ -1,14 +1,16 @@
-# Zen DojoTools Scribe — v5.2.0
+# Zen DojoTools Scribe — v5.14.0
 
-*Guided authoring and lifecycle management for KF4 artifacts — MCP-exposed*
+*Guided authoring and lifecycle management for KF6 artifacts — MCP-exposed*
 
 > **Versioning note:** The script version (v1.8.0) tracks Scribe's internal feature history. The ZenOS-AI package version (5.1.0) tracks the overall DojoTools package release. Both axes are independent.
 
 ---
 
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 ## What Scribe Does
 
-Scribe is the authoring tool for the KF4 ecosystem. It manages the full lifecycle of
+Scribe is the authoring tool for the KF6 ecosystem. It manages the full lifecycle of
 **thoughts**, **scrolls**, and **KFCs** — from blank draft to published, running component.
 
 It is fully MCP-exposed. Friday can use it directly. A capable LLM with access to Scribe
@@ -49,7 +51,7 @@ in different states.
 | `clear_field` | Remove named fields from the payload. Requires explicit field list. |
 | `delete` | Delete the drawer entirely. Requires `delete_confirm: true`. |
 | `formalize_scroll` | Lock the artifact as formal and read-only (`artifact_state: formal`). Applies `zen_scroll` label — hard RO via FileCabinet. |
-| `publish_kfc` | Press a formal scroll to the Dojo as a live KFC. Requires `artifact_state == formal` and `publish_confirm: true`. |
+| `publish_kfc` | Press a formal scroll to the Dojo as a live KFC. Requires `artifact_state == formal` and `publish_confirm: true`. A `meta.requires` is checked against the cert catalog first (see Safety Model). |
 | `republish_kfc` | Edit-and-republish an existing KFC without going through the formal scroll gate. Reads the current KFC from the Dojo, merges any supplied field changes, runs the full trim block (label create-or-update, `icon` sync, chonk warning). Use after `patch` when label sync is needed, or standalone to sync only the label description. |
 | `dry_run` | Preview scope discovery and authoring guidance without writing anything. |
 | `list_triggers` | Return all available scheduler trigger IDs. |
@@ -121,6 +123,13 @@ Use this when one domain (e.g., `water_manager`) needs multiple summarizer views
 | `drift_threshold` | Urgency score at or above this value triggers forced supersummary. Default 5. |
 | `emission_cooldown_minutes` | Minimum minutes between urgency/action emissions. Default 60. |
 | `suggested_act_event` | Static suggested_act_event slug for this KFC — must be a registered dojotool slug or blank. |
+
+### Minimum Level (KF6, v5.8.0)
+
+| Field | Purpose |
+|---|---|
+| `requires_cert` | Sets `meta.requires.cert`: the cert the household's agent must hold, granted for stage `s` (Ninja seed), before this component runs or shows in the prompt. Works on `new_thought`, `patch`, `republish_kfc` and `publish_kfc`; on a publish it overrides the scroll. |
+| `requires_level` | Sets `meta.requires.level`, the minimum level of that cert. An empty `requires_cert` with `requires_level: 0` clears the requirement. |
 | `master_switch` | `input_boolean` entity ID that gates this component (optional). Preserved for backward compat. |
 
 ### Component Content
@@ -288,6 +297,8 @@ Scribe is non-destructive by default:
 - **`replace`** requires `replace_confirm: true`
 - **`delete`** requires `delete_confirm: true`
 - **`publish_kfc`** requires `artifact_state == formal` and `publish_confirm: true` — cannot publish a draft
+- **Every write that sets `meta.requires` is checked (5.7.0, 5.8.0, KF6)**, on `new_thought`, `patch`, `republish_kfc` and `publish_kfc`, before any live ack. A cert at level 1 or more must be one some tool declares, whose tools allow stage `s` (Ninja seed), at a level within its `max_level`. Otherwise Scribe refuses with `kfc_requires_invalid` and writes nothing, since the Ninja could never run it. It reads the vault's catalog cache, else a live `cert_audit`; if neither answers, it refuses. Set the requirement with `requires_cert` and `requires_level`.
+- **Live KFC writes are human-gated.** Publishing, republishing, or a patch, replace, clear_field or delete on a KFC needs `zenos.knowledge.kfc_publish`, or the household admin's approval of that one write through Identity's `request_live_ack` (the console override stands in). Declined or timed out, the write is refused and the refusal carries `live_ack`. A blocked identity, a call the target guard refuses, a publish without `publish_confirm` and a `publish_dry_run` are refused without asking. Each ask is logged as `scribe_live_ack`.
 - **Self-indexing guard** — prevents a component from including its own drawer in scope discovery
 - **Drawer feedback loop guard** — drawer blurbs are advisory; they don't re-enter authoring context
 
@@ -301,7 +312,7 @@ Scribe is non-destructive by default:
 | `script.zen_dojotools_labels` | Label create / auto-create |
 | `script.zen_dojotools_index` | Scope discovery on `new_thought` and `dry_run` |
 | `sensor.zen_dojo_cabinet_resolved` | Default target cabinet |
-| `kfc_template` drawer in Dojo | KF4 contract schema — validated on `publish_kfc` |
+| `kfc_template` drawer in Dojo | KF6 contract schema — validated on `publish_kfc` |
 
 ---
 
@@ -315,6 +326,14 @@ Scribe is non-destructive by default:
 
 | Version | Change |
 |---------|--------|
+| v5.14.0 | The preflight doesn't report `never_fires` for a cache slot (`role: cache`). |
+| v5.13.0 | `list_triggers` reads the trigger registry (`source: registry`, with each trigger's pack, `fires`, frequency and labels; the static list is only a fallback). The preflight adds `triggers_unregistered`, `triggers_frequent` and `never_fires`. An unregistered trigger never refuses a write. |
+| v5.12.0 | The preflight reports `act_problem`. |
+| v5.11.0 | `master_switch` is ignored and stored empty: on and off is `meta.enabled` only. `disable` keeps the component's certs and says how to revoke one. |
+| v5.10.0 | Turning a component on requests each missing cert for the agent that will run it (you approve each on your phone). Off and on again retries. |
+| v5.9.0 | Preflight on `enable`, `publish_kfc` and `republish_kfc`: every cert the run needs (`requires` and the seed's read cert at `s`, the act's emit cert and the chain cert at `e`), checked against the runner agent. `enable` and `disable` write again; they always answered `missing_required`. |
+| v5.8.0 | KF6: `requires_cert` and `requires_level` set `meta.requires` on `new_thought`, `patch`, `republish_kfc` and `publish_kfc`. One check covers every write that sets it, before any live ack; `republish_kfc` and a `patch` on a published KFC used to set it unchecked. |
+| v5.7.0 | KF6: `publish_kfc` checks `meta.requires` against the cert catalog (`kfc_requires_invalid`). The help and descriptions say KF6. |
 | v1.8.0 | `republish_kfc` mode — edit-and-republish path that bypasses the formal scroll gate; merges changes and runs full trim block including label sync. `component_size` feedback on `publish_kfc`/`republish_kfc` responses — reports component_instructions chars, token estimate (~chars/4), % of 16KB FileCabinet drawer limit, and size_tier (ok/advisory/warning/danger). `schedules_summary` field on read responses (count + kata_keys). Patch mode merges `schedules[]` by `kata_key` (upsert) instead of replacing the full array. `publish_kfc` preserves schedules array. `repair` mode — detect and flatten wrapper-accumulated drawer corruption up to 5 levels deep (dry_run default). |
 | v1.7.0 | `icon` field added to KFC schema; set on first publish (label create), preserved on update. `publish_kfc` label upsert — creates label if absent, always updates description. Component summary chonk warning (>150 chars). |
 | v1.4.0 | `seed` and `area_seed` input fields; parsed into draft and publish payloads. |

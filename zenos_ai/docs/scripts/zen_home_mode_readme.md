@@ -58,7 +58,7 @@ DojoTools find these through the `zen_home_mode` label, and the quiet- and work-
 
 ## Schedule Anchors
 
-Six `input_datetime` helpers control when mode transitions fire. All are time-only (no date). Defaults:
+Six `input_datetime` helpers control when mode transitions fire. All are time-only (no date). Anchors must be strictly ascending through the day; if they are not (for example, all six at 00:00 on a fresh install), the default schedule is used and `home_mode_anchor_misconfigured` is raised until they are set. Defaults:
 
 | Helper | Default | Mode it triggers |
 |---|---|---|
@@ -162,4 +162,4 @@ Apply the `zen_vacation_mode` label to your calendar entity. The system resolves
 | Presence return not releasing Away | Check `zen_hm_presence_return` automation — it only fires when mode is exactly `Away` |
 | Quiet hours wrong | Verify `zen_quiet_hours_start` and `zen_quiet_hours_end` — if `end < start` the window wraps midnight (correct behavior) |
 | Work hours always off | Check both `zen_work_hours_start` and `zen_work_hours_end` are set and not `unknown` |
-| Timers reset on restart | This was a pre-4.5.6 issue caused by `initial:` in the helper definition. 4.5.6 removed `initial:` — Flynn now seeds defaults on first boot only. Upgrade to 4.5.6 and run `zen_maint_4_5_6_identity_family_repair` is not needed for this; timers will stabilize on the next restart after upgrading. |
+| Timers reset on restart | This was a pre-4.5.6 issue caused by `initial:` in the helper definition. 4.5.6 removed `initial:` — Flynn now seeds defaults on first boot only. Timers stabilize on the next restart after upgrading. |

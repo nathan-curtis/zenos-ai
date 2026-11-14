@@ -1,6 +1,21 @@
 ###############################################################################
 # DojoTools — Lock Manager
-# zen_dojotools_locks (v1.6.2)
+# zen_dojotools_locks (v1.8.2)
+# v1.8.2: HA naming (2026.11): name outputs carry entity_name and device_name
+#   next to the legacy friendly_name (kept while HA still sets it), and
+#   composed names are built from those parts, so they survive HA dropping
+#   friendly_name. entity_name() is used only where HA has it (2026.4+).
+#   Device names use device_name().
+# v1.8.1: each cert this tool declares gets a short plain description for
+#   the approval prompt (the old text moves to detail) and its real max_level.
+# v1.8.0: cert names moved to the zenos.* namespace (2026.11). An old flat
+#   grant still satisfies the new name for one release (reissue pending).
+# v1.7.0: onboarding gate (zen_os_1 entry_gate). An agent without
+#   zenos.agent.basic gets help, tool_manifest and kfc_manifest; anything else
+#   (a bare call is discover) answers onboarding_required with next_step
+#   zen_flynn_oobe. The manifest version is synced to the header again.
+# v1.6.4: unregister finds the lens registry through an expanded drawer (cabinet_drawer_value_mounted).
+# v1.6.3: unregister rewrites the lens registry whole (upsert merged, so the provider was never removed).
 # v1.6.2: tool_manifest declares kfc_manifest so bootstrap_kfc registers the
 #   locks KFC (header version synced to the manifest).
 #
@@ -57,7 +72,7 @@ script:
     alias: "Zen DojoTools Lock Manager"
     description: >-
       Room-targetable lock/unlock control (lock.* domain) by entity_id,
-      label, and/or room. CALL mode=help FIRST — full mode reference,
+      label, and/or room. CALL mode=help FIRST: full mode reference,
       targeting precedence, dry_run preview, and the exterior-unlock
       live-ack cert gate all live there, not here.
     icon: mdi:lock
@@ -85,7 +100,7 @@ script:
               - tool_manifest
       room:
         name: Room
-        description: "Area name/slug OR a Room Manager room label — both resolve. Omit along with label/entity_id on discover/status for a whole-house lock overview; for set unless entity_id or label given."
+        description: "Area name/slug OR a Room Manager room label: both resolve. Omit along with label/entity_id on discover/status for a whole-house lock overview; for set unless entity_id or label given."
         selector:
           text:
       label:
@@ -157,6 +172,27 @@ script:
       # the choose:/default: dispatch further down, which converges on the
       # single envelope-wrapped exit.
       # ═══════════════════════════════════════════════════════════════════════
+      # Onboarding gate (zen_os_1 entry_gate): an agent without
+      # zenos.agent.basic gets help, tool_manifest and kfc_manifest only. A
+      # bare call is discover. Calls no user started pass.
+      - variables:
+          _lk_gate: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{ OS.entry_gate((context.user_id if context is defined else '') or '', 'zen_dojotools_locks', _tm_check | trim or 'discover') | from_json({'pass': false, 'reason': 'guarded: the onboarding gate could not be read'}) }}
+      - if: "{{ not _lk_gate.get('pass', false) }}"
+        then:
+          - variables:
+              result:
+                status: error
+                mode: "{{ _tm_check | trim or 'discover' }}"
+                reason: "{{ _lk_gate.reason }}"
+                next_step: "{{ _lk_gate.next_step }}"
+                caller_token: "{{ _caller_token_early }}"
+          - action: system_log.write
+            data:
+              level: warning
+              logger: zen_entry_gate
+              message: "{{ _lk_gate.get('log') or 'onboarding gate refused a call (gate result unreadable)' }}"
       - if: "{{ result is not defined and _tm_check == 'tool_manifest' }}"
         then:
           - variables:
@@ -164,9 +200,10 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {%- set _tm = MF.tool_manifest(
                     tool='zen_dojotools_locks',
+                    summary='Lock and unlock by room, label, or entity',
                     display_name='Lock Manager',
                     tier='dojotools',
-                    version='1.6.2',
+                    version='1.8.2',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
                     optional_labels=['ext_lock'],
@@ -186,14 +223,14 @@ script:
                     'kfc_manifest': true,
                     'kfc_components': ['locks'],
                     'certs_required': [{
-                      'cert': 'lock_control',
+                      'cert': 'zenos.actuation.lock_control',
                       'bundle': ['zenos_agent_advanced'],
                       'display_name': 'Lock Control',
-                      'description': 'Physical lock/unlock actuation via zen_dojotools_locks mode=set.',
-                      'max_level': 4,
+                      'description': "Lock any door and unlock interior doors", 'detail': 'Physical lock/unlock actuation via zen_dojotools_locks mode=set.',
+                      'max_level': 1,
                       'gates': ['mode=set action=lock (cert only)', 'mode=set action=unlock on non-ext_lock targets (cert only)'],
                       'live_ack_required_for': ['mode=set action=unlock on ext_lock (exterior) targets -- every call, cert alone is never sufficient'],
-                      'grant_via': "persona_editor mode=cert_req_grant cert_component=lock_control (or zen_dojotools_identity mode=cert_list to see current status)"
+                      'grant_via': "persona_editor mode=cert_req_grant cert_component=zenos.actuation.lock_control (or zen_dojotools_identity mode=cert_list to see current status)"
                     }]
                   }) -}}
 
@@ -250,66 +287,52 @@ script:
                   risk_class: actuator
                   enabled: true
                   status: available
-          - action: script.zen_dojotools_filecabinet
+          # Through the central lens writer (prompt_loader lens_registry): it runs
+          # queued, so two registrations never overwrite each other.
+          - action: script.zen_admintools_prompt_loader
+            continue_on_error: true
+            response_variable: _reg_write_raw
             data:
-              action_type: get
-              volume_entity_id: "{{ _reg_hh }}"
-              key: lens_registry
-            response_variable: _reg_read_raw
+              mode: lens_registry
+              action_type: register
+              item: locks
+              payload_json: "{{ _reg_entry['locks'] | tojson }}"
           - variables:
-              _reg_current: >-
-                {%- set raw = _reg_read_raw if _reg_read_raw is mapping else {} -%}
-                {%- set val = raw.get('value', {}) -%}
-                {%- set parsed = val | from_json if val is string else val -%}
-                {{ parsed if parsed is mapping else {} }}
-          - action: script.zen_dojotools_filecabinet
-            data:
-              action_type: write
-              volume_entity_id: "{{ _reg_hh }}"
-              key: lens_registry
-              value: "{{ (_reg_current | combine(_reg_entry)) | tojson }}"
+              _reg_write_raw: "{{ _reg_write_raw.get('result', _reg_write_raw) if _reg_write_raw is defined and _reg_write_raw is mapping else {} }}"
+              _reg_ok: "{{ _reg_write_raw is mapping and _reg_write_raw.get('status') == 'success' }}"
           - variables:
               result:
                 mode: register
-                status: ok
+                status: "{{ 'ok' if _reg_ok else 'error' }}"
                 caller_token: "{{ _caller_token_early }}"
                 provider: locks
-                registered: true
+                registered: "{{ _reg_ok }}"
 
       - if: "{{ result is not defined and _tm_check == 'unregister' }}"
         then:
           - variables:
               _unreg_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
-          - action: script.zen_dojotools_filecabinet
-            data:
-              action_type: get
-              volume_entity_id: "{{ _unreg_hh }}"
-              key: lens_registry
-            response_variable: _unreg_read_raw
           - variables:
-              _unreg_current: >-
-                {%- set raw = _unreg_read_raw if _unreg_read_raw is mapping else {} -%}
-                {%- set val = raw.get('value', {}) -%}
-                {%- set parsed = val | from_json if val is string else val -%}
-                {{ parsed if parsed is mapping else {} }}
-              _unreg_removed: "{{ 'locks' in _unreg_current }}"
-          - variables:
-              _unreg_new: >-
-                {%- set ns = namespace(d={}) -%}
-                {%- for k, v in _unreg_current.items() -%}
-                  {%- if k != 'locks' -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endif -%}
-                {%- endfor -%}
-                {{ ns.d }}
-          - action: script.zen_dojotools_filecabinet
+              _unreg_removed: >-
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set v = CABS.cabinet_drawer_value_mounted(_unreg_hh, 'lens_registry', {}) | from_json({}) -%}
+                {%- set v = (v | from_json({})) if v is string else v -%}
+                {{ v is mapping and 'locks' in v }}
+          # Through the central lens writer (prompt_loader lens_registry).
+          - action: script.zen_admintools_prompt_loader
+            continue_on_error: true
+            response_variable: _unreg_write_raw
             data:
-              action_type: write
-              volume_entity_id: "{{ _unreg_hh }}"
-              key: lens_registry
-              value: "{{ _unreg_new | tojson }}"
+              mode: lens_registry
+              action_type: unregister
+              item: locks
+          - variables:
+              _unreg_write_raw: "{{ _unreg_write_raw.get('result', _unreg_write_raw) if _unreg_write_raw is defined and _unreg_write_raw is mapping else {} }}"
+              _unreg_ok: "{{ _unreg_write_raw is mapping and _unreg_write_raw.get('status') == 'success' }}"
           - variables:
               result:
                 mode: unregister
-                status: ok
+                status: "{{ 'ok' if _unreg_ok else 'error' }}"
                 caller_token: "{{ _caller_token_early }}"
                 provider: locks
                 removed: "{{ _unreg_removed }}"
@@ -354,7 +377,7 @@ script:
               # zen_dojotools_infra's d-class and persona_editor's cert
               # grant/revoke) so the timing logic and dedup-key generation
               # live in exactly one place. ──
-              - action: script.zen_dojotools_filecabinet
+              - action: script.zen_sutra_filecabinet
                 data:
                   action_type: get
                   volume_entity_id: "{{ _esc_hh }}"
@@ -392,7 +415,7 @@ script:
                   - variables:
                       _esc_granted_at: "{{ now().isoformat() }}"
                       _esc_expires_at: "{{ (now() + timedelta(minutes=_esc_minutes)).isoformat() }}"
-                  - action: script.zen_dojotools_filecabinet
+                  - action: script.zen_sutra_filecabinet
                     data:
                       action_type: get
                       volume_entity_id: "{{ _esc_hh }}"
@@ -409,9 +432,10 @@ script:
                         granted_at: "{{ _esc_granted_at }}"
                         expires_at: "{{ _esc_expires_at }}"
                         reason: "{{ _esc_reason }}"
-                  - action: script.zen_dojotools_filecabinet
+                  - action: script.zen_sutra_filecabinet
                     data:
-                      action_type: write
+                      action_type: upsert
+                      mode: replace
                       volume_entity_id: "{{ _esc_hh }}"
                       key: lock_escalations
                       value: "{{ (_esc_current | combine({_esc_scope: _esc_grant})) | tojson }}"
@@ -428,7 +452,7 @@ script:
           - variables:
               _escs_scope: "{{ escalation_scope | default('', true) | string | trim }}"
               _escs_hh: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
-          - action: script.zen_dojotools_filecabinet
+          - action: script.zen_sutra_filecabinet
             data:
               action_type: get
               volume_entity_id: "{{ _escs_hh }}"
@@ -528,7 +552,7 @@ script:
                                   {%- set _notes = (_notes_raw | from_json) if _notes_raw is string else _notes_raw -%}
                                   {%- set ns.items = ns.items + [{
                                     'entity_id': e,
-                                    'friendly_name': state_attr(e, 'friendly_name') | default(e, true),
+                                    'friendly_name': state_attr(e, 'friendly_name') | default(e, true), 'entity_name': (entity_name(e) if entity_name is defined else none), 'device_name': (device_name(e) if device_id(e) else none),
                                     'state': states(e),
                                     'extended_notes': _notes
                                   }] -%}
@@ -628,7 +652,7 @@ script:
                                 {%- set ns.items = ns.items + [{
                                   'entity_id': e,
                                   'domain': e.split('.')[0],
-                                  'friendly_name': state_attr(e, 'friendly_name') | default(e, true),
+                                  'friendly_name': state_attr(e, 'friendly_name') | default(e, true), 'entity_name': (entity_name(e) if entity_name is defined else none), 'device_name': (device_name(e) if device_id(e) else none),
                                   'state': states(e)
                                 }] -%}
                               {%- endfor -%}
@@ -740,7 +764,7 @@ script:
                           result:
                             status: ok
                             entity_id: "{{ _insp_ent }}"
-                            friendly_name: "{{ state_attr(_insp_ent, 'friendly_name') | default(_insp_ent, true) }}"
+                            friendly_name: "{{ ((([device_name(_insp_ent) if device_id(_insp_ent) else '', entity_name(_insp_ent)] | select | unique | join(' ')) if entity_name is defined else '') or (state_attr(_insp_ent, 'friendly_name') | default(_insp_ent, true))) }}"
                             state: "{{ states(_insp_ent) }}"
                             last_changed: "{{ states.lock | selectattr('entity_id', 'eq', _insp_ent) | map(attribute='last_changed') | first | default(none, true) }}"
                             area_id: "{{ _insp_area_id }}"
@@ -750,7 +774,7 @@ script:
                             ext_lock_member: "{{ 'ext_lock' in _insp_labels }}"
                             battery_level: "{{ state_attr(_insp_ent, 'battery_level') }}"
                             device_id: "{{ _insp_device_id }}"
-                            device_name: "{{ device_attr(_insp_device_id, 'name') if _insp_device_id else none }}"
+                            device_name: "{{ device_name(_insp_device_id) if _insp_device_id else none }}"
                             device_manufacturer: "{{ device_attr(_insp_device_id, 'manufacturer') if _insp_device_id else none }}"
                             device_model: "{{ device_attr(_insp_device_id, 'model') if _insp_device_id else none }}"
                             zwave: "{{ _insp_is_zwave }}"
@@ -800,7 +824,7 @@ script:
                         continue_on_error: true
                         data:
                           mode: resolve_caller_identity
-                          required_cert: lock_control
+                          required_cert: zenos.actuation.lock_control
                           required_cert_level: 1
                           caller_token: "{{ _caller_token }}"
                       - variables:
@@ -882,13 +906,13 @@ script:
                                           {%- if _set_policy_status != 'allowed' -%}
                                             resolve_caller_identity did not return an allowed identity -- action denied.
                                           {%- else -%}
-                                            lock_control cert level {{ _set_cert_level }} is below the required minimum (1) to {{ _action }} {{ _set_targets | map('regex_replace', '^lock\.', '') | map('replace', '_', ' ') | join(', ') }}.
+                                            zenos.actuation.lock_control cert level {{ _set_cert_level }} is below the required minimum (1) to {{ _action }} {{ _set_targets | map('regex_replace', '^lock\.', '') | map('replace', '_', ' ') | join(', ') }}.
                                           {%- endif -%}
                                         can_request: "{{ _set_policy_status == 'allowed' }}"
                                         request_via:
                                           tool: zen_dojotools_persona_editor
                                           mode: cert_req_grant
-                                          cert_component: lock_control
+                                          cert_component: zenos.actuation.lock_control
                                           cert_level: 1
                                           note: "Fires a live household-admin approval push -- see zen_dojotools_identity mode=cert_list for current status."
                                         would_apply: "{{ _set_targets }}"
@@ -918,7 +942,7 @@ script:
                                             action: unlock
                                             error: cert_scope_denied
                                             detail: >-
-                                              lock_control cert_scope explicitly denies
+                                              zenos.actuation.lock_control cert_scope explicitly denies
                                               {{ _set_ext_denied | join(', ') }} -- an admin has scoped
                                               this door out via cert_req_grant. No ack is offered for a
                                               denied target; removing the denial requires cert_req_grant
@@ -937,7 +961,7 @@ script:
                                             (exterior door -- unlocking reduces security). No standing
                                             override on file for this door, so asking every time as
                                             designed. Approve this one unlock? (Tip: grant
-                                            cert_req_grant cert_component=lock_control cert_scope=["{{ _set_ext_targets[0] }}"]
+                                            cert_req_grant cert_component=zenos.actuation.lock_control cert_scope=["{{ _set_ext_targets[0] }}"]
                                             via persona_editor if you want this specific door to stop asking.)
                                           caller_token: "{{ _caller_token }}"
                                           # NOTE: uses the regex-cleaned entity_id slug rather than

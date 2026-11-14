@@ -1,10 +1,12 @@
-# Zen DojoTools Core — `zen_dojotools_filecabinet_gc` v4.5.1
+# Zen DojoTools Core — `zen_dojotools_filecabinet_gc` v4.7.0
 
 *FileCabinet garbage collector — drawer lifecycle management*
 
 ---
 
 > **Response envelope (2026.10.0):** `zen_dojotools_filecabinet_gc` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -20,9 +22,9 @@ The GC is the custodian of cabinet hygiene. It runs daily at midnight (triggered
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `mode` | select | `gc` | `gc`, `recycle`, `hide`, `unhide`. Deprecated alias: `action_type`. |
-| `key` | text | — | Drawer key (required for recycle, hide, unhide) |
-| `dry_run` | boolean | `false` | Report what would change without making changes (gc only) |
+| `mode` | select | `gc` | `gc`, `recycle`, `hide`, `unhide`, `repair`. Deprecated alias: `action_type`. |
+| `key` | text | — | Drawer key (required for recycle, hide, unhide, repair) |
+| `dry_run` | boolean | `false` | Report what would change without making changes (gc and repair) |
 | `max_age_hours` | number | `24` | Legacy eviction threshold in hours (1–168) |
 | `post_supersummary` | boolean | `true` | Deprecated — field ignored. GC now fires a scoped `summary_force` event per kata key actually deleted (see below) instead of a blanket resummarize |
 | `volume_entity_id` | entity (sensor) | — | Target cabinet. Defaults to Kata cabinet |
@@ -135,6 +137,22 @@ key: some_drawer
 
 Pass the base name (without the leading dot). The GC finds `.some_drawer`, copies it to `some_drawer`, and removes the hidden copy.
 
+`recycle`, `hide` and `unhide` on a missing drawer answer `not_found` and write nothing.
+
+---
+
+### `repair`
+
+Normalizes one drawer in place to the `{value, meta}` envelope: nested envelopes are unwrapped, expiry stored in an older value moves into `meta`, and `meta` is always present. Writes nothing when the drawer is already clean or cannot be read.
+
+```yaml
+mode: repair
+key: some_drawer
+dry_run: true
+```
+
+Every other GC write normalizes the drawer it touches the same way.
+
 ---
 
 ## Schedule
@@ -163,6 +181,18 @@ The daily run uses default settings:
 }
 ```
 
+### repair
+
+```json
+{
+  "status": "repaired | would_repair | clean | not_repairable",
+  "action": "repair",
+  "drawer": "some_drawer",
+  "repairs": [],
+  "dry_run": false
+}
+```
+
 ### recycle / hide / unhide
 
 ```json
@@ -184,4 +214,4 @@ The daily run uses default settings:
 | `sensor.zen_kata_cabinet_resolved` | Default GC target cabinet |
 | `library_index.jinja` → `parse_index_command` | Enumerate all AI Data Storage cabinets |
 | `script.zen_dojotools_supersummary` | Post-eviction summary trigger |
-| HA `set_variable_legacy` / `remove_variable_legacy` events | Drawer create / delete |
+| `script.zen_admintools_cabinet_writer` | Every drawer write and removal (the admin door) |

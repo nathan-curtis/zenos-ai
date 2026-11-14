@@ -1,6 +1,15 @@
 ###############################################################################
 # ZenOS-AI Plugin: Paperless-NGX — Stacks
-# Version: 0.7.5
+# Version: 0.7.7
+# v0.7.7: zen_sutra_paperless reads integrations_config the way FileCabinet
+#   returns it (the drawer contents in value). It looked one level deeper
+#   (value.integrations_config), found no URL, and answered not_configured on
+#   every call; a 2 s wait-and-reread masked it. Both are gone (#10682).
+# v0.7.6: Lens fixes (#10681). The fallthrough to Library carries the bus's
+#   top-level anchor_type / anchor_ids into input_json (Library's stacks
+#   branch reads them only there, so every bus lookup ran with no anchors),
+#   and stacks_by_anchor answers flat ({status, count, evidence}), passing
+#   not_configured through.
 #
 # v0.7.5 (2026-07-23): Fixed the default-fallthrough handler (every mode except
 #   tool_manifest/register/unregister) — it forwarded to zen_dojotools_library
@@ -129,7 +138,7 @@ script:
         - condition: template
           value_template: '{{ _mode_norm == "tool_manifest" }}'
         sequence:
-        - action: script.zen_dojotools_filecabinet
+        - action: script.zen_sutra_filecabinet
           response_variable: _ic_fc_raw
           continue_on_error: true
           data:
@@ -147,9 +156,10 @@ script:
               {%- set _health = {'configured': _base_url != '', 'status': 'ok' if _base_url != '' else 'warn', 'notes': [] if _base_url != '' else ['Paperless-NGX URL not configured — run Library stacks_configure']} -%}
               {{- MF.tool_manifest(
                 tool='zen_stack_paperless',
+                summary='Internal: Paperless documents lens provider',
                 display_name='Paperless-NGX Document Stack',
                 tier='stacks',
-                version='0.7.3',
+                version='0.7.7',
                 health=_health,
                 required_labels=['paperless'],
                 optional_labels=['documents', 'stacks'],
@@ -180,19 +190,6 @@ script:
           - condition: template
             value_template: '{{ _mode_norm == "register" }}'
         sequence:
-        - action: script.zen_dojotools_filecabinet
-          continue_on_error: true
-          response_variable: _pr_reg_read
-          data:
-            action_type: get
-            volume_entity_id: "{{ _hh }}"
-            key: lens_registry
-        - variables:
-            _pr_existing_reg: >-
-              {%- set raw = _pr_reg_read if _pr_reg_read is mapping else {} -%}
-              {%- set val = raw.get('value', {}) -%}
-              {%- set parsed = val | from_json if val is string else val -%}
-              {{ parsed if parsed is mapping else {} }}
         - variables:
             _pr_provider_decl:
               provider: paperless_ngx
@@ -212,14 +209,18 @@ script:
                 required: r
                 allowed: [r]
                 denied: [w, x, d, a]
-        - action: script.zen_dojotools_filecabinet
+        # Through the central lens writer (prompt_loader lens_registry): it runs
+        # queued, so two registrations never overwrite each other.
+        - action: script.zen_admintools_prompt_loader
           continue_on_error: true
           response_variable: _pr_reg_write
           data:
-            action_type: update
-            volume_entity_id: "{{ _hh }}"
-            key: lens_registry
-            value: "{{ _pr_existing_reg | combine({'paperless_ngx': _pr_provider_decl}) | tojson }}"
+            mode: lens_registry
+            action_type: register
+            item: paperless_ngx
+            payload_json: "{{ _pr_provider_decl | tojson }}"
+        - variables:
+            _pr_reg_write: "{{ _pr_reg_write.get('result', _pr_reg_write) if _pr_reg_write is defined and _pr_reg_write is mapping else {} }}"
         - variables:
             _provider_response:
               status: "{{ 'success' if _pr_reg_write is mapping and _pr_reg_write.get('status', '') == 'success' else 'error' }}"
@@ -238,34 +239,17 @@ script:
           - condition: template
             value_template: '{{ _mode_norm == "unregister" }}'
         sequence:
-        - action: script.zen_dojotools_filecabinet
-          continue_on_error: true
-          response_variable: _pu_reg_read
-          data:
-            action_type: get
-            volume_entity_id: "{{ _hh }}"
-            key: lens_registry
-        - variables:
-            _pu_existing: >-
-              {%- set raw = _pu_reg_read if _pu_reg_read is mapping else {} -%}
-              {%- set val = raw.get('value', {}) -%}
-              {%- set parsed = val | from_json if val is string else val -%}
-              {{ parsed if parsed is mapping else {} }}
-        - variables:
-            _pu_new: >-
-              {%- set ns = namespace(result={}) -%}
-              {%- for k, v in _pu_existing.items() if k != 'paperless_ngx' -%}
-                {%- set ns.result = ns.result | combine({k: v}) -%}
-              {%- endfor -%}
-              {{ ns.result }}
-        - action: script.zen_dojotools_filecabinet
+        # Through the central lens writer (prompt_loader lens_registry): it runs
+        # queued, so two registrations never overwrite each other.
+        - action: script.zen_admintools_prompt_loader
           continue_on_error: true
           response_variable: _pu_write
           data:
-            action_type: update
-            volume_entity_id: "{{ _hh }}"
-            key: lens_registry
-            value: "{{ _pu_new | tojson }}"
+            mode: lens_registry
+            action_type: unregister
+            item: paperless_ngx
+        - variables:
+            _pu_write: "{{ _pu_write.get('result', _pu_write) if _pu_write is defined and _pu_write is mapping else {} }}"
         - variables:
             _provider_response:
               status: "{{ 'success' if _pu_write is mapping and _pu_write.get('status', '') == 'success' else 'error' }}"
@@ -282,21 +266,42 @@ script:
         section: stacks
         stack: paperless
         mode: "{{ _mode_norm }}"
+        # #10681: the Lens bus sends anchor_type / anchor_ids at the top level;
+        # Library's stacks branch reads them from input_json, so carry them
+        # in (an explicit input_json value wins).
         input_json: >-
           {%- set raw = input_json | default('', true) -%}
-          {%- if raw is mapping -%}{{ raw | tojson }}
-          {%- elif raw is string and raw | trim != '' -%}{{ raw | trim }}
-          {%- else -%}{{ {} | tojson }}{%- endif -%}
+          {%- set d = raw if raw is mapping else ((raw | from_json({})) if raw is string and raw | trim != '' else {}) -%}
+          {%- set d = d if d is mapping else {} -%}
+          {%- set _at = anchor_type | default('', true) | string | trim -%}
+          {%- set _ai = anchor_ids | default('', true) -%}
+          {%- set _ai = (_ai | from_json([])) if _ai is string and (_ai | trim)[:1] == '[' else _ai -%}
+          {%- set extra = {} -%}
+          {%- if _at != '' and 'anchor_type' not in d -%}{%- set extra = extra | combine({'anchor_type': _at}) -%}{%- endif -%}
+          {%- if _ai not in ['', none, []] and 'anchor_ids' not in d -%}{%- set extra = extra | combine({'anchor_ids': _ai}) -%}{%- endif -%}
+          {{ (d | combine(extra)) | tojson }}
         caller_token: "{{ caller_token | default('') }}"
     - variables:
         _provider_response: >-
           {%- set r = _paperless_stack_result if _paperless_stack_result is mapping else {} -%}
-          {%- set out = r | combine({
-            'provider': 'paperless_ngx',
-            'department': 'stacks',
-            'handler': 'zen_stack_paperless'
-          }, recursive=true) -%}
-          {{ out }}
+          {%- set inner = r.get('result', r) if r.get('result', r) is mapping else {} -%}
+          {%- if _mode_norm == 'stacks_by_anchor' -%}
+            {#- #10681: flat lens reply; the bus unwraps one .result and reads
+                status/evidence/count. not_configured passes through so the bus
+                can say so instead of reporting success with nothing. -#}
+            {%- set res = inner.get('result', {}) if inner.get('result') is mapping else {} -%}
+            {{ {'status': inner.get('status', 'error'), 'provider': 'paperless_ngx', 'handler': 'zen_stack_paperless',
+                'anchor_query': inner.get('anchor_query', {}),
+                'count': res.get('count', 0) | int(0), 'evidence': res.get('evidence', []),
+                'content_redacted': true} }}
+          {%- else -%}
+            {%- set out = inner | combine({
+              'provider': 'paperless_ngx',
+              'department': 'stacks',
+              'handler': 'zen_stack_paperless'
+            }, recursive=true) -%}
+            {{ out }}
+          {%- endif -%}
     - stop: paperless stack provider complete
       response_variable: _provider_response
 
@@ -344,6 +349,7 @@ script:
             {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
             {{- MF.tool_manifest(
               tool='zen_sutra_paperless',
+              summary='Internal: Paperless-NGX connector',
               display_name='Paperless Sutra',
               tier='stacks',
               version='1.0.0',
@@ -364,55 +370,22 @@ script:
         _pl: '{{ payload | default("{}") | string | trim }}'
         _hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
 
-    - action: script.zen_dojotools_filecabinet
+    - action: script.zen_sutra_filecabinet
       response_variable: _ic_read
       continue_on_error: true
       data:
-        action_type: read
+        action_type: get
         show_hidden_volumes: false
         volume_entity_id:
           - '{{ _hh }}'
         key: integrations_config
 
     - variables:
-        _integrations_config: >-
-          {%- set r = _ic_read.get('result', {}) if _ic_read is mapping else {} -%}
-          {%- set r = r if r is mapping else (r | from_json if r is string else {}) -%}
-          {%- set r = r.get('result', r) if r is mapping else {} -%}
-          {%- set v = r.get('integrations_config', {}) -%}
-          {%- set v = v.get('value', v) if v is mapping else {} -%}
-          {{ v if v is mapping else (v | from_json if v is string else {}) }}
+        # FileCabinet get returns the drawer's contents as value.
+        _integrations_config: "{{ _ic_read.get('value', {}) if _ic_read is mapping and _ic_read.get('status') == 'success' and _ic_read.get('value') is mapping else {} }}"
         _cfg: "{{ _integrations_config.get('paperless_ngx', {}) if _integrations_config is mapping else {} }}"
         _base_url: "{{ _cfg.get('url', '') | string | trim if _cfg is mapping else '' }}"
         _api_version: "{{ _cfg.get('api_version', 9) | int(9) if _cfg is mapping else 9 }}"
-
-    - choose:
-      - conditions:
-        - condition: template
-          value_template: '{{ _base_url == "" }}'
-        sequence:
-        - delay:
-            seconds: 2
-        - action: script.zen_dojotools_filecabinet
-          response_variable: _ic_retry_read
-          continue_on_error: true
-          data:
-            action_type: read
-            show_hidden_volumes: false
-            volume_entity_id:
-              - '{{ _hh }}'
-            key: integrations_config
-        - variables:
-            _integrations_config: >-
-              {%- set r = _ic_retry_read.get('result', {}) if _ic_retry_read is mapping else {} -%}
-              {%- set r = r if r is mapping else (r | from_json if r is string else {}) -%}
-              {%- set r = r.get('result', r) if r is mapping else {} -%}
-              {%- set v = r.get('integrations_config', {}) -%}
-              {%- set v = v.get('value', v) if v is mapping else {} -%}
-              {{ v if v is mapping else (v | from_json if v is string else {}) }}
-            _cfg: "{{ _integrations_config.get('paperless_ngx', {}) if _integrations_config is mapping else {} }}"
-            _base_url: "{{ _cfg.get('url', '') | string | trim if _cfg is mapping else '' }}"
-            _api_version: "{{ _cfg.get('api_version', 9) | int(9) if _cfg is mapping else 9 }}"
 
     - choose:
       - conditions:

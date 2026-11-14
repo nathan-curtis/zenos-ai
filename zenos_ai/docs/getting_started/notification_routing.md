@@ -20,7 +20,7 @@ If you've created `notify.admin_devices` and it works from Developer Tools but Z
 alert_manager (KFC component)
   → writes kata when conditions match
   → fires zen_event: kind=alert_fire
-    → KF4 action pipeline
+    → KF6 action pipeline
       → zen_dojotools_postman mode: resolve_and_dispatch
         → reads postman_profile from household, family, user cabinets
           → dispatches to notify.<your-service>

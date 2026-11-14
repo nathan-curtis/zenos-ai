@@ -1,8 +1,9 @@
 blueprint:
   name: "ZenOS Room Manager v3: Room State"
   description: >-
-    Resolves a room's state (emergency > manual override > asleep > engaged >
-    child-engaged > hold > occupied > vacant) purely from
+    Resolves a room's state (emergency > child paused > manual override >
+    asleep > hold > engaged > occupied (incl. any active child) > vacant;
+    hold is a superset of engaged, so it ranks higher) purely from
     label-intersection truthiness. NOTHING IS CREATED: every helper —
     timers, latch booleans, duration input_numbers — is entirely
     OPTIONAL and discovered by label, same as every signal class in this
@@ -213,9 +214,11 @@ blueprint:
         THIS room's state (e.g. master_bedroom would list
         sensor.master_bathroom_room_state here). CHILD LINK, DEFAULT ON
         (2026-08-06, ported from legacy's "parent = Hold whenever child
-        Occupied-or-higher" design): a child resolved to Engaged
-        promotes the parent to Engaged; a child in ANY OTHER state
-        except Vacant/Checking/Paused holds the parent at (at least)
+        Occupied-or-higher" design): a child in any real state except
+        Vacant/Paused (Engaged included; unknown/unavailable excluded,
+        #10662) holds the parent at Occupied, never higher (a busy
+        ensuite does not make the bedroom Engaged); Paused and
+        Emergency cascade as themselves. That holds the parent at
         Occupied — indefinitely, for as long as the child stays active,
         no timer needed. EXCEPT the parent's own DIRECT resolution
         already being Asleep wins outright — using the ensuite
@@ -456,7 +459,15 @@ variables:
   # room_topology entry -- same cabinet object room_control already lives
   # on, no new drawer, no helper entity of any kind. The timer.* entity
   # itself is untouched; only the class tag moved.
-  _room_timer_class: "{{ _room_topology.get(room, {}).get('room_timer_class', '') if _room_topology is mapping else '' }}"
+  # #10666: room_timer_class/<room> is its own key now (no whole-topology
+  # writes to race); the topology field is the fallback for a room whose
+  # class was last set before the move.
+  _room_timer_class_cab: >-
+    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+    {{ CABS.cabinet_drawer_value_mounted(_hh_cab, 'room_timer_class/' ~ room, none) if _hh_cab != '' else 'null' }}
+  _room_timer_class: >-
+    {%- set _pk = _room_timer_class_cab | from_json(_room_timer_class_cab) if _room_timer_class_cab is string else _room_timer_class_cab -%}
+    {{ _pk if _pk is string else (_room_topology.get(room, {}).get('room_timer_class', '') if _room_topology is mapping else '') }}
   _asleep_minutes_ent: "{{ (label_entities('asleep_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
   _nap_minutes_ent: "{{ (label_entities('nap_minutes') | intersect(_room_ents) | list | first) | default('', true) }}"
   _hold_ents: "{{ label_entities('hold') | intersect(_room_ents) | list }}"
@@ -520,7 +531,7 @@ variables:
     {%- for eid in _trouble_circuit_ents -%}
       {%- if state_attr(eid, 'relay_state') == 'OPEN' and not ns.open -%}
         {%- set ns.open = true -%}
-        {%- set ns.name = state_attr(eid, 'friendly_name') | default(eid, true) -%}
+        {%- set ns.name = ((([device_name(eid) if device_id(eid) else '', entity_name(eid)] | select | unique | join(' ')) if entity_name is defined else '') or (state_attr(eid, 'friendly_name') | default(eid, true))) -%}
         {%- set _rq = state_attr(eid, 'relay_requester') | default('', true) -%}
         {%- set ns.requester = _rq if _rq not in ['NONE', none] else '' -%}
       {%- endif -%}
@@ -583,7 +594,7 @@ variables:
     {%- set ns = namespace(names=[]) -%}
     {%- for e in _ble_occupant_ents_all -%}
       {%- if state_attr(e, 'area_id') == room -%}
-        {%- set ns.names = ns.names + [(state_attr(e, 'friendly_name') | default(e, true))] -%}
+        {%- set ns.names = ns.names + [(((([device_name(e) if device_id(e) else '', entity_name(e)] | select | unique | join(' ')) if entity_name is defined else '') or (state_attr(e, 'friendly_name') | default(e, true))))] -%}
       {%- endif -%}
     {%- endfor -%}
     {{ ns.names }}
@@ -631,7 +642,7 @@ variables:
   # Untagged = unchanged behavior, safe no-op, same guarantee as every
   # other opt-in/opt-out label here.
   #
-  # 2026-08-21 (Friday's own diagnosis, Radar #10352): a second real
+  # 2026-08-21 (the agent's own diagnosis, Radar #10352): a second real
   # instance of this exact class -- smart TVs (webOS/similar) report
   # bare 'on' for their idle home screen (no title/provider/playback
   # position, volume often 0/null), same as the AVR case above: 'on'
@@ -824,7 +835,22 @@ variables:
   # never re-rendering no matter how many times room_control/cabinet writes
   # landed correctly underneath it. Use this file's own documented
   # friendly_name -> entity_id convention (line 207-208) instead of `this`.
-  _self_entity_id: "{{ 'sensor.' ~ (friendly_name | slugify) }}"
+  # 2026.11: the sensor carries its room in attribute room_state_room, so
+  # it finds itself by that, not by a name (HA plans to drop friendly_name).
+  # The name slug is only the first-render fallback, before that attribute
+  # exists.
+  # #10659: a commissioned room finds itself from labels already in hand
+  # (its own room label + zen_room_state), so the hot path walks no
+  # states.sensor at all. The attribute scan below is only the fallback:
+  # first render (labels not synced yet) or more than one labeled sensor.
+  _self_entity_id: >-
+    {%- set _lab = label_entities('zen_room_state') | intersect(_room_ents) | select('match', 'sensor\.') | list -%}
+    {%- if _lab | count == 1 -%}
+      {{- _lab[0] -}}
+    {%- else -%}
+      {%- set _mine = states.sensor | selectattr('attributes.room_state_room', 'defined') | selectattr('attributes.room_state_room', 'eq', room) | map(attribute='entity_id') | list -%}
+      {{- _mine | first if _mine | count > 0 else 'sensor.' ~ (friendly_name | slugify) -}}
+    {%- endif -%}
   # Every state change carries context.id/parent_id/user_id, which
   # together tell you whether it came from a person/dashboard, an
   # automation, or a physical device. Only available at the exact render
@@ -915,9 +941,9 @@ variables:
   # working. Retag to 'presence_hold' when convenient; no rush.
   _presence_hold_ent: "{{ ((label_entities('presence_hold') + label_entities('presence')) | unique | list | intersect(_room_ents) | list | first) | default('', true) }}"
   _presence_hold_hi: "{{ _presence_hold_ent != '' and is_state(_presence_hold_ent, 'on') }}"
-  # CHILD LINK: a parent holds at the child's state (net effect: an
-  # engaged-or-higher child holds the parent indefinitely until it
-  # releases, for any state except Paused/Vacant). Default on — opt out per
+  # CHILD LINK: a child in any real state except Paused/Vacant holds the
+  # parent at Occupied, never higher, until it releases (see CASCADE-UP
+  # DESIGN below; Paused and Emergency cascade as themselves). Default on — opt out per
   # room by tagging ONE input_boolean 'child_link_disable' + this
   # room's label. No timer needed: this is naturally "indefinite until
   # released" because it re-evaluates the CHILD's own live state on
@@ -998,9 +1024,11 @@ variables:
     {%- if not _child_link_disabled -%}
       {%- for c in child_rooms | default([], true) -%}
         {%- set _cs = states(c) -%}
-        {%- if _cs not in ['vacant', 'paused'] -%}
+        {#- #10662: unknown, unavailable or a missing child entity is not
+            occupancy; only a real non-vacant tier holds the parent. -#}
+        {%- if _cs not in ['vacant', 'paused', 'unknown', 'unavailable', 'none', ''] -%}
           {%- set ns.found = true -%}
-        {%- elif c in states and (as_timestamp(now()) - as_timestamp(states[c].last_changed)) < _bridge_s -%}
+        {%- elif states(c) not in ['unknown', 'unavailable'] and (as_timestamp(now()) - as_timestamp(states[c].last_changed, 0)) < _bridge_s -%}
           {%- set ns.found = true -%}
         {%- endif -%}
       {%- endfor -%}
@@ -1025,7 +1053,7 @@ variables:
       {%- endif -%}
     {%- endfor -%}
     {%- if ns.ent != '' -%}
-      {{ {'entity_id': ns.ent, 'friendly_name': (state_attr(ns.ent, 'friendly_name') | default(ns.ent, true)), 'last_changed': ns.ts.isoformat()} }}
+      {{ {'entity_id': ns.ent, 'friendly_name': (state_attr(ns.ent, 'friendly_name') | default(ns.ent, true)), 'entity_name': (entity_name(ns.ent) if entity_name is defined else none), 'device_name': (device_name(ns.ent) if device_id(ns.ent) else none), 'last_changed': ns.ts.isoformat()} }}
     {%- elif _occupied_timer_holding -%}
       {{ {'reason': 'room_timer still decaying from an earlier signal (class: occupied) — no source entity is currently truthy', 'timer_entity': _room_timer, 'timer_last_changed': (states[_room_timer].last_changed.isoformat() if _room_timer != '' else none)} }}
     {%- else -%}
@@ -1040,7 +1068,7 @@ variables:
       {%- endif -%}
     {%- endfor -%}
     {%- if ns.ent != '' -%}
-      {{ {'entity_id': ns.ent, 'friendly_name': (state_attr(ns.ent, 'friendly_name') | default(ns.ent, true)), 'last_changed': ns.ts.isoformat()} }}
+      {{ {'entity_id': ns.ent, 'friendly_name': (state_attr(ns.ent, 'friendly_name') | default(ns.ent, true)), 'entity_name': (entity_name(ns.ent) if entity_name is defined else none), 'device_name': (device_name(ns.ent) if device_id(ns.ent) else none), 'last_changed': ns.ts.isoformat()} }}
     {%- elif _engaged_timer_holding -%}
       {{ {'reason': 'room_timer still decaying from an earlier signal (class: engaged) — no source entity is currently truthy', 'timer_entity': _room_timer, 'timer_last_changed': (states[_room_timer].last_changed.isoformat() if _room_timer != '' else none)} }}
     {%- else -%}
@@ -1055,11 +1083,11 @@ variables:
       {%- endif -%}
     {%- endfor -%}
     {%- if ns.ent != '' -%}
-      {{ {'entity_id': ns.ent, 'friendly_name': (state_attr(ns.ent, 'friendly_name') | default(ns.ent, true)), 'last_changed': ns.ts.isoformat()} }}
+      {{ {'entity_id': ns.ent, 'friendly_name': (state_attr(ns.ent, 'friendly_name') | default(ns.ent, true)), 'entity_name': (entity_name(ns.ent) if entity_name is defined else none), 'device_name': (device_name(ns.ent) if device_id(ns.ent) else none), 'last_changed': ns.ts.isoformat()} }}
     {%- elif _asleep_timer_holding -%}
       {{ {'reason': 'room_timer still decaying from an earlier signal (class: asleep) — no source entity is currently truthy', 'timer_entity': _room_timer, 'timer_last_changed': (states[_room_timer].last_changed.isoformat() if _room_timer != '' else none)} }}
     {%- elif _asleep_hold_hi -%}
-      {{ {'entity_id': _asleep_hold_ent, 'friendly_name': (state_attr(_asleep_hold_ent, 'friendly_name') | default(_asleep_hold_ent, true)), 'last_changed': states[_asleep_hold_ent].last_changed.isoformat(), 'reason': 'Held asleep by asleep_hold'} }}
+      {{ {'entity_id': _asleep_hold_ent, 'friendly_name': (state_attr(_asleep_hold_ent, 'friendly_name') | default(_asleep_hold_ent, true)), 'entity_name': (entity_name(_asleep_hold_ent) if entity_name is defined else none), 'device_name': (device_name(_asleep_hold_ent) if device_id(_asleep_hold_ent) else none), 'last_changed': states[_asleep_hold_ent].last_changed.isoformat(), 'reason': 'Held asleep by asleep_hold'} }}
     {%- else -%}
       {{ none }}
     {%- endif -%}
@@ -1186,8 +1214,10 @@ action:
   # new value is written, so states.sensor still holds the OLD value at
   # this point.
   - variables:
-      _prev_state: >-
-        {{ (states.sensor | selectattr('attributes.friendly_name', 'eq', friendly_name) | map(attribute='state') | list | first) | default('', true) }}
+      # #10659: reuse _self_entity_id (resolved once above) instead of a
+      # second and third states.sensor walk. A sensor that does not exist
+      # yet reads 'unknown', which the transition check below ignores.
+      _prev_state: "{{ states(_self_entity_id) }}"
   - if: "{{ _prev_state not in ['', 'unknown', 'unavailable'] and _prev_state != _resolved_state }}"
     then:
       # 2026-08-06 fix: raw event.fire isn't a registered service on this
@@ -1259,6 +1289,9 @@ sensor:
       {%- else -%}mdi:account-remove-outline
       {%- endif -%}
     attributes:
+      # The room this sensor resolves. Its own identity key: the blueprint
+      # finds this sensor by it (not by a display name).
+      room_state_room: "{{ room }}"
       # CORE CASCADE TIERS — always true/false, never null (see blueprint
       # description). NOT the same thing as the sensor's own `state` —
       # e.g. asleep_active can be true even while state shows "emergency"
@@ -1343,7 +1376,7 @@ sensor:
         {%- if _zone_presence_ents | count > 0 -%}
           {%- set ns = namespace(d={}) -%}
           {%- for e in _zone_presence_ents -%}
-            {%- set ns.d = ns.d | combine({(state_attr(e, 'friendly_name') | default(e, true)): (states(e) in ['on','open'])}) -%}
+            {%- set ns.d = ns.d | combine({(((([device_name(e) if device_id(e) else '', entity_name(e)] | select | unique | join(' ')) if entity_name is defined else '') or (state_attr(e, 'friendly_name') | default(e, true)))): (states(e) in ['on','open'])}) -%}
           {%- endfor -%}
           {{ ns.d }}
         {%- else -%}
@@ -1378,7 +1411,7 @@ sensor:
       # this always describes whichever tier actually won.
       last_trigger: >-
         {%- if _emergency_hi -%}
-          {{ {'entity_id': _emergency_latch, 'friendly_name': (state_attr(_emergency_latch, 'friendly_name') | default(_emergency_latch, true)), 'last_changed': states[_emergency_latch].last_changed.isoformat()} }}
+          {{ {'entity_id': _emergency_latch, 'friendly_name': (state_attr(_emergency_latch, 'friendly_name') | default(_emergency_latch, true)), 'entity_name': (entity_name(_emergency_latch) if entity_name is defined else none), 'device_name': (device_name(_emergency_latch) if device_id(_emergency_latch) else none), 'last_changed': states[_emergency_latch].last_changed.isoformat()} }}
         {%- elif _child_emergency_hi -%}
           {{ {'reason': 'cascaded up from a child room currently in emergency', 'child_rooms': child_rooms} }}
         {%- elif _manual_override_hi and _manual_override_value == 'paused' -%}
@@ -1393,21 +1426,21 @@ sensor:
           {%- set _mo = _room_control_cab_value | lower -%}
           {{ {'reason': ('Manually locked' if _mo == 'hold' else ('Manually paused' if _mo == 'paused' else ('Manually cleared to Auto' if _mo == 'auto' else 'Manually set to ' ~ _room_control_cab_value))), 'value': _room_control_cab_value} }}
         {%- elif _manual_override_value_legacy != '' -%}
-          {{ {'entity_id': _room_control, 'friendly_name': (state_attr(_room_control, 'friendly_name') | default(_room_control, true)), 'last_changed': states[_room_control].last_changed.isoformat()} }}
+          {{ {'entity_id': _room_control, 'friendly_name': (state_attr(_room_control, 'friendly_name') | default(_room_control, true)), 'entity_name': (entity_name(_room_control) if entity_name is defined else none), 'device_name': (device_name(_room_control) if device_id(_room_control) else none), 'last_changed': states[_room_control].last_changed.isoformat()} }}
         {%- elif _engaged_hi -%}
           {{ _engaged_last_trigger }}
         {%- elif _wasp_flag_hi -%}
           {{ {'reason': 'Presence-locked (wasp)', 'wasp_door_entities': _wasp_door_ents} }}
         {%- elif _entertaining_hold_hi -%}
-          {{ {'entity_id': _entertaining_hold_ent, 'friendly_name': (state_attr(_entertaining_hold_ent, 'friendly_name') | default(_entertaining_hold_ent, true)), 'last_changed': states[_entertaining_hold_ent].last_changed.isoformat(), 'reason': 'Entertaining mode hold'} }}
+          {{ {'entity_id': _entertaining_hold_ent, 'friendly_name': (state_attr(_entertaining_hold_ent, 'friendly_name') | default(_entertaining_hold_ent, true)), 'entity_name': (entity_name(_entertaining_hold_ent) if entity_name is defined else none), 'device_name': (device_name(_entertaining_hold_ent) if device_id(_entertaining_hold_ent) else none), 'last_changed': states[_entertaining_hold_ent].last_changed.isoformat(), 'reason': 'Entertaining mode hold'} }}
         {%- elif _guest_hold_hi -%}
-          {{ {'entity_id': _guest_hold_ent, 'friendly_name': (state_attr(_guest_hold_ent, 'friendly_name') | default(_guest_hold_ent, true)), 'last_changed': states[_guest_hold_ent].last_changed.isoformat(), 'reason': 'Guest-present hold'} }}
+          {{ {'entity_id': _guest_hold_ent, 'friendly_name': (state_attr(_guest_hold_ent, 'friendly_name') | default(_guest_hold_ent, true)), 'entity_name': (entity_name(_guest_hold_ent) if entity_name is defined else none), 'device_name': (device_name(_guest_hold_ent) if device_id(_guest_hold_ent) else none), 'last_changed': states[_guest_hold_ent].last_changed.isoformat(), 'reason': 'Guest-present hold'} }}
         {%- elif _presence_hold_hi -%}
-          {{ {'entity_id': _presence_hold_ent, 'friendly_name': (state_attr(_presence_hold_ent, 'friendly_name') | default(_presence_hold_ent, true)), 'last_changed': states[_presence_hold_ent].last_changed.isoformat(), 'reason': 'Continuous presence hold'} }}
+          {{ {'entity_id': _presence_hold_ent, 'friendly_name': (state_attr(_presence_hold_ent, 'friendly_name') | default(_presence_hold_ent, true)), 'entity_name': (entity_name(_presence_hold_ent) if entity_name is defined else none), 'device_name': (device_name(_presence_hold_ent) if device_id(_presence_hold_ent) else none), 'last_changed': states[_presence_hold_ent].last_changed.isoformat(), 'reason': 'Continuous presence hold'} }}
         {%- elif _hold_hi -%}
           {%- set _hold_trigger_ent = (_hold_ents | select('is_state', 'on') | list) + (_hold_ents | select('is_state', 'open') | list) -%}
           {%- set _hold_trigger_ent = _hold_trigger_ent | first | default('', true) -%}
-          {{ {'entity_id': _hold_trigger_ent if _hold_trigger_ent != '' else none, 'friendly_name': (state_attr(_hold_trigger_ent, 'friendly_name') | default(_hold_trigger_ent, true)) if _hold_trigger_ent != '' else none, 'last_changed': (states[_hold_trigger_ent].last_changed.isoformat() if _hold_trigger_ent != '' else none), 'reason': 'Generic hold source active'} }}
+          {{ {'entity_id': _hold_trigger_ent if _hold_trigger_ent != '' else none, 'friendly_name': (((([device_name(_hold_trigger_ent) if device_id(_hold_trigger_ent) else '', entity_name(_hold_trigger_ent)] | select | unique | join(' ')) if entity_name is defined else '') or (state_attr(_hold_trigger_ent, 'friendly_name') | default(_hold_trigger_ent, true)))) if _hold_trigger_ent != '' else none, 'last_changed': (states[_hold_trigger_ent].last_changed.isoformat() if _hold_trigger_ent != '' else none), 'reason': 'Generic hold source active'} }}
         {%- elif _occ_hi -%}
           {{ _occ_last_trigger }}
         {%- elif _child_occ_hi -%}

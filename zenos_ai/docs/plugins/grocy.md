@@ -103,8 +103,8 @@ Read this as two truths meeting in the middle: the component knows what a part m
 | `stock_area_summary` | Area-level container and stock count rollup |
 | `stock_area_volatile` | Volatile items (overdue/due_soon/expiring) scoped to a HA area |
 | `stock_area_inventory` | Full denormalized room inventory: locations, products, amounts |
-| `room_brief` | Chores + stock summary for a HA area in one call. Chore discovery uses three paths: (1) chore area-tagged via `homeassistant_area` userfield, (2) chore product stocked at area location, (3) product `ha_labels` contains area slug. Each chore entry includes its `product_id` (none for unlinked chores). |
-| `chores_by_area` | Maintenance chores connected to an HA area |
+| `room_brief` | Chores + stock summary for a HA area in one call (`homeassistant_area_id`; refused without one). Chore discovery uses three paths: (1) chore area-tagged via `homeassistant_area` userfield, (2) chore product stocked at area location, (3) product `ha_labels` contains area slug. Each chore entry includes its `product_id` (none for unlinked chores). |
+| `chores_by_area` | Maintenance chores connected to an HA area. Takes `homeassistant_area_id`; a call with no area is refused with `guarded: ... needs homeassistant_area_id` |
 | `chores_execute` | Mark a chore complete |
 | `chores_tag` | Set `homeassistant_area` and/or `entity_id` userfields on an existing chore — required for `chores_by_area` and `room_brief` area discovery |
 | `tasks_add` | Create a new Grocy task |

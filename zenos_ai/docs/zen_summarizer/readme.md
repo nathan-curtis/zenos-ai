@@ -295,7 +295,7 @@ Toggle from **Settings → Helpers** or any dashboard card.
 
 # Related Docs
 
-- [DojoTools Summarizers](../scripts/zen_dojotools_summarizers_readme.md) — current script contract, kill switches, seed whitelist, run governor, and Scheduler integration
+- [DojoTools Summarizers](../scripts/zen_dojotools_summarizers_readme.md) — current script contract, kill switches, the responsible agent and its seed and emit certs, run governor, and Scheduler integration
 - [DojoTools Index](../scripts/zen_dojotools_index_readme.md) — HyperIndex operational surface used by Ninja
 - [HyperIndex Overview](../zen_hyperindex/zen_hyperindex_overview.md) — SELECT -> FILTER -> COMPOSE mental model
 - [DojoTools FileCabinet](../scripts/zen_dojotools_filecabinet_readme.md) — where Kata and `ZEN_SUMMARY` writes land

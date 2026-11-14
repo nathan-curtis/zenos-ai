@@ -1,4 +1,6 @@
-# Zen DojoTools Camera — v5.1.2
+# Zen DojoTools Camera — v5.5.0
+
+> **2026.11.0:** Camera declares its act, `scan` (`label: exterior|interior`, required), behind the new emit cert `zenos.security.camera_scan` (stages `ie`, max level 1). With it, the `camera_heartbeat` summary scans unattended: exterior always, interior only when away. Asking for a scan in conversation doesn't need it.
 
 **File:** `packages/zenos_ai/dojotools/dojotools_camera.yaml`
 **Script:** `zen_dojotools_camera`
@@ -7,6 +9,8 @@
 ---
 
 > **Response envelope (2026.10.0):** `zen_dojotools_camera` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -154,7 +158,7 @@ caller_token: ""
 
 Writes a `_alert_policy` drawer to the camera's cache entry. Defines how motion events from this camera are classified and where they route. Readable via `info`.
 
-Requires the `camera_alert_policy_edit` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md).
+Requires the `zenos.alerts.camera_policy_edit` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md).
 
 ```yaml
 zen_dojotools_camera:
@@ -330,6 +334,19 @@ The two labels are orthogonal. A camera can carry either, both, or neither.
 
 1. `zen_dojotools_camera tool=read camera_entity=<id>` — direct drawer read
 2. `zen_dojotools_index expand_entities=true` on a camera label — the inspect enrichment includes `domain_context.camera[entity_id]` with `analysis`, `cached_at`, `cache_age_minutes`, `snapshot_path`, `found`
+
+---
+
+## KFC Components (KF6)
+
+The camera tool hosts two Kung Fu Components through its own `mode=kfc_manifest`. `zen_dojotools_manifest mode=bootstrap_kfc` registers them as live dojo drawers on reload and daily; nothing ships them by hand.
+
+| Component | Data scope | Triggers | Purpose |
+|---|---|---|---|
+| `camera_manager` | `security_camera` cameras + `domain_context.camera` cache | `force_summary` | Reads the scene cache and reports perimeter status, subjects, stale cameras. |
+| `camera_heartbeat` | `security_camera` cameras | `start_home_wake`, `daily_noon`, `start_home_evening`, `daily_midnight` | Scheduled scan daemon: jittered wait, exterior scan every slot, interior scan only when the home is away or the alarm is armed_away/triggered. Urgency always 1. |
+
+`camera_heartbeat` is opt-in by data: it is enabled only while at least one camera carries the `exterior` or `interior` label it scans by. Tag cameras with `zen_dojotools_labels` to turn it on; no redeploy. (It moved here from the retired KungFu Loader in 2026.11.)
 
 ---
 

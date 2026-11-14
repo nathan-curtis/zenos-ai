@@ -1,4 +1,4 @@
-# Zen DojoTools Event Emitter — v1.0.0
+# Zen DojoTools Event Emitter — v1.1.0
 
 Overview
 
@@ -34,6 +34,8 @@ Version 1.1.2 introduces the canonical event schema used by all ZenOS-AI agents.
 
 
 ---
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 Design Goals
 
@@ -207,7 +209,7 @@ Reserved Kinds
 
 The emitter is reachable by agents, so kinds the system acts on are internal-only. A call with a reserved kind returns status: error with reason "guarded: kind '<kind>' is reserved for internal system events" and fires nothing. Matching ignores case and surrounding whitespace.
 
-Reserved prefixes: deferred_, dojotool_, postman_, priority_inject_, gc_, cabinet_, identity_, alert_, label_, warmup_, image_, autovac_. Reserved exact kind: kata_emit.
+Reserved prefixes: deferred_, dojotool_, postman_, priority_inject_, gc_, cabinet_, identity_, alert_, label_, warmup_, image_, autovac_. Reserved exact kinds: kata_emit, room_control_request (Room Manager's override listener writes the room's control key from it, so an agent goes through room_control_set and its certs instead).
 
 Still open: summary_force, supersummary_force, ninja_force, and free-form kinds.
 

@@ -79,7 +79,7 @@ All labels use the `spa_` prefix. Apply these to your ESPHome entities via `mode
 | `spa_audio` | `media_player` / `switch` | Audio control entity. |
 | `spa_cover` | `cover` | Motorized cover entity. Domain-validated (rejects `update.*`). |
 
-Discovery cascade: spa_climate anchor → device entity fallback → area scan → `hot_tub` area label search.
+Discovery cascade: spa_climate anchor → device entity fallback → area scan → `hot_tub` area label search. The anchor device's entities include its child devices (HA 2026.9+, Spa Manager 5.5.0).
 
 ---
 
@@ -163,9 +163,9 @@ All four fields (`baseline_7d`, `threshold_provenance`, `freshness`, `excursion_
 
 ## Identity Gate (2026-08-16)
 
-Before this date, jets/lights/water-temperature/cover actuation had zero auth of any kind — the same shape of gap `climate_control` closed earlier the same day, surfaced by the audit that also found ZenZork's raw lock/cover end-run (see the ZenZork readme's Identity Gate note).
+Before this date, jets/lights/water-temperature/cover actuation had zero auth of any kind — the same shape of gap `zenos.actuation.climate_control` closed earlier the same day, surfaced by the audit that also found ZenZork's raw lock/cover end-run (see the ZenZork readme's Identity Gate note).
 
-New `spa_control` certification, cert-only tier (no live-ack requirement — same shape as `lighting_control`/`climate_control`; spa equipment isn't treated as exterior-security-grade). Gates every real setter mode: `scene`, `lights`, `jets`, `temperature`, `cover`. `discover`/`status`/`chemistry`/`log`/`help`/`consumables`/`setup`/`audio` all stay open — `audio` specifically is out of scope for this cert (it's media_player volume/source control, not spa hardware). `cert_scope` deny hard-blocks a specific target the same way every other gated tool in this arc does. Grant via `zen_dojotools_persona_editor mode=cert_req_grant cert_component=spa_control`. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
+New `zenos.actuation.spa_control` certification, cert-only tier (no live-ack requirement — same shape as `zenos.actuation.lighting_control`/`zenos.actuation.climate_control`; spa equipment isn't treated as exterior-security-grade). Gates every real setter mode: `scene`, `lights`, `jets`, `temperature`, `cover`. `discover`/`status`/`chemistry`/`log`/`help`/`consumables`/`setup`/`audio` all stay open — `audio` specifically is out of scope for this cert (it's media_player volume/source control, not spa hardware). `cert_scope` deny hard-blocks a specific target the same way every other gated tool in this arc does. Grant via `zen_dojotools_persona_editor mode=cert_req_grant cert_component=zenos.actuation.spa_control`. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
 
 ---
 

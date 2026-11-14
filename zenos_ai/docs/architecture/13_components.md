@@ -26,15 +26,41 @@ The common composition for a consequential capability is layered: an agent calls
 
 A Kung Fu Component (KFC) is a domain the Monastery summarizes: security, alerts, tasks, the physical plant, and so on. Its definition lives in a drawer in the Dojo cabinet: what labels it reads, what triggers it subscribes to, its pipeline tier, its staleness ceiling, and its instructions (Chapter 14).
 
-Under KF5, a tool owns its own KFC. The tool carries the `zen_kfc_provider` label and answers `mode=kfc_manifest` with its component definition. `zen_dojotools_manifest mode=bootstrap_kfc` runs on Home Assistant start and daily, finds every tool labeled `zen_kfc_provider`, collects each `kfc_manifest`, and mounts the result into the Dojo cabinet. Nobody authors a KFC drawer by hand. Adding a tool that owns a domain adds that domain to the Monastery.
+Under KF6, a tool owns its own KFC. The tool carries the `zen_kfc_provider` label and answers `mode=kfc_manifest` with its component definition. `zen_dojotools_manifest mode=bootstrap_kfc` runs on Home Assistant start and daily, finds every tool labeled `zen_kfc_provider`, collects each `kfc_manifest`, and mounts the result into the Dojo cabinet. Nobody authors a KFC drawer by hand. Adding a tool that owns a domain adds that domain to the Monastery.
 
 ## 13.3 The Lens Bus
 
 The Lens Bus is how a tool asks "what does the house know about this?" without knowing who knows it. The question is an anchor: a label, a person, an area, or a zone. The answers are evidence from whichever providers consume that anchor type.
 
+It is also how the house comes to know things Home Assistant has never heard of. Almost any source can join, if it meets three conditions:
+
+1. **It can be queried.** An API, a search endpoint, a REST or GraphQL call, a database behind a service, or Home Assistant's own state.
+2. **Its records can be attached to the taxonomy.** Something in the source has to line up with an anchor: a tag that matches a label, a field that names an area or a person. That one attachment is the whole integration. The source does not need to understand ZenOS. It needs one field that means what a label means.
+3. **It can answer in JSON.** Bounded evidence, each item with a stable ID and where it came from, not a dump of everything the source holds.
+
+Wiki.js is the clearest example. A page tagged `garage` is evidence about the `garage` label. When a consumer asks about that anchor, the Wiki.js provider runs one GraphQL query for pages carrying that tag and returns each one as an evidence item: an ID, a title, a path, and the anchor it matched. Wiki.js knows nothing about Home Assistant. The tag is the bridge. The same pattern brings in finance transactions, documents, service-desk tickets tagged with an area or label, CRM records, the household's own catalog, media, timers, and alarms; the reference household has 17 providers registered (Appendix F).
+
+This is the hypergraph again (Chapter 7). A label already joins entities, areas, and cabinets. The Lens Bus lets it join records in systems that live outside the house. And because a consumer never names a provider, adding a provider adds knowledge to every consumer at once. Inspect, Index, and Room Manager pick it up without a line of their code changing.
+
+The Library is the hub, and I rebuilt it to be one. It works the way a library does. Every source is a collection. The labels are the subject headings, the Dewey Decimal System of the house, so a question about one subject finds every card filed under it, whatever collection the card points into. And like a real library, it keeps a catalog of its own, run the way a librarian would run one.
+
+That catalog is where the Library and Inventory meet, and they split the work the way library science does (the FRBR model). Inventory, the household's Grocy-backed stock system, holds the work: what a thing is. The Library adds an item record for each physical copy: where it is shelved, who has it, when it is due back, and the details a cataloguer would keep, ISBN and series and publisher among them. Barcode in, shelved automatically, deduplicated on ISBN, loaned and returned. Books, games, recordings, videos, periodicals, and art prints ship as types. A new kind of item, heirlooms or a tool collection, is one entry in the Library's type registry and one label; no new logic. Every item type carries a label, so the catalog is part of the taxonomy like everything else.
+
+Put them together and a book stops being a row in a list. Its shelf is an Inventory location, the location is in a room, and the room is an area, so "what books are in the living room?" is an ordinary Lens query on the living room. A copy that also exists digitally points at it, and the evidence carries a playback hint in the same shape Media Manager uses, so the record album on the shelf and the album in the stream are one answer. A cookbook can point at its Mealie cookbook. Nothing about the book changed. It just joined the graph.
+
+<p align="center">
+  <img src="images/ch13_library.jpg" width="360" alt="Asked what she can tell about the household's library, Friday says the catalog lists 21 physical items: 18 books, one cassette, and two art prints. The books include a series collection, a fantasy novel, and several cookbooks, three by one author, and one cookbook copy is noted as signed, with an inscribed photo tucked inside. No items are checked out, some records are sparse, and a couple of titles appear more than once, so the catalog may need tidying." />
+</p>
+
+*Friday asked about the household's library. She answers the way a librarian would: holdings by type, what stands out, a note that belongs to one copy and not the title (the signed one), what is out on loan, and that the catalog needs tidying. Real 2026.11.0 output, November 2026; names and most titles redacted.*
+
+Providers own their data. The Library owns the rules for joining, because a knowledge source should be admitted once, under one contract, not wired by hand into every tool that might want it.
+
+The rules are strict on purpose. Providers consume typed anchors, return bounded evidence that is redacted by default, and declare their own health and failure policy. A lookup is a read. Creating or changing a record in a source is that tool's own mode, behind its own certifications, and never part of the bus.
+
 Providers are Stacks (and some DojoTools acting as providers). Each declares in its manifest what anchor types it consumes and what evidence types it returns, and registers itself into the household cabinet's `lens_registry` drawer with `mode=register`. `zen_dojotools_manifest mode=bootstrap_stacks` runs on start and daily and registers any provider that declares a registration mode and is not already registered.
 
-`zen_dojotools_lens_dispatch` is the one consumer entry point. It groups the anchors by type, calls only the providers whose declarations match, applies soft-failure semantics (a failed provider is reported, not fatal), deduplicates evidence, and returns one merged answer. It unwraps each provider's `.result` before merging, so enveloped and not-yet-enveloped providers merge identically. Library is the Lens owner for documents, tickets, wiki pages, and catalog items, and consumers such as Inspect, Index, and Room Manager ask Library rather than calling providers directly.
+`zen_dojotools_lens_dispatch` is the one consumer entry point. It groups the anchors by type, calls only the providers whose declarations match, applies soft-failure semantics (a failed provider is reported, not fatal), deduplicates evidence, and returns one merged answer. It unwraps each provider's `.result` before merging, so enveloped and not-yet-enveloped providers merge identically. Consumers such as Inspect, Index, and Room Manager ask the Library or the dispatcher, never a provider directly.
 
 ```mermaid
 graph LR

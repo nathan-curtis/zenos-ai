@@ -8,9 +8,15 @@ I learned this the expensive way. Early on I deliberately exposed far more of th
 
 Here is what that configuration looks like, and what it can still do:
 
-<!-- screenshot: ch10_zero_entities.png -->
-> **Screenshot to come.** The Expose list with zero entities exposed, and Friday turning off a room's lights through ZenLux in the same session. Real 2026.10.0 output; personal details redacted.
-<!-- /screenshot -->
+<p align="center">
+  <img src="images/ch10_expose_tools_only.png" width="300" alt="Home Assistant's Expose list for the conversation agent, grouped by domain: 63 entities, all in the Script group, every one a ZenOS tool in the AI Toolbox area, from Zen DojoTools Alarm Panel through ZenOS IT Console. No device, sensor, light or media player is exposed. The middle of the list is cut down to a note reading 49 more, every one a ZenOS tool." />
+</p>
+
+<p align="center">
+  <img src="images/ch10_tv_off.jpg" width="420" alt="Asked whether she knows how to turn off the living room TV, Friday answers: Done, the living room TV is off." />
+</p>
+
+*Above: everything this agent is shown. Sixty-three entries, every one a ZenOS tool script, and not a single device; the middle of the list is cut down here. Below: Friday asked to turn off the living room TV, which is not on that list. She does it anyway, through Media Manager, behind its certification. Real 2026.11.0 output, November 2026.*
 
 ## 10.1 Two ways to reach the house
 
@@ -58,7 +64,9 @@ At no point does the agent need an entity exposed. The tools resolve every targe
 | | AdminTools, Roots, Sutras, Stacks, Codices |
 | | Maintenance scripts |
 
-AdminTools stay off the agent surface unless a human deliberately exposes one for recovery (Chapter 20). Each tool's manifest declares whether it is meant to be exposed (`mcp_exposed`), and the getting-started guide carries the current exposure list.
+AdminTools stay off the agent surface (Chapter 20). Each tool's manifest declares whether it is meant to be exposed (`mcp_exposed`), and the getting-started guide carries the current exposure list.
+
+Since 2026.11.0 that is enforced, not just advised. Flynn's admin plane guard unexposes every `zen_admintools_*` script from every voice assistant (Assist, and so MCP; Alexa; Google) at start, every hour, and whenever a tool asks. `prompt_loader`, which holds the lock switches and the cortex, and anything labeled `zen_never_expose` are always unexposed. Unexposing only tightens, so it asks no one. Ectoplasm's `entity_expose` refuses the admin plane whatever certification the caller holds, and `mcp_sync` flags an exposed admin tool as critical. A test server that needs admin tools on the agent surface sets the system cabinet's `admin_plane_guard` drawer to `listed`, which unexposes only the entities it names.
 
 Not exposing an entity does not make it disappear. Exposure decides how an agent reaches a thing, not whether the thing exists. An entity that is enabled in Home Assistant but not exposed is still real and current, and the Index and the tools still find it. Cortex 44, 'Open Door', says so to the agent in as many words, because an agent that reads an unexposed entity as missing will tell you your house has less in it than it does.
 

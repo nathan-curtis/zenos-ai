@@ -1,82 +1,35 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Version:** 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) | Previous: 2026.8.1 'Chef' | **Last Updated:** Sep 2026 | **License:** MIT
+> **Current stable:** 2026.11.0 'This Is Spinal Tap' | **Previous:** 2026.10.2 'Tron' | **Legacy line:** 2026.9.1 'Steel Magnolia' and 2026.8.1 'Chef' | **License:** MIT
 >
-> *Public releases follow Home Assistant's `YYYY.M.patch` convention — `2026.7.0` is the July release 'Neo'. A new month resets to `.0`.*
->
-> **2026.8.1 is the last release that doesn't require Steel Magnolia's identity-gate/cert-scope security architecture.** Anything built past this point that needs those safeguards to run safely won't be backported to that legacy line on principle. See [Chef's release notes](releases/chef.md#202681--the-last-release-before-identity-gates) for the full reasoning.
+> *Public releases follow Home Assistant's `YYYY.M.patch` convention: `2026.11.0` is the November release. A new month resets to `.0`.*
 
-→ [Project Overview & Install](../../README.md)
+→ [Project Overview](../../README.md) · [2026 in Review](../../README.md#2026-in-review) · [Install Guide](getting_started/install.md)
 
 → [The Book of Friday, Volume 2](architecture/00_preface.md): how ZenOS is built, and why ([contents](architecture/00_toc.md))
 
 ---
 
-> ### 2026.9.1 'Steel Magnolia' — Previous Stable
->
-> Bugfix-only patch backported from 2026.10.0 'Tron' — see the [2026.9.1 patch notes](releases/steel_magnolia.md#202691--patch) for the full fix list. No new features, no schema changes.
->
-> ### 2026.9.0 'Steel Magnolia'
->
-> Room Manager v3's live state engine and REFLEX (autonomous scene-firing) reach their fullest form yet, plus the hospitality lifecycle (guest arrival/checkout) and cert-gated permission tightening. See root **[README](../../README.md)** (the "What's in Steel Magnolia" section near the top) and the **[Room Manager v3 & REFLEX operator's manual](getting_started/room_manager_operators_manual.md)** for the full picture — this hub's own body below this banner had drifted behind the top-line version; treat the root README and the getting_started docs as the current source of truth for anything not yet reflected here.
->
-> → [Full Release Notes — Steel Magnolia](releases/steel_magnolia.md)
+## Releases
 
----
-
-> ### 2026.10.0 'Tron' — Current Stable
->
-> Branch `feat/2026.10.0`. **Breaking:** Room Manager room state is opt-in and off means off; rooms hold still until you opt in with `room_manager mode=roomstate_enable` (see [the relnote](releases/tron.md#breaking-room-state-is-opt-in)). Also breaking: `sensor.zen_priority_context` is removed (see [the relnote](releases/tron.md#breaking-sensorzen_priority_context-is-gone)). Admission certification, phase 1 (the `zenos.agent.basic` badge, requested at onboarding; enforcement follows in 2026.11.0), an administrative certification plane above normal participation (in planning), a platform-wide cert-gate audit closing a dozen real authorization gaps (including a shared PII-disclosure cert on mail/Teams/task/todo/calendar writes), real dependency declarations rolled out system-wide, Room Manager/Media/Lighting/Display convergence on one shared vocabulary, and Display Surface as a beta (finishes in 2026.11.0). ZenZork 2.0 (Prologue + Episodes; Episode 1 "DEAD AIR" is released).
->
-> New in this release: [The Book of Friday, Volume 2](architecture/00_preface.md), the architecture record rewritten from the ground up.
->
-> → [Release Notes — Tron](releases/tron.md)
-
----
-
-> ### 2026.8.1 'Chef'
->
-> Taskmaster, the SP1 identity gate, Portainer container control, Kitchen's fulfillment/costing layer, Twenty CRM, Room Manager's guest/occupant-prefs lookup, full Reset Test hardening pass.
->
-> → [Full Release Notes — Chef](releases/chef.md)
-
----
-
-> ### 2026.7.1 — Patch
->
-> **1. KF5 — Self-Registering Tools.** Tools declare their own KFC dojo-drawer contract via `mode=kfc_manifest`; `zen_dojotools_manifest mode=bootstrap_kfc` discovers and mounts them automatically. 5 dojotools files adopted it (Room Manager, AlertManager, Camera, Security Manager, SystemTools).
->
-> **2. Firefly III — Codex Tier.** `zen_dojotools_finance` v2.3.0 gains sibling codex modules: `zen_codex_finance_depreciation` (asset depreciation) and `zen_codex_finance_cogs` (COGS auto-posting from Grocy).
->
-> **3. Grocy v5.3.1.** `stock_entry_update` fix (was silently sending empty PUT payloads on entry-id-only calls). Perishable Storage Coaching, COGS Coaching, battery-stock tracking, tax/depreciable-asset userfields.
->
-> **4. Battery Notes — new Lens Bus provider.** `zen_stack_battery` v1.2.1, HALMark PASS — first stack provider sourced from a HACS integration (`ha-battery-notes`) rather than a self-hosted backend.
->
-> **5. Postman `direct_dispatch`.** Authority-stack bypass mode, migration path for the retired `zen_dojotools_notification_router`.
->
-> → [Full Patch Notes — 2026.7.1](releases/neo.md#202671-patch)
-
----
-
-> ### 2026.7.0 'Neo' — Released 2026-06-27
->
-> **1. CabCeption — FileCabinet v6.2.0.** Nested drawer trees via `/` path separator. VirtualDrawer (softlink), LiveDrawer (KF4 schema absorbed into a drawer — fires a tool call on read, warm/cold cache, never empty). Every drawer is a node with meta, labels, and children.
->
-> **2. Cortex 43 — Rule Zero.** DojoTools supersede all HA built-ins. Not preference — authority. Domain routing table in directives. Successor to v42 'The Answer'.
->
-> **3. Tool Manifest + Lens Bus.** `zenos_manifest.jinja` + `MF.tool_manifest()`. Manifest broker v6.0.0 discovers tools by namespace. Library v5.5.0 `stack=` routing. `zen_stack_radar` v1.0.0 wires Zammad as a Lens provider.
->
-> **4. ZenZork v1.6.0.** Text adventure engine on live RM topology. Narrator styles (zork/dungeon/straight). DUNGEONMIND — "Primal AI, IBM AT 5170, binding active since 1984." Item commands (take/drop/inventory/put/push/pull/open/close/use). Navigation additions (face/turn, again/g). Character sheet in AI user cabinet. Landmark survey wizard. `game_mode`, `harassment_freq`, `difficulty` session fields. Post-game RM quality report on stop. Quest system. Portal disambiguation.
->
-> **5. Media Manager v6.0.0 (NyxMau5) — Lens provider surface.** `stacks_by_anchor` maps anchors (label/person/area/mood/activity) to ranked evidence leaves with `playback_hint`. `now_playing` mode feeds Room Manager `+media` context slice with full playback fidelity (provider, search_metadata, lyrics_hint). `media_source_prefs` — preferred sources float, excluded sources stripped — applied on every Lens call automatically. `discovered_sources` returned on every search. Set once, use many: discover sources with `health`, save prefs in Profile Editor, done. Area anchors inject `room_context` only — semantic anchors drive the query. `zen_stack_media` proxy. Profile Editor v5.3.0 adds `media_prefs` to all three profile targets.
->
-> → [Full Release Notes — Neo](releases/neo.md) | [ZenZork](scripts/zen_dojotools_zenzork_readme.md)
+| Release | Notes |
+|---|---|
+| 2026.11.0 'This Is Spinal Tap' | [Release notes](releases/spinal_tap.md) · [Read this before upgrading](releases/spinal_tap.md#read-this-before-upgrading) |
+| 2026.10 'Tron' (10.0, 10.1, 10.2) | [Release notes](releases/tron.md) |
+| 2026.9 'Steel Magnolia' (9.0, 9.1) | [Release notes](releases/steel_magnolia.md) |
+| 2026.8 'Chef' (8.0, 8.1) | [Release notes](releases/chef.md). 2026.8.1 is the last line without Steel Magnolia's identity gates; [why](releases/chef.md#202681--the-last-release-before-identity-gates). |
+| 2026.7 'Neo' (7.0, 7.1) | [Release notes](releases/neo.md) |
+| 2026.6.0 'Clue' | [Release notes](releases/clue.md) |
+| 2026.5.0 "Fry's Grandpa" | [Release notes](releases/frys_grandpa.md) |
+| 2026.4 'Ectoplasm' (4.0 to 4.3) | [4.0](releases/ectoplasm.md) · [4.1](releases/action_jackson.md) · [4.2](releases/action_jackson_2.md) · [4.3](releases/lights_camera_action.md) |
+| 2026.3 'Ready Player Two' (3.0, 3.1) | [3.0](releases/ready_player_two.md) · [3.1](releases/patch_4_5_6.md) |
+| Meridian | [Release notes](releases/meridian.md) |
 
 ---
 
 Welcome to the **ZenOS-AI Documentation** — the full map of the architecture, tools, cognitive model, and operational philosophy behind *Friday’s Party*.
 
-ZenOS-AI turns **Home Assistant** into a real agentic, persona-aware operating system. This documentation explains how the pieces fit together: the **Cabinet System** for identity and memory, the **Monastery** for reasoning, the **KF4 action pipeline** for awareness and action, and the **HyperIndex** for graph-based attention and discovery.
+ZenOS-AI turns **Home Assistant** into a real agentic, persona-aware operating system. This documentation explains how the pieces fit together: the **Cabinet System** for identity and memory, the **Monastery** for reasoning, the **KF6 action pipeline** for awareness and action, and the **HyperIndex** for graph-based attention and discovery.
 
 If you're building an AI construct, designing a DojoTool, wiring the action pipeline, or just trying to understand how Friday thinks, this directory is your guide.
 
@@ -149,12 +102,12 @@ Reference docs for every major ZenOS-AI tool. Each covers modes, discovery, para
 * [`components/autovac.md`](components/autovac.md) — AutoVac: room election, readiness gates, cleaning runs, and post-run analysis
 * [`components/spamaster.md`](components/spamaster.md) — SpaMaster: spa/hot tub management, ESPHome discovery, scene/chemistry/log
 * [`components/alertmanager.md`](components/alertmanager.md) — AlertManager: severity labels, priority inject, auto-expiry, GC sweep, Postman ack lifecycle
-* [`components/security_manager.md`](components/security_manager.md) — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern, `security_control` identity gate (disarm requires a fresh live ack every call)
-* [`components/infra.md`](components/infra.md) — Infrastructure Console: node/container/monitor/update/cert health, container-control codex gated on `infra_container_control`
+* [`components/security_manager.md`](components/security_manager.md) — Security Manager: alarm panel, zone inventory, arm/disarm, camera cross-reference, lens pattern, `zenos.actuation.security_control` identity gate (disarm requires a fresh live ack every call)
+* [`components/infra.md`](components/infra.md) — Infrastructure Console: node/container/monitor/update/cert health, container-control codex gated on `zenos.infra.container_control`
 * [`components/systemtools.md`](components/systemtools.md) — SystemTools: home mode, quiet/work hours, scheduler anchors, guest/entertaining toggles, home_status rollup
 * [`plugins/grocy.md`](plugins/grocy.md) — Grocy Inventory Component: governed inventory, room locations, stock_area_volatile, shopping, chores, AutoVac and SpaMaster consumables, area inventory getting-started walkthrough
-* [`components/zenlux.md`](components/zenlux.md) — ZenLux: lighting *and switch* control, bleed-aware scenes, `scene_stage` (relocated in from Room Manager), media awareness, sync_shades, Room Manager v3 room-lock guard, reflex_sync, `lighting_control` identity gate
-* [`components/zenshade.md`](components/zenshade.md) — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync, `cover_control` identity gate (asymmetric barrier/non-barrier risk)
+* [`components/zenlux.md`](components/zenlux.md) — ZenLux: lighting *and switch* control, bleed-aware scenes, `scene_stage` (relocated in from Room Manager), media awareness, sync_shades, Room Manager v3 room-lock guard, reflex_sync, `zenos.actuation.lighting_control` identity gate
+* [`components/zenshade.md`](components/zenshade.md) — ZenShade: cover management, tilt support, barrier exclusion, ZenLux sync, `zenos.actuation.cover_control` identity gate (asymmetric barrier/non-barrier risk)
 * [`plugins/finance.md`](plugins/finance.md) — Finance: Firefly III budgeting/transactions, Lens Bus provider for label/person/transaction anchors
 * [`plugins/twenty.md`](plugins/twenty.md) — Rolodex (Twenty CRM): contact/company records, guest and occupant-prefs lookup shared with Room Manager
 * [`plugins/zammad.md`](plugins/zammad.md) — Zammad (Radar): ticketing/servicedesk, Lens Bus provider for ticket anchors
@@ -227,7 +180,7 @@ Each Kung Fu component is a discipline: a subsystem Friday loads at runtime.
 
 Documents:
 
-* [`understanding_kf4.md`](kung_fu/understanding_kf4.md) — **Start here.** Plain-language guide to the Dojo, Kung Fu Components, and the KF4 action pipeline. How to add a new component in five steps, no code required.
+* [`understanding_kf6.md`](kung_fu/understanding_kf6.md) — **Start here.** Plain-language guide to the Dojo, Kung Fu Components, and the KF6 action pipeline. How to add a new component in five steps, no code required.
 * [`building_a_kfc.md`](kung_fu/building_a_kfc.md) — Step-by-step build guide with worked example.
 * [`alert_manager.md`](kung_fu/alert_manager.md) — AlertManager KFC: severity labels, fire-once dedup, TTL, priority inject wiring.
 * [`taskmaster.md`](kung_fu/taskmaster.md) — Taskmaster KFC: AI conductor queue, task lifecycle, Abbot dispatch.

@@ -1,6 +1,8 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.14.0
+**Version:** 5.18.0
+
+> **2026.11.0 (5.18.0):** the seed mode `home_overview` carries the read cert `zenos.presence.read` (level 1, stages `is`). Under `seed_cert_mode` enforce, a background summary seeded from it (Security Manager's) needs that cert with stage `s`. See [Read certs and parity](../getting_started/security_certification_manual.md#66-read-certs-and-parity).
 **Script:** `zen_dojotools_room_manager`
 **Codename:** RoomReg
 
@@ -93,7 +95,7 @@ Optional transmission values: `link_sound_tx=0.30  link_light_tx=0.55`
 zen_dojotools_room_manager  mode=roomstate_enable  roomstate_enabled=true
 ```
 
-Room state is **off until you turn it on**. Nothing in setup, onboarding, or an upgrade enables it for you. While it is off, rooms do not change state from evidence (motion, presence, bed sensors, emergency signals), and an explicit `room_control_set` override still applies. Requires `room_behavior_control`. Turning it off again (`roomstate_enabled=false`) freezes every room at its current state.
+Room state is **off until you turn it on**. Nothing in setup, onboarding, or an upgrade enables it for you. While it is off, rooms do not change state from evidence (motion, presence, bed sensors, emergency signals), and an explicit `room_control_set` override still applies. Requires `zenos.room.behavior_control`. Turning it off again (`roomstate_enabled=false`) freezes every room at its current state.
 
 ---
 
@@ -115,7 +117,7 @@ Room state is **off until you turn it on**. Nothing in setup, onboarding, or an 
 | `area_update` | Update floor assignment, topology, and compiled description (`area_note` + adjacency). `area=` required. Rename, icon, and picture must be set via HA Settings → Areas UI (Spook has no `update_area` service — response includes `ha_ui_advisory` when these are requested). Invalid `floor_id_new` returns clean error with valid floor list. |
 | `area_delete` | Delete HA area and remove from room_topology. `area=` required. `confirm_action=true` required. |
 | `utility` | Manage utility_index in household cabinet. `utility_action=list\|get\|set\|delete`. `utility_type=electric\|gas\|water\|...` required for get/set/delete. |
-| `pathfind` | BFS shortest path between two areas or persons. Fields: `start` (area_id or person entity), `destination` (area_id or person entity), `max_hops` (default 20). Returns path as ordered list of area_ids, hop count, and portal sequence. Returns `no_path` if destination is unreachable within `max_hops`. |
+| `pathfind` | BFS shortest path between two areas or persons. Fields: `start` (area_id or person entity), `destination` (area_id or person entity), `max_hops` (default 20). Returns path as ordered list of area_ids, hop count, and portal sequence. Returns `no_path` if destination is unreachable within `max_hops`. A person resolves through their `*_bps_zone` sensor, matched by the person in its entity_id or by its name parts, with the legacy friendly_name last (5.17.0). |
 | `room_occupant_prefs` | Guest-or-household-member prefs for a room, plus an independent `vendor_activity` caution flag. `area=` required. See below. |
 | `room_status_set` | Write housekeeping status for a room: `clean`/`dirty`/`in_service`/`occupied`. `area=` and `room_status=` required. Decoupled from any guest-stay lifecycle — HA-local operational state only. See below. |
 | `room_status_get` | Read housekeeping status. `area=` optional — omit for all rooms, pass for one. Areas never set return `status: unknown`, not a default of `clean`. See below. |
@@ -366,9 +368,9 @@ All three are optional and additive — omitting them preserves existing values 
 
 ---
 
-## KFC Registration (KF5)
+## KFC Registration (KF6)
 
-`zen_dojotools_room_manager` self-registers its dojo drawer via `mode=kfc_manifest` (`room_manager` component, no seed — pure rollup) — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools).
+`zen_dojotools_room_manager` self-registers its dojo drawer via `mode=kfc_manifest` (`room_manager` component, no seed — pure rollup) — see [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract).
 
 ---
 
@@ -602,9 +604,9 @@ These are reference values — set what matches your actual build.
 
 Room Manager joins the gated tools. All ~35 modes were surveyed; read stays fully open (matches the universal convention every other gated tool already follows — the cert boundary only ever sits at write/actuation, never read). Two certifications cover the entire write surface, both cert-only (no live-ack tier) and `cert_scope`-deny hard-blocked, same shared `cert_scope_check` mechanism as every other gated tool:
 
-- **`room_topology_edit`** — structural edits: `set`, `setup`, `area_create`, `area_update`, `link`, `unlink`, `boundary_link`, `boundary_unlink`, `room_zone_set`, `room_zone_remove`, `landmark_set`, `landmark_remove` (level 1). `area_delete` requires level 2 — the existing per-cert graduated `max_level` mechanism, not a third cert class.
-- **`room_behavior_control`** — `room_status_set`, `roomstate_enable`, `reflex_enable`, `reflex_dry_run`, `wasp_enable`, `reflex_wire` (area= write), and `room_control_set` writes **except** setting Paused itself (stays open — same "increasing safety never needs permission" asymmetry the pre-existing unpause gate already established) and the unpause path itself (untouched, its own separate gate — see the operator's manual, Section 5).
+- **`zenos.spatial.room_topology_edit`** — structural edits: `set`, `setup`, `area_create`, `area_update`, `link`, `unlink`, `boundary_link`, `boundary_unlink`, `room_zone_set`, `room_zone_remove`, `landmark_set`, `landmark_remove` (level 1). `area_delete` requires level 2 — the existing per-cert graduated `max_level` mechanism, not a third cert class.
+- **`zenos.room.behavior_control`** — `room_status_set`, `roomstate_enable`, `reflex_enable`, `reflex_dry_run`, `wasp_enable`, `reflex_wire` (area= write), and `room_control_set` writes **except** setting Paused itself (stays open — same "increasing safety never needs permission" asymmetry the pre-existing unpause gate already established) and the unpause path itself (untouched, its own separate gate — see the operator's manual, Section 5).
 
-`room_control_override` (the pre-existing unpause gate) is additive, not replaced by these two. `scene_stage` (a thin delegate to ZenLux) gates there instead — see `components/zenlux.md`. `room_occupant_prefs` is pure read despite the name and was deliberately excluded from both new certs.
+`zenos.room.control_override` (the pre-existing unpause gate) is additive, not replaced by these two. `scene_stage` (a thin delegate to ZenLux) gates there instead — see `components/zenlux.md`. `room_occupant_prefs` is pure read despite the name and was deliberately excluded from both new certs.
 
-Grant either via `zen_dojotools_persona_editor mode=cert_req_grant cert_component=room_topology_edit` (or `room_behavior_control`). See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md) for the full model.
+Grant either via `zen_dojotools_persona_editor mode=cert_req_grant cert_component=zenos.spatial.room_topology_edit` (or `zenos.room.behavior_control`). See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md) for the full model.

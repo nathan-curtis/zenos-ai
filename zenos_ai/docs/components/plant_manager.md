@@ -56,7 +56,7 @@ All sections return `available: false` when entities are missing or unavailable.
 | `label_suggest` | Scans a named integration's entities (`integration=span_panel`, `emporia_vue`, or `zwave_js`) and suggests `zen_plant_*`/`main_panel`/`sub_panel`/`consumed_energy`/`leak_sensor`/`auto_shutoff` labels by device_class + name pattern. Preview-by-default; pass `confirm_action=true` to apply. Scoped to one integration at a time — Plant's domain is house-wide, so a blind device_class scan across every smart plug/appliance would flood with noise. Fills the gap between Room Manager's `label_discover` (area-scoped) and Media Manager's `label_suggest` (room-scoped). `moisture` device_class → `zen_plant_leak_sensor` (high confidence); `valve.*` domain → `zen_plant_auto_shutoff` (high confidence); `switch.*` name-pattern match → `zen_plant_auto_shutoff` (medium confidence — **verify by hand**, a plausibly-named monitoring entity is not the same as a real controllable valve). See [Plant Codex — Emporia Vue](../plugins/emporia_vue_codex.md) / [Plant Codex — SPAN Panel](../plugins/span_panel_codex.md). |
 | `ignore` | Tag entity with `zen_plant_ignore` (creates label if missing). Param: `target_entity`. |
 | `unignore` | Remove `zen_plant_ignore` from entity. Param: `target_entity`. |
-| `leak_auto_shutoff_enable` | House-wide gate (`leak_auto_shutoff_enabled=bool`) for the companion `zen_plant_leak_watch` automation — closes every `zen_plant_auto_shutoff`-labeled switch/valve on a real leak. Omit the field to read the current on/off state + which entities are currently tagged (`shutoff_entities`, `leak_sensor_entities`). Default **off** (opt-in): while off, a real leak asks live instead of acting silently — two independent yes/no questions (close now? auto-close future leaks?). Requires the `plant_auto_shutoff_config_edit` certification (level 1) as of 2026-09-10 (#10390) — see below. |
+| `leak_auto_shutoff_enable` | House-wide gate (`leak_auto_shutoff_enabled=bool`) for the companion `zen_plant_leak_watch` automation — closes every `zen_plant_auto_shutoff`-labeled switch/valve on a real leak. Omit the field to read the current on/off state + which entities are currently tagged (`shutoff_entities`, `leak_sensor_entities`). Default **off** (opt-in): while off, a real leak asks live instead of acting silently — two independent yes/no questions (close now? auto-close future leaks?). Requires the `zenos.plant.auto_shutoff_config_edit` certification (level 1) as of 2026-09-10 (#10390) — see below. |
 | `help` | Full discovery reference (returned inline, no docs needed) |
 
 ---
@@ -67,7 +67,7 @@ New 2026-08-24. House-wide automation, no per-room wiring required — it
 resolves both sides purely off labels. Triggers on a real `moisture.detected`
 event from any `zen_plant_leak_sensor`-labeled entity.
 
-Setting the gate (either direction) requires the `plant_auto_shutoff_config_edit`
+Setting the gate (either direction) requires the `zenos.plant.auto_shutoff_config_edit`
 certification at level 1 (2026-09-10, #10390) — cert-only, no live-ack tier.
 See the [Security Certification Manual](../getting_started/security_certification_manual.md).
 

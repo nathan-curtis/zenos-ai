@@ -36,7 +36,7 @@ Providers write their entry through one central writer (`zen_admintools_prompt_l
 > `bootstrap_stacks` call — the provider key is already present, so it's
 > skipped, and `lens_registry` keeps the stale declaration. There is no
 > "force re-register" mode today. To pick up a manifest change, call
-> `zen_dojotools_filecabinet action_type=unregister` on the provider (or
+> `zen_dojotools_filecabinet mode=unregister` on the provider (or
 > have the provider's own `mode=unregister` write the removal) *before*
 > the next `bootstrap_stacks` call, or manually re-run the provider's own
 > `mode=register` directly. Worth a real `force_reregister` mode someday.

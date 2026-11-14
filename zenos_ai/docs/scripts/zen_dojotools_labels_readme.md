@@ -1,10 +1,12 @@
-# Zen DojoTools Labels — v5.5.0
+# Zen DojoTools Labels — v5.10.0
 
 *Create, read, update, delete, and assign labels in the Home Assistant label index*
 
 ---
 
 > **Response envelope (2026.10.0):** `zen_dojotools_labels` returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -14,7 +16,7 @@ Labels are the connective tissue of the system. The Scheduler, Ninja Summarizer,
 
 This script is **MCP-exposed**. Friday can read the label index and create or update labels. Write operations (`create`, `update`, `delete`, `reset`) are gated behind `confirm: true` — they require an explicit operator confirmation before executing.
 
-**Certification gate:** `create` and `update` require `label_lifecycle_control` at level 1 (in the `zenos_agent_steward` bundle); `delete` and `reset` require it at level 2. `area_assign` and `area_remove` require `registry_lifecycle_control` at level 1. `update` is included because its delete→recreate fallback carries the same area/device-association loss risk as a direct `delete`; `area_assign`/`area_remove` share the underlying Spook capability `zen_dojotools_ectoplasm` already gates under this cert, so this closes a path that would otherwise bypass that gate by coming through Labels instead. `reset` requires `label_lifecycle_control` level 2 **plus** a mandatory live household-admin acknowledgment on every call (no scope waiver available for this action — it wipes all `zen_` label assignments house-wide). `tag`, `untag`, `read`, and `install` remain ungated. See the [Security Certification Manual](../getting_started/security_certification_manual.md).
+**Certification gate:** `create` and `update` require `zenos.registry.label_lifecycle_control` at level 1 (in the `zenos_agent_steward` bundle); `delete` and `reset` require it at level 2. `area_assign` and `area_remove` require `zenos.registry.lifecycle_control` at level 1. `update` is included because its delete→recreate fallback carries the same area/device-association loss risk as a direct `delete`; `area_assign`/`area_remove` share the underlying Spook capability `zen_dojotools_ectoplasm` already gates under this cert, so this closes a path that would otherwise bypass that gate by coming through Labels instead. `reset` requires `zenos.registry.label_lifecycle_control` level 2 **plus** a mandatory live household-admin acknowledgment on every call (no scope waiver available for this action — it wipes all `zen_` label assignments house-wide). `tag`, `untag`, `read`, and `install` remain ungated. See the [Security Certification Manual](../getting_started/security_certification_manual.md).
 
 ---
 
@@ -135,6 +137,12 @@ confirm: true
 Removes labels from the HA label index. Requires `confirm: true`.
 
 > **Warning:** Deleting a label removes it from all entities that carry it. The HyperIndex will no longer find those entities via that label. KFC components that reference the label will stop returning data.
+
+---
+
+### Cabinet labels are gated
+
+A user-session call needs `zenos.system.cabinet_admin` level 2 to tag or untag a cabinet entity, or to tag, untag, create, update or delete a cabinet label (`zen_cabinet`, `zen_vault_cabinet`, any `zen_*_cabinet`). Without it the call is refused with `cert_insufficient` and a `request_via` hint. Automations, the scheduler and Flynn pass. It keeps a second cabinet from being tagged as the vault, which would knock `sensor.zen_vault_cabinet_resolved` offline.
 
 ---
 

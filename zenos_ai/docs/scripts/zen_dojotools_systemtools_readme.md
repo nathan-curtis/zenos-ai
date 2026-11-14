@@ -1,10 +1,14 @@
-# Zen DojoTools SystemTools — v5.2.7
+# Zen DojoTools SystemTools — v5.4.0
 
 *`zen_dojotools_ha_log_viewer` v1.1.0 · `zen_dojotools_event_emitter` v1.0.0 (same file).*
 
 *HA lifecycle management, log reading, event emission, and home mode — MCP-exposed*
 
 ---
+
+> **Before approval, `zen_health_report` covers only the approval path:** cabinets, Flynn readiness, the internal API, and known issues on Postman, AlertManager, Display and Identity. The full report names the house's areas and devices, so it waits for the pass. **Cabinets near full:** the report adds `warn: cabinet near full` for each cabinet at or past 90% of the 128 KB cap, from `zen_cabinet_health`'s `cabinet_capacity`, naming `expand_drawer` and `expansion_sitrep`. The sensor's own state doesn't change. **Certs (5.4.0):** the full report's `certs` section separates gaps the agent can request (`agent_side`) from ones only a person can fix (`system_side`), with a `next_step`; the pre-approval view carries `certs.system_side`.
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only; `zen_health_report` stays open, trimmed to the approval path until the agent is approved. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -48,6 +52,7 @@ Config validation, safe HA restart, and update management. Every destructive ope
 | `confirm_action` | boolean | `false` | Required `true` for destructive operations |
 | `entity_id` | text | — | Required for update actions — the `update.*` entity |
 | `do_backup` | boolean | `false` | Create a backup before installing an update |
+| `force_action` | boolean | `false` | `cabinet_schema_upgrade` only: run the ACL migration as a repair even when the schema stamp is current |
 
 ### Tools
 
@@ -97,6 +102,12 @@ If config is clean, restart proceeds:
 
 ---
 
+#### `cabinet_schema_upgrade`
+
+Flips every cabinet to schema v1 (mount-aware) through cabinet admin. Then, when the system cabinet's `acl_schema` stamp is behind (or `force_action: true`), runs Identity's `acl_migrate` with `dry_run: false`.
+
+Answer fields: `result` (`error` when the migration ran and wasn't clean), `message`, and `acl_migrate: {status, changed, remaining, schema_stamped}` (null when the migration didn't run). Run `acl_migrate` as a dry run first if you want to review the class plan; see [Identity](zen_dojotools_identity_readme.md#acl_migrate--bring-every-cabinet-to-acl-v2).
+
 #### `ha_update_install`
 
 Installs an available update. Requires `confirm_action: true` and a valid `entity_id`.
@@ -117,6 +128,8 @@ Reloads all YAML domains: automations, scripts, scenes, groups, helpers, timers,
 **Config check runs first** — blocked on nogo. **Deferred via scheduler** — script fires `zen_event(kind: deferred_reload_all)` and exits; the Scheduler automation handles the actual reload from automation context. This avoids the `asyncio.InvalidStateError` that occurs when a script calls `homeassistant.reload_all` directly after a `response_variable` child call. Returns immediately with `result: success` and `config_check: passed` when queued.
 
 **LAST RESORT ONLY** — use targeted reload modes (`ha_reload_scripts`, `ha_reload_automations`, etc.) whenever possible. `ha_reload_all` reloads every domain and should only be used when targeted reloads cannot resolve the issue.
+
+A targeted reload can still interrupt: `ha_reload_automations` stops any automation that is mid-run.
 
 ---
 
@@ -418,6 +431,8 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 
 | Version | Change |
 |---------|--------|
+| v5.4.0 | `zen_health_report` has a `certs` section that says what the agent may do and whose problem a cert gap is. `agent_side` lists each cert the household's responsible agent lacks, at the level and stage it needs and what it holds back; a request fixes these, and `next_step` says which (`zen_dojotools_persona_editor mode=cert_req_grant`, or the `zenos_agent_parity` bundle for several read certs). `system_side` lists what no request can fix (identity policy, a responsible agent that is not onboarded, the ACL schema, the vault, the approval path); tell a person. `tool_side` lists an act a tool cannot take. `posture` shows `seed_cert_mode`, the console override, and components still on the 11 legacy lists that 12 removes. The diagnosis leads with it, and `onboarding_required` from agent health counts as an issue. The pre-approval view carries `certs.system_side`. |
+| v5.3.2 | The zen_system KFC uses the health check's staleness thresholds: `zen_summary` is stale past 25 minutes and critically stale past 45, not 15 and 30. A skipped SuperSummary run no longer reads as a critical stale summary. `kfc_manifest` reports the current version. Text only. |
 | (2026-08-14) | New `envelope_check` pilot diagnostic — see above. Dispatches on `tool=`, not `mode=`; tool_manifest version wasn't bumped for this addition, flagging per the known version-source normalization gap. |
 | v5.2.3 (2026-08-02 patch) | `zen_health_report`'s flat `health_sensors`/`reasons` dict pair replaced with a nested `flynn_ready.dependencies` cascade mirroring the real dependency chain (`labels`, `cabinet`, `monastery` → `ninja_summarizer`/`supersummary`, `agents`, `capsule`) instead of reading as unrelated same-level siblings — `ninja_summarizer`/`supersummary` genuinely feed `monastery_health`'s own rollup, and `flynn_system_ready` itself derives from labels + cabinet + monastery together. No other top-level key (`resolvers`, `kill_switches`, `schema_ok`, the Spook/API `dependencies` block, `known_issues`, `diagnosis`, etc.) changed. Also added capsule visibility (`flynn_ready.dependencies.capsule`: `state`/`schema`/`signature_status`/`reason`) — previously `zen_health_report` had zero signal for essence schema at all, forcing a separate `mode=prompt_health` call. Companion fix in `zen_os_1.jinja`'s `prompt_health_check()`: `error` used to fire for any non-`three_layer` essence, conflating a genuinely missing essence with the universal, fully-functional `legacy` schema every real install (including production) actually runs on. `error` is now reserved for a missing essence; `legacy` reads as `warn`. |
 | v5.2.3 (2026-08-01 patch) | The `has_service` check behind `spook_installed` never verified HTTP status — a 401 (bad/missing `ha_bearer` secret) returns a JSON error body that parses fine as "service not found," making `spook_installed: false` indistinguishable from Spook genuinely being absent even though it's installed and running. Now checks the response status is 2xx first; surfaces `api_ok`/`api_status` on the raw check and `internal_api_ok`/`internal_api_status` on `zen_health_report` — diagnostic-only, Gate 0's real label-creation path never reads `spook_installed`. Also added `ai_task_entity_valid`/`ai_task_entity_hint`: the old check only verified the helper was non-empty, not that it was a real `ai_task.*` entity — a malformed value (missing domain prefix) sailed through silently until something downstream crashed calling it. The hint matches by object_id to suggest the likely-intended real entity. |

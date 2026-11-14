@@ -17,6 +17,8 @@ what exists; that one is the guide for extending it.
 
 ---
 
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
+
 ## What it does
 
 ZenZork is a text adventure engine that uses your live Room Manager topology as the dungeon. Walk through your actual house in Zork mode. Every room narrates from live HA state — real lighting levels, real climate data, real portal bearings. Game session state persists in the AI user cabinet at drawer `zenzork_state`.

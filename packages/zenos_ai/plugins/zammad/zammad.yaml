@@ -1,8 +1,31 @@
 ###############################################################################
 # ZenOS-AI Plugin: Zammad — Fulfillment (Service Desk / Help Tickets)
 # Codename: Radar
-# Version: 0.4.4
+# Version: 0.5.4
+# v0.5.4: Lens fixes (#10681). tickets_by_anchor uses the lean
+#   query/page/per_page search (it sent no page= and read only the
+#   {tickets, assets} shape, so it missed a plain-list reply) and returns
+#   evidence[] (leaf_type ticket_evidence). zen_stack_radar carries the bus's
+#   top-level anchor_type / anchor_ids into input_json and answers by_anchor
+#   flat ({status, count, evidence}), the shape the Lens bus reads. An
+#   anchor is attributed by tag only; when the reply carries no tags and the
+#   query had several anchors, confidence is query_match.
+# v0.5.3: HA naming (2026.11): name outputs carry entity_name and device_name
+#   next to the legacy friendly_name (kept while HA still sets it), and
+#   composed names are built from those parts, so they survive HA dropping
+#   friendly_name. entity_name() is used only where HA has it (2026.4+).
+# v0.5.2: ticket_untag removes a tag; ticket_retag swaps from_tag for tag
+#   (adds the new tag first, then removes the old one, so a ticket is never
+#   left with neither). Help version synced to the header.
 #
+# v0.5.1: the audit actor and service account carry no hardcoded agent
+#   names: an explicit actor, else the configured persona name, else agent.
+#
+# v0.5.0: onboarding gate (zen_os_1 entry_gate). An agent without
+#   zenos.agent.basic gets help and tool_manifest; anything else answers
+#   onboarding_required with next_step zen_flynn_oobe. The configure and
+#   ticket dispatch chooses keep a set result as their first branch.
+#   Manifest version synced to the header.
 # v0.4.4: the sutra reads integrations_config.fulfillment the way configure
 #   does: a value stored as JSON text or still wrapped in {value: ...} counts
 #   (configure said configured while the sutra said not_configured).
@@ -86,7 +109,7 @@ script:
   zen_dojotools_servicedesk:
     alias: Zen DojoTools Service Desk
     description: >
-      Radar — ZenOS service desk backed by Zammad. Create, update, assign, search, tag, and close
+      Radar: ZenOS service desk backed by Zammad. Create, update, assign, search, tag, and close
       help tickets. Supports customer resolution via household roster or reporter shorthand
       (house/zenos). Manage queues, orgs, triage metadata, typed anchors, and ticket links.
       Run radar_setup to initialize identity infrastructure. Use mode=help for full case reference.
@@ -112,6 +135,8 @@ script:
             - article_add
             - articles_list
             - ticket_tag
+            - ticket_untag
+            - ticket_retag
             - triage_set
             - triage_get
             - customer_find
@@ -216,6 +241,12 @@ script:
           ticket_tag:
             intent: Add a tag to a ticket.
             needs: [input_json.ticket_id (display number 10xxx or raw id), input_json.tag]
+          ticket_untag:
+            intent: Remove a tag from a ticket.
+            needs: [input_json.ticket_id (display number 10xxx or raw id), input_json.tag]
+          ticket_retag:
+            intent: Replace one tag with another (e.g. release_2026.11 -> release_2026.12). Adds tag first, then removes from_tag.
+            needs: [input_json.ticket_id (display number 10xxx or raw id), input_json.from_tag (tag to remove), input_json.tag (tag to add)]
           triage_set:
             intent: Record structured Radar/dev-pipe triage metadata on a ticket.
             needs: [input_json.ticket_id (display number 10xxx or raw id), input_json.rank]
@@ -275,7 +306,28 @@ script:
     - variables:
         input_data: "{{ input_data | combine({'body': _close_note}) if (case_norm == 'ticket_close' and _close_note != '') else input_data }}"
         case_norm: "{{ 'ticket_complete' if (case_norm == 'ticket_close' and _close_note != '') else case_norm }}"
-    - action: script.zen_dojotools_filecabinet
+    # Onboarding gate (zen_os_1 entry_gate): an agent without
+    # zenos.agent.basic gets help and tool_manifest only. Calls no user
+    # started pass.
+    - variables:
+        _sd_gate: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{ OS.entry_gate((context.user_id if context is defined else '') or '', 'zen_dojotools_servicedesk', case_norm) | from_json({'pass': false, 'reason': 'guarded: the onboarding gate could not be read'}) }}
+    - if: "{{ result is not defined and not _sd_gate.get('pass', false) }}"
+      then:
+        - variables:
+            result:
+              status: error
+              mode: "{{ case_norm }}"
+              reason: "{{ _sd_gate.reason }}"
+              next_step: "{{ _sd_gate.next_step }}"
+              caller_token: "{{ caller_token_norm }}"
+        - action: system_log.write
+          data:
+            level: warning
+            logger: zen_entry_gate
+            message: "{{ _sd_gate.get('log') or 'onboarding gate refused a call (gate result unreadable)' }}"
+    - action: script.zen_sutra_filecabinet
       response_variable: _ic_fc_raw
       continue_on_error: true
       data:
@@ -293,14 +345,9 @@ script:
         _audit_input: "{{ input_data.get('actor_context', {}) if input_data is mapping and input_data.get('actor_context', {}) is mapping else {} }}"
         _audit_actor_hint: >-
           {%- set explicit = _audit_input.get('actor', input_data.get('actor', '')) if input_data is mapping else '' -%}
-          {%- set tok = caller_token_norm | string | lower -%}
           {%- if explicit | string | trim != '' -%}{{ explicit | string | trim }}
-          {%- elif 'maeve' in tok -%}Maeve
-          {%- elif 'nyx' in tok -%}Nyx
-          {%- elif 'cayt' in tok -%}Cayt
-          {%- elif 'friday' in tok -%}Friday
-          {%- else -%}unknown{%- endif -%}
-        _audit_service_account: "{{ _audit_input.get('service_account', input_data.get('service_account', 'Friday')) if input_data is mapping else 'Friday' }}"
+          {%- else -%}{{ states('input_text.zenos_persona_name') if states('input_text.zenos_persona_name') not in ['unknown', 'unavailable', ''] else 'agent' }}{%- endif -%}
+        _audit_service_account: "{{ _audit_input.get('service_account', input_data.get('service_account', 'agent')) if input_data is mapping else 'agent' }}"
         _audit_delegation_mode: >-
           {%- set explicit = _audit_input.get('delegation_mode', input_data.get('delegation_mode', '')) if input_data is mapping else '' -%}
           {%- if explicit | string | trim != '' -%}{{ explicit | string | trim }}
@@ -345,7 +392,7 @@ script:
               message: "{{ _sd_help_message }}"
               tool: Zen DojoTools Fulfillment
               codename: Radar
-              version: "0.4.0"
+              version: "0.5.4"
               configured_url: "{{ _base_url }}"
               cases: "{{ cases_help }}"
               caller_token: "{{ caller_token_norm }}"
@@ -360,9 +407,10 @@ script:
               {%- set _health = {'configured': _base_url != '', 'status': 'ok' if _base_url != '' else 'warn', 'notes': [] if _base_url != '' else ['Zammad URL not configured — run mode=configure']} -%}
               {{- MF.tool_manifest(
                 tool='zen_dojotools_servicedesk',
+                summary='Help desk tickets (Radar)',
                 display_name='Service Desk / Zammad',
                 tier='dojotools',
-                version='0.4.3',
+                version='0.5.4',
                 health=_health,
                 required_labels=['zammad'],
                 optional_labels=['zammad', 'service_desk', 'tickets', 'fulfillment'],
@@ -385,6 +433,13 @@ script:
               ) | from_json -}}
 
     - choose:
+      # Already answered (onboarding gate): keep it.
+      - conditions:
+        - condition: template
+          value_template: "{{ result is defined }}"
+        sequence:
+        - variables:
+            _sd_answered: true
       - conditions:
         - condition: template
           value_template: '{{ case_norm == "configure" }}'
@@ -464,11 +519,12 @@ script:
                   url: "{{ _cfg_url }}"
                   status: ok
                   tested_at: "{{ now().isoformat() }}"
-            - action: script.zen_dojotools_filecabinet
+            - action: script.zen_sutra_filecabinet
               response_variable: _ic_write
               continue_on_error: true
               data:
-                action_type: "{{ 'update' if _ic_drawer_exists else 'create' }}"
+                action_type: upsert
+                mode: replace
                 force_action: true
                 set_timestamp: true
                 volume_entity_id:
@@ -557,9 +613,16 @@ script:
                   caller_token: "{{ caller_token_norm }}"
 
     - choose:
+      # Already answered (onboarding gate): keep it.
       - conditions:
         - condition: template
-          value_template: '{{ case_norm in ["ticket_create","ticket_get","ticket_find","ticket_list","ticket_search","ticket_update","ticket_close","ticket_complete","article_add","articles_list","ticket_tag","ticket_link","ticket_unlink","triage_set","triage_get","customer_find","customer_create","org_find","org_create","queue_get","view_get","workflow_context_get","tickets_by_anchor"] }}'
+          value_template: "{{ result is defined }}"
+        sequence:
+        - variables:
+            _sd_answered: true
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm in ["ticket_create","ticket_get","ticket_find","ticket_list","ticket_search","ticket_update","ticket_close","ticket_complete","article_add","articles_list","ticket_tag","ticket_untag","ticket_retag","ticket_link","ticket_unlink","triage_set","triage_get","customer_find","customer_create","org_find","org_create","queue_get","view_get","workflow_context_get","tickets_by_anchor"] }}'
         sequence:
         # ticket_id / target_id may be a display number (10xxx) or a raw id.
         # Display numbers are looked up in Zammad by number, never derived by
@@ -604,13 +667,15 @@ script:
                   {{ (ids | first | string) if ids | length > 0 else _target_id_raw }}
         - variables:
             _missing: >-
-              {%- if case_norm in ['ticket_get','ticket_update','ticket_close','ticket_complete','article_add','articles_list','ticket_tag','ticket_link','ticket_unlink','triage_set','triage_get'] and _ticket_id == '' -%}ticket_id
+              {%- if case_norm in ['ticket_get','ticket_update','ticket_close','ticket_complete','article_add','articles_list','ticket_tag','ticket_untag','ticket_retag','ticket_link','ticket_unlink','triage_set','triage_get'] and _ticket_id == '' -%}ticket_id
               {%- elif case_norm in ['ticket_find','customer_find','org_find'] and _query == '' -%}query
               {%- elif case_norm == 'ticket_create' and (input_data.get('title','') | string | trim) == '' -%}title
               {%- elif case_norm == 'ticket_create' and (input_data.get('body','') | string | trim) == '' -%}body
               {%- elif case_norm == 'ticket_complete' and (input_data.get('body','') | string | trim) == '' -%}body
               {%- elif case_norm == 'article_add' and (input_data.get('body','') | string | trim) == '' -%}body
-              {%- elif case_norm == 'ticket_tag' and (input_data.get('tag','') | string | trim) == '' -%}tag
+              {%- elif case_norm in ['ticket_tag','ticket_untag','ticket_retag'] and (input_data.get('tag','') | string | trim) == '' -%}tag
+              {%- elif case_norm == 'ticket_retag' and (input_data.get('from_tag','') | string | trim) == '' -%}from_tag
+              {%- elif case_norm == 'ticket_retag' and (input_data.get('from_tag','') | string | trim) == (input_data.get('tag','') | string | trim) -%}from_tag (must differ from tag)
               {%- elif case_norm == 'triage_set' and (input_data.get('rank','') | string | trim) == '' -%}rank
               {%- elif case_norm == 'customer_create' and (input_data.get('email','') | string | trim) == '' -%}email
               {%- elif case_norm == 'org_create' and (input_data.get('name','') | string | trim) == '' -%}name
@@ -627,6 +692,7 @@ script:
                   status: error
                   tool: Zen DojoTools Fulfillment
                   case: "{{ case_norm }}"
+                  reason: "guarded: input_json.{{ _missing | trim }} is required for {{ case_norm }}"
                   message: "Missing required field: {{ _missing | trim }}"
                   caller_token: "{{ caller_token_norm }}"
 
@@ -1224,7 +1290,7 @@ script:
                 _tc_product_name: "{{ input_data.get('product_name', '') | string | trim if input_data is mapping else '' }}"
             - variables:
                 _tc_person_name: >-
-                  {{ state_attr(_tc_person_entity_id, 'friendly_name') | default('') if _tc_person_entity_id != '' else '' }}
+                  {{ ((([device_name(_tc_person_entity_id) if device_id(_tc_person_entity_id) else '', entity_name(_tc_person_entity_id)] | select | unique | join(' ')) if entity_name is defined else '') or (state_attr(_tc_person_entity_id, 'friendly_name') | default(''))) if _tc_person_entity_id != '' else '' }}
                 _tc_person_resolve_raw: none
             - variables:
                 _tc_profile_email: >-
@@ -1923,6 +1989,68 @@ script:
                     http_status: "{{ _tag_raw.get('http_status', 0) if _tag_raw is mapping else 0 }}"
                     caller_token: "{{ caller_token_norm }}"
 
+        # ticket_untag removes tag. ticket_retag adds tag first, then removes
+        # from_tag; a failed add stops before the remove.
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ case_norm in ["ticket_untag", "ticket_retag"] and _missing | trim == "" }}'
+            sequence:
+            - variables:
+                _tag_name: "{{ input_data.get('tag', '') | string | trim if input_data is mapping else '' }}"
+                _from_tag: "{{ input_data.get('from_tag', '') | string | trim if input_data is mapping else '' }}"
+                _untag_name: "{{ _from_tag if case_norm == 'ticket_retag' else _tag_name }}"
+                _retag_add_status: skipped
+                _retag_add_http: 0
+                _untag_status: skipped
+                _untag_http: 0
+            - if: "{{ case_norm == 'ticket_retag' }}"
+              then:
+              - action: script.zen_sutra_zammad
+                response_variable: _retag_add_raw
+                continue_on_error: true
+                data:
+                  action_type: post
+                  base_url: "{{ _base_url }}"
+                  request_timeout: "{{ _request_timeout }}"
+                  endpoint: "tags/add"
+                  payload: '{{ {"object": "Ticket", "o_id": _ticket_id | int, "item": _tag_name} | tojson }}'
+              - variables:
+                  _retag_add_status: "{{ _retag_add_raw.get('status', 'error') if _retag_add_raw is mapping else 'error' }}"
+                  _retag_add_http: "{{ _retag_add_raw.get('http_status', 0) if _retag_add_raw is mapping else 0 }}"
+            - if: "{{ case_norm == 'ticket_untag' or _retag_add_status == 'success' }}"
+              then:
+              - action: script.zen_sutra_zammad
+                response_variable: _untag_raw
+                continue_on_error: true
+                data:
+                  action_type: delete
+                  base_url: "{{ _base_url }}"
+                  request_timeout: "{{ _request_timeout }}"
+                  endpoint: "tags/remove"
+                  payload: '{{ {"object": "Ticket", "o_id": _ticket_id | int, "item": _untag_name} | tojson }}'
+              - variables:
+                  _untag_status: "{{ _untag_raw.get('status', 'error') if _untag_raw is mapping else 'error' }}"
+                  _untag_http: "{{ _untag_raw.get('http_status', 0) if _untag_raw is mapping else 0 }}"
+            - variables:
+                result:
+                  status: "{{ 'success' if _untag_status == 'success' else 'error' }}"
+                  tool: Zen DojoTools Fulfillment
+                  case: "{{ case_norm }}"
+                  ticket_id: "{{ _ticket_id }}"
+                  tag: "{{ _tag_name }}"
+                  from_tag: "{{ _from_tag if case_norm == 'ticket_retag' else '' }}"
+                  added: "{{ _retag_add_status == 'success' }}"
+                  removed: "{{ _untag_status == 'success' }}"
+                  message: >-
+                    {%- if case_norm == 'ticket_retag' and _retag_add_status != 'success' -%}Could not add {{ _tag_name }}; {{ _from_tag }} was left in place.
+                    {%- elif _untag_status != 'success' -%}Could not remove {{ _untag_name }}{{ ' (' ~ _tag_name ~ ' was added)' if case_norm == 'ticket_retag' else '' }}.
+                    {%- else -%}{{ ('Replaced ' ~ _from_tag ~ ' with ' ~ _tag_name) if case_norm == 'ticket_retag' else ('Removed ' ~ _tag_name) }}.{%- endif -%}
+                  trace:
+                    add_http_status: "{{ _retag_add_http }}"
+                    remove_http_status: "{{ _untag_http }}"
+                    caller_token: "{{ caller_token_norm }}"
+
         - choose:
           - conditions:
             - condition: template
@@ -2352,12 +2480,25 @@ script:
                 action_type: get
                 base_url: "{{ _base_url }}"
                 request_timeout: "{{ _request_timeout }}"
-                endpoint: "tickets/search?query={{ (_anc_query | urlencode) | replace('%20', '+') }}&per_page={{ _anc_limit }}"
+                # #10681: the lean query/page/per_page form, the one ticket_search
+                # uses. Zammad may answer a list of tickets instead of
+                # {tickets, assets}; both shapes are read below.
+                endpoint: "tickets/search?query={{ (_anc_query | urlencode) | replace('%20', '+') }}&page=1&per_page={{ _anc_limit }}"
             - variables:
                 _anc_content: "{{ _anc_raw.get('result', {}).get('content', {}) if _anc_raw is mapping else {} }}"
             - variables:
-                _anc_ticket_ids: "{{ _anc_content.get('tickets', []) if _anc_content is mapping else [] }}"
-                _anc_assets: "{{ _anc_content.get('assets', {}).get('Ticket', {}) if _anc_content is mapping else {} }}"
+                _anc_seq: "{{ _anc_content if _anc_content is sequence and _anc_content is not string and _anc_content is not mapping else [] }}"
+            - variables:
+                _anc_ticket_ids: >-
+                  {%- if _anc_content is mapping -%}{{ _anc_content.get('tickets', []) }}
+                  {%- else -%}{{ _anc_seq | selectattr('id', 'defined') | map(attribute='id') | list }}{%- endif -%}
+                _anc_assets: >-
+                  {%- if _anc_content is mapping -%}{{ _anc_content.get('assets', {}).get('Ticket', {}) }}
+                  {%- else -%}
+                    {%- set ns = namespace(m={}) -%}
+                    {%- for t in _anc_seq if t is mapping and t.get('id') is not none -%}{%- set ns.m = ns.m | combine({(t.get('id') | string): t}) -%}{%- endfor -%}
+                    {{ ns.m }}
+                  {%- endif -%}
                 _anc_documents: >-
                   {%- set docs = namespace(items=[]) -%}
                   {%- for tid, t in _anc_assets.items() if _anc_assets is mapping and t is mapping -%}
@@ -2365,17 +2506,20 @@ script:
                     {%- set _tags = t.get('tags', []) if t.get('tags', []) is sequence and t.get('tags', []) is not string else [] -%}
                     {%- set _matched = namespace(ids=[]) -%}
                     {%- for aid in _anc_ids -%}
-                      {%- if aid in _tags or (aid | string) in (t | string) -%}
+                      {#- #10681: tags only. A substring of the whole ticket matched words like 'agent' in field names. -#}
+                      {%- if aid in _tags -%}
                         {%- set _matched.ids = _matched.ids + [aid | string] -%}
                       {%- endif -%}
                     {%- endfor -%}
                     {%- set _matched_ids = _matched.ids if _matched.ids | length > 0 else _anc_ids -%}
+                    {#- The lean search reply carries no tags: the ticket matched the query (one of these anchors), not a known tag. -#}
+                    {%- set _conf = 'explicit_tag' if _matched.ids | length > 0 else ('explicit_tag' if _anc_ids | length == 1 else 'query_match') -%}
                     {%- set _anchors = namespace(items=[]) -%}
                     {%- for aid in _matched_ids -%}
                       {%- set _anchors.items = _anchors.items + [{
                         'type': _anc_type if _anc_type != '' else 'unknown',
                         'id': aid | string,
-                        'confidence': 'explicit_tag',
+                        'confidence': _conf,
                         'source': 'zammad_tag',
                         'provider': 'servicedesk'
                       }] -%}
@@ -2420,10 +2564,17 @@ script:
                   query: "{{ _anc_query }}"
                   ticket_ids: "{{ _anc_ticket_ids }}"
                   tickets: "{{ _anc_assets.values() | list if _anc_assets is mapping else [] }}"
-                  count: "{{ _anc_content.get('tickets_count', _anc_ticket_ids | length) if _anc_content is mapping else 0 }}"
+                  count: "{{ _anc_content.get('tickets_count', _anc_ticket_ids | length) if _anc_content is mapping else _anc_ticket_ids | length }}"
                   result:
                     count: "{{ _anc_documents | length }}"
                     documents: "{{ _anc_documents }}"
+                    # #10681: the Lens bus reads evidence[].
+                    evidence: >-
+                      {%- set ns = namespace(e=[]) -%}
+                      {%- for d in _anc_documents if d is mapping -%}
+                        {%- set ns.e = ns.e + [d | combine({'evidence_id': (d.get('stack') or {}).get('evidence_id', 'servicedesk:ticket:' ~ d.get('id', '')), 'leaf_type': 'ticket_evidence', 'provider': 'radar'})] -%}
+                      {%- endfor -%}
+                      {{ ns.e }}
                     content_redacted: true
                   trace:
                     http_status: "{{ _anc_raw.get('http_status', 0) if _anc_raw is mapping else 0 }}"
@@ -2739,11 +2890,12 @@ script:
                 {{ state_attr(_rs_sys_cab, 'variables') | default({}, true) if _rs_sys_cab != '' else {} }}
               _rs_existing_defaults: >-
                 {{ (_rs_cab_vars if _rs_cab_vars is mapping else {}).get('radar_defaults', {}) or {} }}
-          - action: script.zen_dojotools_filecabinet
+          - action: script.zen_sutra_filecabinet
             response_variable: _rs_cab_write
             continue_on_error: true
             data:
-              action_type: "{{ 'update' if 'radar_defaults' in (_rs_cab_vars if _rs_cab_vars is mapping else {}) else 'create' }}"
+              action_type: upsert
+              mode: replace
               force_action: true
               set_timestamp: true
               volume_entity_id:
@@ -2811,11 +2963,12 @@ script:
                   {%- set _v = _raw.get('value', _raw) if _raw is mapping and 'value' in _raw else _raw -%}
                   {%- set _v = _v if _v is mapping else (_v | from_json(none) if _v is string and _v | trim not in ['','none','null','None'] else {}) -%}
                   {{ _v if _v is mapping else {} }}
-            - action: script.zen_dojotools_filecabinet
+            - action: script.zen_sutra_filecabinet
               response_variable: _rs_mq_map_write
               continue_on_error: true
               data:
-                action_type: "{{ 'update' if 'radar_group_map' in (_rs_mq_hh_vars if _rs_mq_hh_vars is mapping else {}) else 'create' }}"
+                action_type: upsert
+                mode: replace
                 force_action: true
                 set_timestamp: true
                 volume_entity_id:
@@ -3090,7 +3243,7 @@ script:
     fields:
       action_type:
         name: Action Type
-        description: HTTP method — get, post, put, delete
+        description: HTTP method - get, post, put, delete
         selector:
           select:
             options: [get, post, put, delete]
@@ -3128,6 +3281,7 @@ script:
             {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
             {{- MF.tool_manifest(
               tool='zen_sutra_zammad',
+              summary='Internal: Zammad connector',
               display_name='Zammad Sutra (Internal)',
               tier='sutra',
               version='0.4.0',
@@ -3316,7 +3470,7 @@ script:
         - condition: template
           value_template: '{{ _mode_norm == "tool_manifest" }}'
         sequence:
-        - action: script.zen_dojotools_filecabinet
+        - action: script.zen_sutra_filecabinet
           response_variable: _ic_fc_raw
           continue_on_error: true
           data:
@@ -3337,6 +3491,7 @@ script:
               {%- set _health = {"configured": _configured, "status": "ok" if _configured else "warn", "notes": [] if _configured else ["Zammad URL not configured — run Library section=stacks stack=radar mode=configure"]} -%}
               {{- MF.tool_manifest(
                 tool="zen_stack_radar",
+                summary="Internal: tickets lens provider",
                 display_name="Radar — Zammad Service Desk Stack",
                 tier="stacks",
                 version="1.0.0",
@@ -3373,19 +3528,6 @@ script:
           - condition: template
             value_template: '{{ _mode_norm == "register" }}'
         sequence:
-        - action: script.zen_dojotools_filecabinet
-          continue_on_error: true
-          response_variable: _rr_reg_read
-          data:
-            action_type: get
-            volume_entity_id: "{{ _hh }}"
-            key: lens_registry
-        - variables:
-            _rr_existing_reg: >-
-              {%- set raw = _rr_reg_read if _rr_reg_read is mapping else {} -%}
-              {%- set val = raw.get('value', {}) -%}
-              {%- set parsed = val | from_json if val is string else val -%}
-              {{ parsed if parsed is mapping else {} }}
         - variables:
             _rr_provider_decl:
               provider: radar
@@ -3405,14 +3547,18 @@ script:
                 required: r
                 allowed: [r]
                 denied: [w, x, d, a]
-        - action: script.zen_dojotools_filecabinet
+        # Through the central lens writer (prompt_loader lens_registry): it runs
+        # queued, so two registrations never overwrite each other.
+        - action: script.zen_admintools_prompt_loader
           continue_on_error: true
           response_variable: _rr_reg_write
           data:
-            action_type: update
-            volume_entity_id: "{{ _hh }}"
-            key: lens_registry
-            value: "{{ _rr_existing_reg | combine({'radar': _rr_provider_decl}) | tojson }}"
+            mode: lens_registry
+            action_type: register
+            item: radar
+            payload_json: "{{ _rr_provider_decl | tojson }}"
+        - variables:
+            _rr_reg_write: "{{ _rr_reg_write.get('result', _rr_reg_write) if _rr_reg_write is defined and _rr_reg_write is mapping else {} }}"
         - variables:
             _provider_response:
               status: "{{ 'success' if _rr_reg_write is mapping and _rr_reg_write.get('status', '') == 'success' else 'error' }}"
@@ -3431,34 +3577,17 @@ script:
           - condition: template
             value_template: '{{ _mode_norm == "unregister" }}'
         sequence:
-        - action: script.zen_dojotools_filecabinet
-          continue_on_error: true
-          response_variable: _ru_reg_read
-          data:
-            action_type: get
-            volume_entity_id: "{{ _hh }}"
-            key: lens_registry
-        - variables:
-            _ru_existing: >-
-              {%- set raw = _ru_reg_read if _ru_reg_read is mapping else {} -%}
-              {%- set val = raw.get('value', {}) -%}
-              {%- set parsed = val | from_json if val is string else val -%}
-              {{ parsed if parsed is mapping else {} }}
-        - variables:
-            _ru_new: >-
-              {%- set ns = namespace(result={}) -%}
-              {%- for k, v in _ru_existing.items() if k != 'radar' -%}
-                {%- set ns.result = ns.result | combine({k: v}) -%}
-              {%- endfor -%}
-              {{ ns.result }}
-        - action: script.zen_dojotools_filecabinet
+        # Through the central lens writer (prompt_loader lens_registry): it runs
+        # queued, so two registrations never overwrite each other.
+        - action: script.zen_admintools_prompt_loader
           continue_on_error: true
           response_variable: _ru_write
           data:
-            action_type: update
-            volume_entity_id: "{{ _hh }}"
-            key: lens_registry
-            value: "{{ _ru_new | tojson }}"
+            mode: lens_registry
+            action_type: unregister
+            item: radar
+        - variables:
+            _ru_write: "{{ _ru_write.get('result', _ru_write) if _ru_write is defined and _ru_write is mapping else {} }}"
         - variables:
             _provider_response:
               status: "{{ 'success' if _ru_write is mapping and _ru_write.get('status', '') == 'success' else 'error' }}"
@@ -3481,22 +3610,39 @@ script:
       continue_on_error: true
       data:
         mode: '{{ _svc_mode }}'
+        # #10681: the Lens bus sends anchor_type / anchor_ids at the top level;
+        # carry them into input_json (an explicit input_json value wins).
         input_json: >-
           {%- set raw = input_json | default("", true) -%}
-          {%- if raw is mapping -%}{{ raw | tojson }}
-          {%- elif raw is string and raw | trim != "" -%}{{ raw | trim }}
-          {%- else -%}{{ {} | tojson }}{%- endif -%}
+          {%- set d = raw if raw is mapping else ((raw | from_json({})) if raw is string and raw | trim != "" else {}) -%}
+          {%- set d = d if d is mapping else {} -%}
+          {%- set _at = anchor_type | default("", true) | string | trim -%}
+          {%- set _ai = anchor_ids | default("", true) -%}
+          {%- set _ai = (_ai | from_json([])) if _ai is string and (_ai | trim)[:1] == "[" else _ai -%}
+          {%- set extra = {} -%}
+          {%- if _at != "" and "anchor_type" not in d -%}{%- set extra = extra | combine({"anchor_type": _at}) -%}{%- endif -%}
+          {%- if _ai not in ["", none, []] and "anchor_ids" not in d -%}{%- set extra = extra | combine({"anchor_ids": _ai}) -%}{%- endif -%}
+          {{ (d | combine(extra)) | tojson }}
         caller_token: '{{ caller_token | default("") }}'
     - variables:
         _provider_response: >-
           {%- set r = _radar_result if _radar_result is mapping else {} -%}
           {%- set r = r.get('result', r) if r is mapping else r -%}
-          {%- set out = r | combine({
-            "provider": "radar",
-            "stack": "radar",
-            "handler": "zen_stack_radar"
-          }, recursive=true) -%}
-          {{ out }}
+          {%- if _mode_norm == "by_anchor" and r is mapping -%}
+            {#- #10681: flat lens reply; the bus unwraps one .result and reads evidence/count. -#}
+            {%- set inner = r.get("result", {}) if r.get("result") is mapping else {} -%}
+            {{ {"status": r.get("status", "error"), "provider": "radar", "handler": "zen_stack_radar",
+                "anchor_type": r.get("anchor_type"), "anchor_ids": r.get("anchor_ids", []), "query": r.get("query", ""),
+                "count": inner.get("count", 0) | int(0), "evidence": inner.get("evidence", []),
+                "content_redacted": true} }}
+          {%- else -%}
+            {%- set out = r | combine({
+              "provider": "radar",
+              "stack": "radar",
+              "handler": "zen_stack_radar"
+            }, recursive=true) -%}
+            {{ out }}
+          {%- endif -%}
     - stop: radar stack provider complete
       response_variable: _provider_response
 
@@ -3586,7 +3732,7 @@ automation:
             {{ {'count': ns.items | length, 'slug': _slug, 'tickets': ns.items, 'updated_at': now().isoformat()} | tojson }}
 
       # Write to household cabinet _zen_agent_queue_<slug>
-      - action: script.zen_dojotools_filecabinet
+      - action: script.zen_sutra_filecabinet
         continue_on_error: true
         data:
           action_type: upsert

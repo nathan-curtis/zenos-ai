@@ -1,4 +1,47 @@
-{#- zenos_cabinets.jinja — Version: 1.2.0 -#}
+{#- zenos_cabinets.jinja -- Version: 1.7.2 -#}
+{#- 1.7.2: safe_get_nested walks the path; it returned the object it was
+    given (the walk was lost inside the loop). -#}
+{#- 1.7.0: acl_enforce_mode, the FileCabinet ACL gate's switch (#10633): the
+    system cabinet's fc_acl_mode drawer, {mode: audit|enforce}; anything but
+    enforce reads as audit. A built-in lock keeps the drawer admin-door only,
+    so no FileCabinet caller can flip it. -#}
+{#- 1.6.4: the label index helpers (label_index, label_index_keys,
+    label_index_apply) and cabinet_resolved_view: a cabinet's tree with each
+    pointer into an expansion it hosts replaced by the drawer the expansion
+    holds, so search reads the real drawers. -#}
+{#- 1.6.3: fc_resolve is one chain through softlinks and expansions alike. At
+    each cabinet a key it does not hold, under an expanded root it hosts, hops
+    into that expansion, and a mount pointer there (a softlink) is chased on, so
+    a softlink from or to an expanded drawer resolves to the real drawer and
+    every hop lands in visited. -#}
+{#- 1.6.2: expansion_plan, what a move, copy or delete of a key touches in an
+    expanded tree (self, ancestor, contains or none). -#}
+{#- 1.6.1: an expanded drawer is a permanent redirect for its whole tree. A key
+    the cabinet does not hold, under an ancestor that is a mount pointer into
+    an expansion this cabinet hosts, resolves to that expansion (fc_resolve),
+    so a child added after the move lands there. expansion_root_of names that
+    ancestor; cabinet_expanded_view is the cabinet with its expansions' keys
+    under each expanded root (get children, list). -#}
+{#- 1.6.0: an expansion cabinet (VolumeInfo cabinet_class expansion + hosted_by)
+    answers with its host's ACL record (acl_record, one hop: a host that is
+    itself an expansion is not followed). A drawer's own acl still applies.
+    acl_for: a mount pointer answers with its cabinet's ACL, never a drawer acl. -#}
+{#- 1.5.2: acl_class_plan reads zen_index_cabinet (Index scope, also on role
+    cabinets) as scratchpad only when no role label is present. -#}
+{#- 1.5.1: acl_lifecycle_tools (provisioner and Flynn cabinet init administer every
+    class but the vault; a named tool passes without the rule cert or ack, via tool),
+    acl_schema_current / acl_schema_is_current (the acl_schema stamp). -#}
+{#- 1.5.0: the default ops table by cabinet class (VolumeInfo class, stamped
+    by acl_migrate and the factory, never read from a label), built-in drawer
+    locks (acl_builtin_ops, final), caller origin tokens @internal, @tool:<script>,
+    @self and @partner in acl_check. -#}
+{#- 1.4.0: fc_resolve, the one mount resolver (FileCabinet resolves the target before its gate). -#}
+{#- 1.3.2: acl_schema_check (the identity gate and acl_migrate's re-check) and
+    volumeinfo_copies (stray VolumeInfo copies acl_migrate repairs from and removes). -#}
+{#- 1.3.1: acl_record also returns ops_stored (what a writer stores back), and
+    takes an optional idmap for cabinets about to get an id (acl_migrate). -#}
+{#- 1.3.0: ACL macros (acl_guid_of, acl_default_ops, acl_record, acl_for,
+    acl_op_class, acl_check) replace cabinet_acls and drawer_acl, #10626. -#}
 
 {#- <editor-fold desc="Docs" defaultstate="collapsed"> -#}
 {#- <editor-fold desc="API" defaultstate="collapsed"> -#}
@@ -642,29 +685,749 @@ Technical Note: The format string '4' and '8' represent literal version/variant 
 {%- endmacro -%}
 
 {#-
-@macro: cabinet_acls
-@desc: Retrieves the access control list (ACLs) from a cabinet's AI_Cabinet_VolumeInfo metadata.
-@param: entity_id (string) - The full HA entity ID of the cabinet sensor.
-@param: fallback (dict) - Value to return if ACLs are not found. Defaults to {}.
-@returns: JSON Object - The ACLs data structure, or fallback if not found.
-@note: ACLs define permissions and access rules for the cabinet.
-@note: Assumes the cabinet follows the standard schema with VolumeInfo containing an 'acls' field.
-@usage: {{ cabinet_acls('sensor.ai_cabinet') | from_json() }}
-        {{ cabinet_acls('sensor.ai_cabinet', {'default': 'deny'}) | from_json() }}
+ACL (#10626): one record. Identity writes it, FileCabinet enforces it, and
+both read it only through the macros below.
 
-"Cabinet ACLs Accessor" for retrieving access control list metadata from a cabinet.
-Purpose: Provides convenient access to the permission/authorization data stored in a cabinet's metadata.
-Input: entity_id (string): The cabinet sensor entity ID.
-       fallback (dict): Default value if the ACLs field doesn't exist.
-Logic: Fetches the VolumeInfo drawer's value using cabinet_drawer_value().
-       Extracts the 'acls' field from VolumeInfo.
-       Returns the ACLs data structure as-is, or fallback if missing.
-Output: A JSON-formatted string of the ACLs data (or fallback if not found).
+VolumeInfo acls v2:
+  {v: 2, owner: <guid>, prime: <guid>, partners: [<guid>],
+   ops: {r|w|d|a: {cert: 'name:level' or '', ack: bool, who: [...]}}}
+Principals are cabinet GUIDs (VolumeInfo id), never entity_ids or names.
+who holds GUIDs, '*' (any caller), '@owner', '@prime', '@partner' (any of
+partners), '@self' (the cabinet itself), '@internal' (the call reached the
+engine from a tool, not through the agent-facing FileCabinet tool) or
+'@tool:<script>' (an internal call from that script). An empty who means
+no FileCabinet caller: only the admin door does that op.
+A v1 record (owner/partner lists of {guid, entity_id}) reads as v2: each
+principal is its cabinet's current VolumeInfo id (v1 identity matched by
+entity_id), else the guid stored on the entry. acls.family is not
+part of the ACL (the members drawers hold that topology).
+Each op inherits on its own: the drawer envelope's acl.ops, else the
+cabinet's acls.ops, else acl_default_ops for the cabinet's class.
+acl_builtin_ops (credential and approval drawers) wins over all three.
+An expansion cabinet (cabinet_class expansion, hosted_by <host entity_id>)
+has no ACL of its own: its cabinet record is its host's.
 -#}
-{%- macro cabinet_acls(entity_id, fallback={}) -%}
-    {%- set _vi_val = cabinet_drawer_value(entity_id, 'AI_Cabinet_VolumeInfo') | from_json() -%}
-    {%- set _acls = _vi_val.get('acls', fallback) -%}
-    {{- _acls | to_json(pretty_print=true) -}}
+
+{#-
+@macro: acl_class_of
+@desc: A cabinet's class, stamped in VolumeInfo (class). '' when unstamped.
+@returns: plain string.
+-#}
+{%- macro acl_class_of(entity_id) -%}
+    {%- set _env = (state_attr(entity_id, 'variables') or {}).get('AI_Cabinet_VolumeInfo') if entity_id else none -%}
+    {%- set _vi = _env.get('value') if _env is mapping else none -%}
+    {%- set _vi = (_vi | from_json(none)) if _vi is string else _vi -%}
+    {%- set _vi = _vi if _vi is mapping else {} -%}
+    {{- (_vi.get('class') or '') | string | lower | trim -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_class_plan
+@desc: The class acl_migrate proposes for a cabinet with none stamped, from
+       its labels. Only a reviewed migration stamps it; the gate reads the
+       stamp (acl_class_of), never a label.
+@returns: plain string, '' when no label names a class.
+-#}
+{%- macro acl_class_plan(entity_id) -%}
+    {%- set _l = labels(entity_id) if entity_id else [] -%}
+    {%- set _hist = _l | select('match', '^zen_.*history_cabinet$') | list | count > 0 -%}
+    {%- if 'zen_vault_cabinet' in _l -%}vault
+    {%- elif 'zen_system_cabinet' in _l -%}system
+    {%- elif _hist -%}history
+    {%- elif 'zen_dojo_cabinet' in _l -%}dojo
+    {%- elif 'zen_kata_cabinet' in _l -%}kata
+    {%- elif 'zen_household_cabinet' in _l -%}household
+    {%- elif 'zen_family_cabinet' in _l -%}family
+    {%- elif 'zen_ai_user_cabinet' in _l -%}ai_user
+    {%- elif 'zen_user_cabinet' in _l -%}user
+    {#- zen_index_cabinet marks Index search scope and sits on role cabinets
+        too: it means scratchpad only when no role label is present. -#}
+    {%- elif 'zen_index_cabinet' in _l -%}scratchpad
+    {%- endif -%}
+{%- endmacro -%}
+
+{#-
+@macro: acl_guid_of
+@desc: A cabinet's GUID: VolumeInfo id, else its legacy guid field.
+@returns: plain string, '' when the cabinet has none.
+-#}
+{%- macro acl_guid_of(entity_id) -%}
+    {%- set _env = (state_attr(entity_id, 'variables') or {}).get('AI_Cabinet_VolumeInfo') if entity_id else none -%}
+    {%- set _vi = _env.get('value') if _env is mapping else none -%}
+    {%- set _vi = (_vi | from_json(none)) if _vi is string else _vi -%}
+    {%- set _vi = _vi if _vi is mapping else {} -%}
+    {{- (_vi.get('id') or _vi.get('guid') or '') | string | trim -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_default_ops
+@desc: The default for an op no drawer or cabinet acl names, by cabinet class
+       (#10626). An unstamped class gets the unclassified row.
+@param: cls - acl_class_of the cabinet.
+@returns: JSON {r, w, d, a}.
+-#}
+{%- macro acl_default_ops(cls='') -%}
+    {%- set O = {'cert': '', 'ack': false, 'who': ['*']} -%}
+    {%- set DOOR = {'cert': '', 'ack': false, 'who': []} -%}
+    {%- set ADM = 'zenos.system.cabinet_admin:1' -%}
+    {%- set T = {
+        'system':     {'r': O, 'w': DOOR, 'd': DOOR, 'a': DOOR},
+        'vault':      {'r': DOOR,
+                       'w': {'cert': '', 'ack': false, 'who': ['@tool:zen_dojotools_identity']},
+                       'd': {'cert': '', 'ack': true, 'who': ['@tool:zen_dojotools_identity']}, 'a': DOOR},
+        'dojo':       {'r': O, 'w': {'cert': '', 'ack': false, 'who': ['@internal']},
+                       'd': {'cert': '', 'ack': false, 'who': ['@internal']}, 'a': DOOR},
+        'kata':       {'r': O, 'w': {'cert': '', 'ack': false, 'who': ['@owner', '@internal']},
+                       'd': {'cert': '', 'ack': false, 'who': ['@internal']}, 'a': DOOR},
+        'history':    {'r': {'cert': '', 'ack': false, 'who': ['@owner', '@prime', '@internal']},
+                       'w': {'cert': '', 'ack': false, 'who': ['@internal']},
+                       'd': {'cert': '', 'ack': true, 'who': ['@internal']}, 'a': DOOR},
+        'household':  {'r': O, 'w': {'cert': '', 'ack': false, 'who': ['@prime', '@internal']},
+                       'd': {'cert': '', 'ack': true, 'who': ['@prime']},
+                       'a': {'cert': ADM, 'ack': true, 'who': ['@owner']}},
+        'family':     {'r': O, 'w': {'cert': '', 'ack': false, 'who': ['@prime', '@internal']},
+                       'd': {'cert': '', 'ack': true, 'who': ['@prime']},
+                       'a': {'cert': ADM, 'ack': true, 'who': ['@owner']}},
+        'user':       {'r': {'cert': '', 'ack': false, 'who': ['@self', '@partner', '@prime', '@internal']},
+                       'w': {'cert': '', 'ack': false, 'who': ['@self', '@partner', '@prime', '@internal']},
+                       'd': {'cert': '', 'ack': true, 'who': ['@partner', '@prime']},
+                       'a': {'cert': ADM, 'ack': true, 'who': ['@owner']}},
+        'ai_user':    {'r': {'cert': '', 'ack': false, 'who': ['@self', '@prime', '@internal']},
+                       'w': {'cert': '', 'ack': false, 'who': ['@self', '@internal']},
+                       'd': {'cert': '', 'ack': true, 'who': ['@self']},
+                       'a': {'cert': 'zenos.identity.acl_take_ownership:1', 'ack': true, 'who': ['@self']}},
+        'scratchpad': {'r': O, 'w': O, 'd': O, 'a': {'cert': '', 'ack': false, 'who': ['@prime']}},
+        '':           {'r': O, 'w': {'cert': '', 'ack': false, 'who': ['@prime', '@internal']},
+                       'd': {'cert': '', 'ack': false, 'who': ['@prime']}, 'a': DOOR}} -%}
+    {#- The cabinet lifecycle tools (mount, dismount, provision) administer
+        every class but the vault; each carries its own cert gate. -#}
+    {%- set _row = T.get(cls | string | lower | trim) or T[''] -%}
+    {%- if (cls | string | lower | trim) != 'vault' -%}
+        {%- set _row = dict(_row, a=dict(_row.a, who=_row.a.who + acl_lifecycle_tools() | from_json)) -%}
+    {%- endif -%}
+    {{- _row | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_lifecycle_tools
+@desc: The @tool principals that mount, dismount and provision cabinets.
+@returns: JSON list.
+-#}
+{%- macro acl_lifecycle_tools() -%}
+    {{- ['@tool:zen_dojotools_provisioner', '@tool:flynn_initialize_cabinets'] | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_schema_current
+@desc: The ACL schema version acl_migrate brings an install to (3: v2 record
+       plus the stamped class). acl_migrate stamps it on the system cabinet
+       (acl_schema) after a clean full run; Flynn skips the migration while
+       the stamp is current.
+@returns: plain integer string.
+-#}
+{%- macro acl_schema_current() -%}3{%- endmacro -%}
+
+{#-
+@macro: acl_schema_is_current
+@desc: Whether the system cabinet's acl_schema stamp is at acl_schema_current.
+@returns: 'true' or 'false'.
+-#}
+{%- macro acl_schema_is_current() -%}
+    {%- set _m = cabinet_drawer_value(states('sensor.zen_system_cabinet_resolved'), 'acl_schema', {}) | from_json({}) -%}
+    {{- ((_m.get('version', 0) if _m is mapping else 0) | int(0)) >= (acl_schema_current() | int) -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_enforce_mode
+@desc: Whether the FileCabinet ACL gate refuses (enforce) or only logs
+       (audit). Read from the system cabinet's fc_acl_mode drawer, which only
+       the admin door writes; a missing or unreadable drawer is audit.
+@returns: plain string, 'audit' or 'enforce'.
+-#}
+{%- macro acl_enforce_mode() -%}
+    {%- set _m = cabinet_drawer_value(states('sensor.zen_system_cabinet_resolved'), 'fc_acl_mode', {}) | from_json({}) -%}
+    {{- 'enforce' if (_m is mapping and (_m.get('mode') or '') | string | lower | trim == 'enforce') else 'audit' -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_builtin_ops
+@desc: Fixed rules for the drawers that hold credentials, approvals and the
+       identity switch. They win over the drawer, cabinet and class rules
+       (an owner's acl_set cannot open them). w and d: tools only.
+@returns: JSON {op: rule} for the ops it fixes, {} for any other key.
+-#}
+{%- macro acl_builtin_ops(drawer_key) -%}
+    {%- set k = drawer_key | string | trim -%}
+    {%- set TOOLS = {'cert': '', 'ack': false, 'who': ['@internal']} -%}
+    {%- set DOOR = {'cert': '', 'ack': false, 'who': []} -%}
+    {%- if k in ['zen_ai_certs', 'integrations_config'] or k.startswith('alert_response_') -%}
+        {{- {'w': TOOLS, 'd': TOOLS} | tojson -}}
+    {%- elif k in ['cert_admin_console_bypass', 'fc_acl_mode'] -%}
+        {{- {'w': DOOR, 'd': DOOR} | tojson -}}
+    {%- else -%}
+        {{- {} | tojson -}}
+    {%- endif -%}
+{%- endmacro -%}
+
+{#-
+@macro: acl_record
+@desc: A cabinet's ACL, normalized to v2 whatever version is stored.
+@returns: JSON {v: 2, stored_v, owner, prime, partners, ops, ops_stored,
+          ops_source: {r|w|d|a: 'cabinet'|'default'}, unresolved: [entity_id, ...]}
+          (ops_stored: only the ops the cabinet stores, what a writer writes
+          back; unresolved: v1 principals with no guid on the entry and none
+          on their cabinet).
+@param: idmap - optional {entity_id: guid} for cabinets about to get an id
+        (acl_migrate plans ids and ACLs in one pass).
+@note: a writer stores {v: 2, owner, prime, partners, ops: ops_stored} with
+       its change applied, through the admin door's merge (key acls only).
+-#}
+{%- macro acl_record(entity_id, idmap={}) -%}
+    {%- set _env = (state_attr(entity_id, 'variables') or {}).get('AI_Cabinet_VolumeInfo') if entity_id else none -%}
+    {%- set _vi = _env.get('value') if _env is mapping else none -%}
+    {%- set _vi = (_vi | from_json(none)) if _vi is string else _vi -%}
+    {%- set _vi = _vi if _vi is mapping else {} -%}
+    {%- set _host = ((_vi.get('hosted_by') or '') | string | trim) if _vi.get('cabinet_class') == 'expansion' else '' -%}
+    {%- set _henv = (state_attr(_host, 'variables') or {}).get('AI_Cabinet_VolumeInfo') if _host not in ['', entity_id] else none -%}
+    {%- set _hvi = _henv.get('value') if _henv is mapping else none -%}
+    {%- set _hvi = (_hvi | from_json(none)) if _hvi is string else _hvi -%}
+    {%- if _hvi is mapping and _hvi.get('cabinet_class') != 'expansion' -%}
+    {{- dict(acl_record(_host, idmap) | from_json, inherited_from=_host) | tojson -}}
+    {%- else -%}
+    {%- set _a = _vi.get('acls') if _vi.get('acls') is mapping else {} -%}
+    {%- set _cls = (_vi.get('class') or '') | string | lower | trim -%}
+    {%- set _dflt = acl_default_ops(_cls) | from_json -%}
+    {%- set _sops = _a.get('ops') if _a.get('ops') is mapping else {} -%}
+    {%- set ns = namespace(ops={}, partners=[], unresolved=[], owner='', prime='') -%}
+    {%- for op in ['r', 'w', 'd', 'a'] -%}
+        {%- set ns.ops = dict(ns.ops, **{op: dict(_dflt[op], **(_sops[op] if _sops.get(op) is mapping else {}))}) -%}
+    {%- endfor -%}
+    {%- set _sv = _a.get('v', 1) | int(1) -%}
+    {%- if _sv >= 2 -%}
+        {%- set ns.owner = _a.get('owner') if _a.get('owner') is string else '' -%}
+        {%- set ns.prime = _a.get('prime') if _a.get('prime') is string else '' -%}
+        {%- set ns.partners = (_a.get('partners') if _a.get('partners') is list else []) | select('string') | reject('equalto', '') | list -%}
+    {%- else -%}
+        {%- set _own = (_a.get('owner') if _a.get('owner') is list else []) | select('mapping') | list -%}
+        {%- set _prt = (_a.get('partner') if _a.get('partner') is list else []) | select('mapping') | list -%}
+        {%- for e in _own[:1] + _prt -%}
+            {%- set _sg = (e.get('guid') or '') | string | trim -%}
+            {%- set _eid = e.get('entity_id', '') -%}
+            {%- set _g = (acl_guid_of(_eid) | trim) or ((idmap or {}).get(_eid, '') if _eid else '') or ('' if _sg == 'default-guid' else _sg) -%}
+            {%- if _g == '' -%}
+                {%- set ns.unresolved = ns.unresolved + [e.get('entity_id', '')] -%}
+            {%- elif loop.first and _own | count > 0 -%}
+                {%- set ns.owner = _g -%}
+            {%- elif e.get('role') == 'prime' and ns.prime == '' -%}
+                {%- set ns.prime = _g -%}
+            {%- elif _g not in ns.partners -%}
+                {%- set ns.partners = ns.partners + [_g] -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+    {{- {'v': 2, 'stored_v': _sv, 'class': _cls, 'self': (_vi.get('id') or _vi.get('guid') or '') | string | trim,
+         'owner': ns.owner, 'prime': ns.prime, 'partners': ns.partners,
+         'ops': ns.ops, 'ops_stored': _sops,
+         'ops_source': {'r': 'cabinet' if _sops.get('r') is mapping else 'default', 'w': 'cabinet' if _sops.get('w') is mapping else 'default',
+                        'd': 'cabinet' if _sops.get('d') is mapping else 'default', 'a': 'cabinet' if _sops.get('a') is mapping else 'default'},
+         'unresolved': ns.unresolved, 'inherited_from': ''} | tojson -}}
+    {%- endif -%}
+{%- endmacro -%}
+
+{#-
+@macro: fc_resolve
+@desc: The real cabinet and drawer behind a key (#10626): follows
+       cross-cabinet mounts (mount_point + target_entity_id, same key) up to
+       max_hops, with loop detection. FileCabinet resolves once, before its
+       gate; reads and writes go through a mount, delete/move/copy act on the
+       pointer itself.
+@returns: JSON {status, vol, key, depth, visited, reason, loop_at, fc_args, entry}
+       status: absent (key not in the cabinet) | direct (not a mount) |
+       resolved (followed >= 1 hop) | live (a tool-backed mount: fc_args, vol
+       is the cabinet holding it) | not_found_in_target (vol is the target
+       that lacks the key: where a write lands) | unresolvable (no target) |
+       loop_detected | depth_limit_exceeded. entry is the drawer envelope at
+       vol/key when one exists.
+-#}
+{%- macro fc_resolve(entity_id, drawer_key, max_hops=8) -%}
+    {%- set _v0 = state_attr(entity_id, 'variables') if entity_id else none -%}
+    {%- set _v0 = _v0 if _v0 is mapping else {} -%}
+    {%- set ns = namespace(vol=entity_id, vars=_v0, depth=0, visited=[entity_id ~ '/' ~ drawer_key], done=false,
+                           entry=none, status='', reason='', loop_at='', fc=none, xroot='') -%}
+    {%- for _ in range(max_hops + 1) if not ns.done -%}
+        {%- set _xr = (expansion_root_of(ns.vol, drawer_key) | from_json({})) if drawer_key not in ns.vars else {} -%}
+        {%- if drawer_key not in ns.vars and _xr.get('target', '') != '' -%}
+            {#- Under an expanded root this cabinet hosts: the expansion holds
+                the whole tree, so the chain hops there. -#}
+            {%- set _next = _xr.target ~ '/' ~ drawer_key -%}
+            {%- if ns.depth >= max_hops - 1 -%}
+                {%- set ns.status = 'depth_limit_exceeded' -%}
+                {%- set ns.done = true -%}
+            {%- elif _next in ns.visited -%}
+                {%- set ns.status = 'loop_detected' -%}
+                {%- set ns.loop_at = _next -%}
+                {%- set ns.done = true -%}
+            {%- else -%}
+                {%- set ns.visited = ns.visited + [_next] -%}
+                {%- set ns.xroot = ns.xroot if ns.xroot != '' else _xr.root -%}
+                {%- set ns.vol = _xr.target -%}
+                {%- set _tv = state_attr(_xr.target, 'variables') -%}
+                {%- set ns.vars = _tv if _tv is mapping else {} -%}
+                {%- set ns.depth = ns.depth + 1 -%}
+                {%- if drawer_key not in ns.vars -%}
+                    {%- set ns.status = 'not_found_in_target' -%}
+                    {%- set ns.reason = 'key not found in target volume: ' ~ _xr.target -%}
+                    {%- set ns.done = true -%}
+                {%- endif -%}
+            {%- endif -%}
+        {%- elif drawer_key not in ns.vars -%}
+            {%- set ns.status = 'absent' if ns.depth == 0 else 'not_found_in_target' -%}
+            {%- set ns.reason = '' if ns.depth == 0 else 'key not found in target volume: ' ~ ns.vol -%}
+            {%- set ns.done = true -%}
+        {%- else -%}
+            {%- set _cur = ns.vars.get(drawer_key) -%}
+            {%- set _cv_s = (_cur.get('value') or none) if _cur is mapping else none -%}
+            {%- set _cv = _cv_s if _cv_s is mapping else (_cv_s | from_json(none) if _cv_s is string and _cv_s | trim not in ['', 'null', 'None'] else none) -%}
+            {%- if not (_cv is mapping and _cv.get('mount_point', false) == true) -%}
+                {%- set ns.entry = _cur -%}
+                {%- set ns.status = 'resolved' if ns.depth > 0 else 'direct' -%}
+                {%- set ns.done = true -%}
+            {%- elif _cv.get('fc_args') is not none -%}
+                {%- set ns.entry = _cur -%}
+                {%- set ns.fc = _cv.get('fc_args') -%}
+                {%- set ns.status = 'live' -%}
+                {%- set ns.done = true -%}
+            {%- else -%}
+                {%- set _target = _cv.get('target_entity_id', _cv.get('target_volume_id', '')) or '' -%}
+                {%- set _next = _target ~ '/' ~ drawer_key -%}
+                {%- if _target == '' -%}
+                    {%- set ns.status = 'unresolvable' -%}
+                    {%- set ns.reason = 'mount has no target_entity_id' -%}
+                    {%- set ns.done = true -%}
+                {%- elif ns.depth >= max_hops - 1 -%}
+                    {%- set ns.status = 'depth_limit_exceeded' -%}
+                    {%- set ns.done = true -%}
+                {%- elif _next in ns.visited -%}
+                    {%- set ns.status = 'loop_detected' -%}
+                    {%- set ns.loop_at = _next -%}
+                    {%- set ns.done = true -%}
+                {%- else -%}
+                    {%- set ns.visited = ns.visited + [_next] -%}
+                    {%- set ns.vol = _target -%}
+                    {%- set _tv = state_attr(_target, 'variables') -%}
+                    {%- set ns.vars = _tv if _tv is mapping else {} -%}
+                    {%- set ns.depth = ns.depth + 1 -%}
+                {%- endif -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {%- if not ns.done -%}{%- set ns.status = 'depth_limit_exceeded' -%}{%- endif -%}
+    {{- dict({'status': ns.status, 'vol': ns.vol, 'key': drawer_key, 'depth': ns.depth, 'visited': ns.visited,
+         'reason': ns.reason, 'loop_at': ns.loop_at, 'fc_args': ns.fc, 'entry': ns.entry},
+         **({'expanded_root': ns.xroot} if ns.xroot != '' else {})) | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: expansion_root_of
+@desc: The nearest ancestor of drawer_key (a/b/c -> a/b, then a) that is a
+       mount pointer into an expansion this cabinet hosts (expand_drawer's
+       permanent redirect). The key itself is not checked.
+@returns: JSON {root, target}, both '' when no ancestor is expanded.
+-#}
+{%- macro expansion_root_of(entity_id, drawer_key) -%}
+    {%- set _v = state_attr(entity_id, 'variables') if entity_id else none -%}
+    {%- set _v = _v if _v is mapping else {} -%}
+    {%- set _parts = (drawer_key | string).split('/') -%}
+    {%- set ns = namespace(root='', target='') -%}
+    {%- for i in range((_parts | count) - 1, 0, -1) if ns.target == '' -%}
+        {%- set a = _parts[:i] | join('/') -%}
+        {%- set e = _v.get(a) -%}
+        {%- set ev = e.get('value') if e is mapping else none -%}
+        {%- set ev = (ev | from_json(none)) if ev is string else ev -%}
+        {%- if ev is mapping and ev.get('mount_point', false) == true and ev.get('fc_args') is none -%}
+            {%- set tg = (ev.get('target_entity_id') or '') | string -%}
+            {%- set te = (state_attr(tg, 'variables') or {}).get('AI_Cabinet_VolumeInfo') if tg else none -%}
+            {%- set tvi = te.get('value') if te is mapping else none -%}
+            {%- set tvi = (tvi | from_json(none)) if tvi is string else tvi -%}
+            {%- if tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id -%}
+                {%- set ns.root = a -%}
+                {%- set ns.target = tg -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{- {'root': ns.root, 'target': ns.target} | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: expansion_plan
+@desc: How a key sits in an expanded tree, for move / copy / delete.
+       ancestor: the key is under an expanded root (the expansion holds it).
+       self: the key is itself an expanded root (a pointer into an expansion
+       this cabinet hosts). contains: the key's tree holds expanded roots below
+       it. none: no expansion involved. roots: [{root, target, scope}] (scope =
+       the key the data under it is taken from in the expansion).
+@returns: JSON {mode, roots}.
+-#}
+{%- macro expansion_plan(entity_id, drawer_key) -%}
+    {%- set _v = state_attr(entity_id, 'variables') if entity_id else none -%}
+    {%- set _v = _v if _v is mapping else {} -%}
+    {%- set anc = expansion_root_of(entity_id, drawer_key) | from_json({}) -%}
+    {%- set ns = namespace(roots=[], mode='none') -%}
+    {%- if anc.get('target', '') != '' -%}
+        {%- set ns.mode = 'ancestor' -%}
+        {%- set ns.roots = [{'root': anc.root, 'target': anc.target, 'scope': drawer_key}] -%}
+    {%- else -%}
+        {%- set _pre = drawer_key ~ '/' -%}
+        {%- for k in _v.keys() | list | sort if k == drawer_key or k.startswith(_pre) -%}
+            {%- set e = _v[k] -%}
+            {%- set ev = e.get('value') if e is mapping else none -%}
+            {%- set ev = (ev | from_json(none)) if ev is string else ev -%}
+            {%- if ev is mapping and ev.get('mount_point', false) == true and ev.get('fc_args') is none
+                  and (expansion_root_of(entity_id, k) | from_json({})).get('target', '') == '' -%}
+                {%- set tg = (ev.get('target_entity_id') or '') | string -%}
+                {%- set te = (state_attr(tg, 'variables') or {}).get('AI_Cabinet_VolumeInfo') if tg else none -%}
+                {%- set tvi = te.get('value') if te is mapping else none -%}
+                {%- set tvi = (tvi | from_json(none)) if tvi is string else tvi -%}
+                {%- if tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id -%}
+                    {%- set ns.roots = ns.roots + [{'root': k, 'target': tg, 'scope': k}] -%}
+                    {%- set ns.mode = 'self' if k == drawer_key else 'contains' -%}
+                {%- endif -%}
+            {%- endif -%}
+        {%- endfor -%}
+        {%- if ns.roots | selectattr('root', 'equalto', drawer_key) | list | count == 0 and ns.roots | count > 0 -%}{%- set ns.mode = 'contains' -%}{%- endif -%}
+    {%- endif -%}
+    {{- {'mode': ns.mode, 'roots': ns.roots} | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: cabinet_hosts_expansion
+@desc: Whether any expansion slot is stamped as hosted by this cabinet (a
+       cheap check over the slots before building cabinet_expanded_view).
+@returns: 'true' | 'false'.
+-#}
+{%- macro cabinet_hosts_expansion(entity_id) -%}
+    {%- set ns = namespace(hit=false) -%}
+    {%- for eid in (cabinet_slot_candidates() | from_json([])) if not ns.hit -%}
+        {%- set te = (state_attr(eid, 'variables') or {}).get('AI_Cabinet_VolumeInfo') -%}
+        {%- set tvi = te.get('value') if te is mapping else none -%}
+        {%- set tvi = (tvi | from_json(none)) if tvi is string else tvi -%}
+        {%- if tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id -%}{%- set ns.hit = true -%}{%- endif -%}
+    {%- endfor -%}
+    {{- 'true' if ns.hit else 'false' -}}
+{%- endmacro -%}
+
+{#-
+@macro: cabinet_expanded_view
+@desc: A cabinet's drawers as one tree: its own, plus, under each expanded
+       root (a mount pointer into an expansion it hosts), the expansion's keys
+       of that tree it does not hold itself (children added after the move).
+@returns: JSON {key: envelope}.
+-#}
+{%- macro cabinet_expanded_view(entity_id) -%}
+    {%- set _v = state_attr(entity_id, 'variables') if entity_id else none -%}
+    {%- set _v = _v if _v is mapping else {} -%}
+    {%- set ns = namespace(d=_v) -%}
+    {%- for k, e in _v.items() -%}
+        {%- set ev = e.get('value') if e is mapping else none -%}
+        {%- set ev = (ev | from_json(none)) if ev is string else ev -%}
+        {%- if ev is mapping and ev.get('mount_point', false) == true and ev.get('fc_args') is none -%}
+            {%- set tg = (ev.get('target_entity_id') or '') | string -%}
+            {%- set tvars = state_attr(tg, 'variables') if tg else none -%}
+            {%- set tvars = tvars if tvars is mapping else {} -%}
+            {%- set te = tvars.get('AI_Cabinet_VolumeInfo') -%}
+            {%- set tvi = te.get('value') if te is mapping else none -%}
+            {%- set tvi = (tvi | from_json(none)) if tvi is string else tvi -%}
+            {%- if tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id -%}
+                {%- set _pre = k ~ '/' -%}
+                {%- for tk, tvv in tvars.items() if tk.startswith(_pre) and tk not in ns.d -%}
+                    {%- set ns.d = dict(ns.d, **{tk: tvv}) -%}
+                {%- endfor -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{- ns.d | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: cabinet_resolved_view
+@desc: cabinet_expanded_view with every pointer into an expansion this cabinet
+       hosts replaced by the drawer the expansion holds under the same key:
+       the tree as its owner sees it. Other mount pointers stay as they are.
+@returns: JSON {key: envelope}.
+-#}
+{%- macro cabinet_resolved_view(entity_id) -%}
+    {%- set _d = cabinet_expanded_view(entity_id) | from_json({}) -%}
+    {%- set ns = namespace(d=_d, hosted={}) -%}
+    {%- for k, e in _d.items() -%}
+        {%- set ev = e.get('value') if e is mapping else none -%}
+        {%- set ev = (ev | from_json(none)) if ev is string else ev -%}
+        {%- if ev is mapping and ev.get('mount_point', false) == true and ev.get('fc_args') is none -%}
+            {%- set tg = (ev.get('target_entity_id') or '') | string -%}
+            {%- set tvars = (state_attr(tg, 'variables') if tg else none) or {} -%}
+            {%- set te = tvars.get('AI_Cabinet_VolumeInfo') -%}
+            {%- set tvi = te.get('value') if te is mapping else none -%}
+            {%- set tvi = (tvi | from_json(none)) if tvi is string else tvi -%}
+            {%- if tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id and tvars.get(k) is mapping -%}
+                {%- set ns.d = dict(ns.d, **{k: tvars[k]}) -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{- ns.d | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: label_index
+@desc: A cabinet's _label_index as a mapping {label: [drawer keys]} ({} when
+       absent or unreadable). The index lives in the cabinet a caller
+       addresses, keyed by the drawer's own path: an expanded drawer's labels
+       stay in its host's index.
+@returns: JSON mapping.
+-#}
+{%- macro label_index(entity_id) -%}
+    {%- set e = ((state_attr(entity_id, 'variables') if entity_id else none) or {}).get('_label_index') -%}
+    {%- set v = e.get('value') if e is mapping else none -%}
+    {%- set v = (v | from_json(none)) if v is string and v | trim not in ['', '{}', 'null'] else v -%}
+    {{- (v if v is mapping else {}) | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: label_index_keys
+@desc: The labels each of keys carries in an index.
+@param: idx (mapping) - a label index, as label_index returns it.
+@param: keys (list) - drawer keys.
+@returns: JSON {key: [labels]}, keys without a label left out.
+-#}
+{%- macro label_index_keys(idx, keys) -%}
+    {%- set ns = namespace(m={}) -%}
+    {%- for lbl, ds in (idx if idx is mapping else {}).items() -%}
+        {%- set dl = ds if ds is iterable and ds is not string else [ds] -%}
+        {%- for k in keys if k in dl -%}
+            {%- set ns.m = dict(ns.m, **{k: (ns.m.get(k, []) + [lbl]) | unique | list}) -%}
+        {%- endfor -%}
+    {%- endfor -%}
+    {{- ns.m | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: label_index_apply
+@desc: An index with drop removed from every label and add {key: [labels]}
+       added; a label left with no drawer goes.
+@returns: JSON mapping.
+-#}
+{%- macro label_index_apply(idx, drop, add) -%}
+    {%- set ns = namespace(v={}) -%}
+    {%- for lbl, ds in (idx if idx is mapping else {}).items() -%}
+        {%- set dl = (ds if ds is iterable and ds is not string else ([ds] if ds not in [none, ''] else [])) | reject('in', drop) | list -%}
+        {%- if dl | count > 0 -%}{%- set ns.v = dict(ns.v, **{lbl: dl}) -%}{%- endif -%}
+    {%- endfor -%}
+    {%- for k, ls in (add if add is mapping else {}).items() -%}
+        {%- for lbl in ls -%}
+            {%- set ns.v = dict(ns.v, **{lbl: (ns.v.get(lbl, []) + [k]) | unique | list}) -%}
+        {%- endfor -%}
+    {%- endfor -%}
+    {{- ns.v | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: volumeinfo_copies
+@desc: Stray copies of VolumeInfo under other keys (ai_cabinet_volumeinfo,
+       _ai_cabinet_volumeinfo: left by writes before the key guard). best is
+       the first copy that carries an id (an FC v1 envelope is unwrapped),
+       else {}.
+@returns: JSON {keys: [...], best: {...}}.
+-#}
+{%- macro volumeinfo_copies(entity_id) -%}
+    {%- set _vars = state_attr(entity_id, 'variables') if entity_id else none -%}
+    {%- set _vars = _vars if _vars is mapping else {} -%}
+    {%- set _keys = _vars.keys() | list | select('match', '(?i)^_*ai_cabinet_volumeinfo$') | reject('equalto', 'AI_Cabinet_VolumeInfo') | list -%}
+    {%- set ns = namespace(best={}) -%}
+    {%- for k in _keys -%}
+        {%- set _c = _vars[k].get('value') if _vars[k] is mapping else _vars[k] -%}
+        {%- set _c = (_c | from_json(none)) if _c is string else _c -%}
+        {%- if _c is mapping and _c.get('v') == 1 and 'content' in _c -%}
+            {%- set _c = (_c.content | from_json(none)) if _c.content is string else _c.content -%}
+        {%- endif -%}
+        {%- if not ns.best and _c is mapping and (_c.get('id') or '') | string | trim != '' -%}
+            {%- set ns.best = _c -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{- {'keys': _keys, 'best': ns.best} | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_schema_check
+@desc: Whether a cabinet's VolumeInfo is on the current ACL schema: it exists,
+       has an id (not the legacy guid field), flags, acls stored as v2
+       (no v1 owner/partner/family lists), and no stray VolumeInfo copies. Identity refuses to set up a
+       household or family that fails this; acl_migrate fixes it.
+@returns: JSON {ok, why: [...]}.
+-#}
+{%- macro acl_schema_check(entity_id) -%}
+    {%- set _env = (state_attr(entity_id, 'variables') or {}).get('AI_Cabinet_VolumeInfo') if entity_id else none -%}
+    {%- set _vi = _env.get('value') if _env is mapping else none -%}
+    {%- set _vi = (_vi | from_json(none)) if _vi is string else _vi -%}
+    {%- set _vi = _vi if _vi is mapping else {} -%}
+    {%- set _a = _vi.get('acls') if _vi.get('acls') is mapping else {} -%}
+    {%- set _why = (['no VolumeInfo'] if not (_env is mapping) else [])
+                 + (['no id'] if (_vi.get('id') or '') | string | trim == '' else [])
+                 + (['legacy guid field'] if 'guid' in _vi else [])
+                 + (['no flags'] if not (_vi.get('flags') is mapping) else [])
+                 + (['acls not v2'] if (_a.get('v', 1) | int(1)) != 2
+                      or (_a.keys() | list | reject('in', ['v', 'owner', 'prime', 'partners', 'ops']) | list | count) > 0 else [])
+                 + (['stray VolumeInfo copies'] if (volumeinfo_copies(entity_id) | from_json)['keys'] | count > 0 else []) -%}
+    {{- {'ok': _why | count == 0, 'why': _why} | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_for
+@desc: The ACL that governs one target (resolve mounts first: this reads the
+       cabinet and drawer it is given). Each op comes from acl_builtin_ops,
+       else the drawer envelope's acl.ops, else the cabinet's acls.ops, else
+       the class default.
+@param: drawer_key - '' for a cabinet-level op.
+@returns: JSON {class, self, owner, prime, partners, ops,
+          source: {r|w|d|a: 'builtin'|'drawer'|'cabinet'|'default'}}
+          (prime: the cabinet's, else the household's; read view only, never
+          written back).
+-#}
+{%- macro acl_for(entity_id, drawer_key='') -%}
+    {%- set rec = acl_record(entity_id) | from_json -%}
+    {%- set _env = (state_attr(entity_id, 'variables') or {}).get(drawer_key) if drawer_key else none -%}
+    {#- A mount pointer has no drawer ACL: it answers with its cabinet's.
+        The drawer's own acl is on the drawer the pointer leads to. -#}
+    {%- set _pv = _env.get('value') if _env is mapping else none -%}
+    {%- set _pv = (_pv | from_json(none)) if _pv is string else _pv -%}
+    {%- set _is_ptr = _pv is mapping and _pv.get('mount_point', false) == true -%}
+    {%- set _own = _env.get('acl') if _env is mapping and not _is_ptr else none -%}
+    {%- set _dops = (_own.get('ops') if _own is mapping and _own.get('ops') is mapping else {}) -%}
+    {%- set _bops = (acl_builtin_ops(drawer_key) | from_json) if drawer_key else {} -%}
+    {%- set ns = namespace(ops={}, src={}) -%}
+    {%- for op in ['r', 'w', 'd', 'a'] -%}
+        {%- if _bops.get(op) is mapping -%}
+            {%- set ns.ops = dict(ns.ops, **{op: _bops[op]}) -%}
+            {%- set ns.src = dict(ns.src, **{op: 'builtin'}) -%}
+        {%- elif _dops.get(op) is mapping -%}
+            {%- set ns.ops = dict(ns.ops, **{op: dict(rec.ops[op], **_dops[op])}) -%}
+            {%- set ns.src = dict(ns.src, **{op: 'drawer'}) -%}
+        {%- else -%}
+            {%- set ns.ops = dict(ns.ops, **{op: rec.ops[op]}) -%}
+            {%- set ns.src = dict(ns.src, **{op: rec.ops_source[op]}) -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {#- @prime is the cabinet's prime, else the household's (a cabinet that
+        names no prime answers to the household's prime agent). -#}
+    {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+    {%- set _prime = rec.prime if rec.prime != '' or _hh == entity_id
+                     else ((acl_record(_hh) | from_json).prime if _hh not in ['', 'unknown', 'unavailable'] else '') -%}
+    {{- {'class': rec['class'], 'self': rec['self'], 'owner': rec.owner, 'prime': _prime, 'partners': rec.partners,
+         'ops': ns.ops, 'source': ns.src, 'inherited_from': rec.get('inherited_from', '')} | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_op_class
+@desc: The op class an engine action needs: r read, w write, d delete or move
+       out, a administer (cabinet structure, ACL). An unknown action is 'a'.
+-#}
+{%- macro acl_op_class(action) -%}
+    {%- set _m = {
+        'get': 'r', 'list': 'r', 'search': 'r', 'inspect': 'r', 'manifest': 'r', 'health': 'r',
+        'audit': 'r', 'fleet': 'r', 'help': 'r', 'stacks_by_anchor': 'r', 'weave_preview': 'r',
+        'create': 'w', 'update': 'w', 'upsert': 'w', 'relabel': 'w', 'set_mount': 'w', 'copy': 'w',
+        'clone': 'w', 'register': 'w', 'unregister': 'w', 'weave_save': 'w',
+        'delete': 'd', 'remove_mount': 'd', 'move': 'd',
+        'mount_cabinet': 'a', 'dismount_cabinet': 'a', 'set_cabinet_ro': 'a', 'expand_drawer': 'a', 'collapse_drawer': 'a',
+        'acl_set': 'a', 'take_ownership': 'a'} -%}
+    {{- _m.get(action | string | lower | trim, 'a') -}}
+{%- endmacro -%}
+
+{#-
+@macro: acl_check
+@desc: Compares a caller against one op of an acl_for result. who_ok is the
+       principal check; cert and ack are what the gate must still obtain
+       (identity resolve_caller_identity, request_live_ack) before it proceeds.
+@param: acl - acl_for output (JSON string or mapping).
+@param: op - r|w|d|a.
+@param: subject - the caller: {guid, origin: 'agent'|'internal', tool}, or a bare GUID
+        string (an agent call).
+@returns: JSON {op, who_ok, cert, ack, source, reason}.
+-#}
+{%- macro acl_check(acl, op, subject) -%}
+    {%- set a = (acl | from_json({})) if acl is string else acl -%}
+    {%- set a = a if a is mapping else {} -%}
+    {%- set rule = (a.get('ops') or {}).get(op) -%}
+    {%- set rule = rule if rule is mapping else {'cert': '', 'ack': true, 'who': []} -%}
+    {%- set who = rule.get('who') if rule.get('who') is list else [] -%}
+    {%- set cm = subject if subject is mapping else {'guid': subject} -%}
+    {%- set c = (cm.get('guid') or '') | string | trim -%}
+    {%- set internal = (cm.get('origin') or 'agent') == 'internal' -%}
+    {%- set tool = (cm.get('tool') or '') | string | trim -%}
+    {%- set by_tool = internal and tool != '' and ('@tool:' ~ tool) in who -%}
+    {%- set ok = '*' in who or by_tool
+                 or (internal and '@internal' in who)
+                 or (c != '' and (c in who
+                     or ('@owner' in who and c == a.get('owner'))
+                     or ('@prime' in who and c == a.get('prime'))
+                     or ('@self' in who and c == a.get('self'))
+                     or ('@partner' in who and c in (a.get('partners') or [])))) -%}
+    {#- A named tool passes on its own gates: the rule's cert and ack are for
+        agents and @internal callers. -#}
+    {{- {'op': op, 'who_ok': ok, 'via': 'tool' if by_tool else 'principal',
+         'cert': '' if by_tool else (rule.get('cert', '') or ''), 'ack': false if by_tool else rule.get('ack', false) | bool,
+         'source': (a.get('source') or {}).get(op, 'default'),
+         'reason': '' if ok else (op ~ ' is admin-door only' if who | count == 0 else 'caller is not in ' ~ op ~ '.who')} | tojson -}}
+{%- endmacro -%}
+
+{#-
+@macro: drawer_normalize
+@desc: The one drawer repair rule set (GC repair mode, and every GC write that
+       touches a drawer). Brings a drawer envelope to {value, meta}:
+         - meta missing or not a mapping -> {}
+         - nested envelope (a value that is itself exactly {value, timestamp[, meta]},
+           left by the old GC) -> unwrapped, up to 3 levels, inner meta kept
+         - legacy v1 value carrying expires_after / no_autoexpire / no_autorecycle
+           -> moved into meta (meta wins where both hold a field) and removed
+              from the value; a string-stored value stays a string
+       ok=false (no drawer, no value) means: do not write; nothing is damaged.
+@param: env - the drawer's raw envelope (state_attr(cab, 'variables')[key]).
+@returns: JSON {ok, changed, value, meta, repairs[]}.
+-#}
+{%- macro drawer_normalize(env) -%}
+    {%- set e = env if env is mapping else {} -%}
+    {%- set ns = namespace(v=e.get('value'), m=(e.get('meta') if e.get('meta') is mapping else {}), r=[], ok=true) -%}
+    {%- if env is not mapping -%}
+        {%- set ns.ok = false -%}{%- set ns.r = ['no drawer envelope'] -%}
+    {%- elif 'value' not in e -%}
+        {%- set ns.ok = false -%}{%- set ns.r = ['drawer has no value'] -%}
+    {%- else -%}
+        {%- if e.get('meta') is not mapping -%}{%- set ns.r = ns.r + ['meta added'] -%}{%- endif -%}
+        {%- for _ in range(3) -%}
+            {%- set pv = (ns.v | from_json(none)) if ns.v is string else ns.v -%}
+            {%- if pv is mapping and 'value' in pv and 'timestamp' in pv
+                  and (pv.keys() | reject('in', ['value', 'timestamp', 'meta']) | list | count) == 0 -%}
+                {%- if pv.get('meta') is mapping -%}{%- set ns.m = dict(pv.get('meta'), **ns.m) -%}{%- endif -%}
+                {%- set ns.v = pv.get('value') -%}
+                {%- set ns.r = ns.r + ['nested envelope unwrapped'] -%}
+            {%- endif -%}
+        {%- endfor -%}
+        {%- set was_str = ns.v is string -%}
+        {%- set pv = (ns.v | from_json(none)) if was_str else ns.v -%}
+        {%- if pv is mapping and pv.get('v') == 1 -%}
+            {%- set gcf = ['expires_after', 'no_autoexpire', 'no_autorecycle'] -%}
+            {%- set present = gcf | select('in', pv.keys() | list) | list -%}
+            {%- if present | count > 0 -%}
+                {%- for f in present -%}
+                    {%- if f not in ns.m and (pv.get(f) | string) not in ['', 'None'] -%}
+                        {%- set ns.m = dict(ns.m, **{f: pv.get(f)}) -%}
+                    {%- endif -%}
+                {%- endfor -%}
+                {%- set nv = namespace(d={}) -%}
+                {%- for k, x in pv.items() if k not in gcf -%}{%- set nv.d = dict(nv.d, **{k: x}) -%}{%- endfor -%}
+                {%- set ns.v = (nv.d | tojson) if was_str else nv.d -%}
+                {%- set ns.r = ns.r + ['v1 expiry moved to meta'] -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endif -%}
+    {{- {'ok': ns.ok, 'changed': ns.ok and (ns.r | count) > 0, 'value': ns.v, 'meta': ns.m, 'repairs': ns.r} | tojson -}}
 {%- endmacro -%}
 
 {#- </editor-fold> -#}
@@ -699,17 +1462,17 @@ Output: A JSON-formatted string of the ACLs data (or fallback if not found).
 @usage: {{ safe_get_nested(state_attr('sensor.x', 'variables'), ['drawer', 'value', 'ts'], '') | from_json }}
 -#}
 {%- macro safe_get_nested(obj, keys, fallback='') -%}
-    {%- set current = obj -%}
+    {%- set cur = namespace(v=obj) -%}
 
-    {%- if current is string -%}
-        {%- set current = current | from_json(default={}) -%}
+    {%- if cur.v is string -%}
+        {%- set cur.v = cur.v | from_json(default={}) -%}
     {%- endif -%}
 
-    {%- for key in keys if current is mapping -%}
-        {%- set current = current.get(key) -%}
+    {%- for key in keys -%}
+        {%- set cur.v = cur.v.get(key) if cur.v is mapping else none -%}
     {%- endfor -%}
 
-    {{- (current if current is not none else fallback) | tojson -}}
+    {{- (cur.v if cur.v is not none else fallback) | tojson -}}
 {%- endmacro -%}
 
 {#-

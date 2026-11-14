@@ -1,5 +1,6 @@
 ###############################################################################
-# zen_stack_battery v1.2.2
+# zen_stack_battery v1.2.3
+# v1.2.3: stack unregister rewrites the lens registry whole (upsert merged, so the provider was never removed).
 # v1.2.2: the attention example in component_instructions is escaped with
 #   {% raw %} so HA passes it to the summarizer as text instead of rendering it.
 # Battery Notes Lens Provider — ZenOS Lens Bus integration.
@@ -8,19 +9,13 @@
 # Source: HACS "Battery Notes" integration (github.com/andrew-codechimp/ha-battery-notes)
 #   — battery_plus sensors + attributes. Not a native HA/ZenOS capability; requires
 #   this third-party integration installed and configured for evidence to be non-empty.
-# HALMark: PASS 2026-07-04
 #
-# v1.2.1 (Nyx fix, 2026-07-04): stacks_by_anchor was returning zero evidence to the
-#   Lens dispatcher despite matching devices — HA's implicit literal_eval-based
-#   native-type coercion was silently stringifying _sb_evidence (a list of dicts),
-#   and the dispatcher's `is not string` guard dropped it. Fixed via explicit
-#   tojson/from_json round-tripping instead of relying on implicit coercion. Also
-#   stringified battery_last_reported (was a native datetime, broke tojson
-#   serialization). UAT confirmed live against a real low-battery device — a
-#   remote-control entity at 3%, battery_low=true — surfaced correctly end to end.
-#   Config check clean, reloaded live.
+# v1.2.1: stacks_by_anchor round-trips _sb_evidence through tojson/from_json.
+#   HA's implicit native-type coercion stringifies a list of dicts, and the
+#   dispatcher's `is not string` guard drops a string. battery_last_reported is
+#   stringified (a native datetime breaks tojson).
 #
-# v1.2.0 (Zen pull, 2026-07-04): added inspect + audit modes (Lens Contract was
+# v1.2.0: added inspect + audit modes (Lens Contract was
 #   missing both). Guarded as_datetime(_lrt) against silent-None on unparseable
 #   battery_last_replaced (FG-41). Guarded register/unregister against empty
 #   household cabinet resolution.
@@ -39,8 +34,8 @@ script:
     alias: Zen Stack Battery
     description: >-
       Battery Notes Lens Provider (v1.2.1). Internal stack adapter for the ZenOS Lens Bus.
-      Provides battery_evidence for area_id anchors — per-device battery level, type,
-      low status, and last-replaced timestamp. Not MCP-exposed —
+      Provides battery_evidence for area_id anchors: per-device battery level, type,
+      low status, and last-replaced timestamp. Not MCP-exposed: 
       consumers call zen_dojotools_lens_dispatch.
     mode: parallel
     fields:
@@ -57,7 +52,7 @@ script:
         selector:
           text:
       anchor_type:
-        description: Anchor type — area_id
+        description: Anchor type - area_id
         selector:
           text:
       anchor_ids:
@@ -95,6 +90,7 @@ script:
             final_response:
               status: ok
               tool: '{{ tool_name }}'
+              summary: "Internal: battery lens provider"
               version: '{{ tool_version }}'
               tier: stacks
               domain: maintenance
@@ -236,7 +232,7 @@ script:
               content_policy: standard
               description: >-
                 Maps area_id anchors to devices via the HACS "Battery Notes" integration
-                (andrew-codechimp/ha-battery-notes) — reads battery_plus sensor attributes
+                (andrew-codechimp/ha-battery-notes): reads battery_plus sensor attributes
                 (battery_type, battery_quantity, battery_low, battery_last_replaced,
                 battery_last_reported) for every entity in the anchor's area. Requires
                 the Battery Notes HACS integration to be installed and configured;
@@ -292,20 +288,6 @@ script:
                     without a household cabinet to write into.
             - stop: return
               response_variable: final_response
-        - action: script.zen_dojotools_filecabinet
-          continue_on_error: true
-          response_variable: _sb_reg_read
-          data:
-            action_type: read
-            volume_entity_id:
-              - "{{ _sb_household_entity }}"
-            key: lens_registry
-        - variables:
-            _sb_existing_reg: >-
-              {%- set raw = _sb_reg_read if _sb_reg_read is mapping else {} -%}
-              {%- set val = raw.get('value', {}) -%}
-              {%- set parsed = val | from_json if val is string else val -%}
-              {{ parsed if parsed is mapping else {} }}
         - variables:
             _sb_provider_decl:
               provider: battery_notes
@@ -325,17 +307,18 @@ script:
                 required: r
                 allowed: [r]
                 denied: [w, x, d, a]
-        - variables:
-            _sb_new_reg: "{{ _sb_existing_reg | combine({'battery_notes': _sb_provider_decl}) }}"
-        - action: script.zen_dojotools_filecabinet
+        # Through the central lens writer (prompt_loader lens_registry): it runs
+        # queued, so two registrations never overwrite each other.
+        - action: script.zen_admintools_prompt_loader
           continue_on_error: true
           response_variable: _sb_reg_write
           data:
-            action_type: upsert
-            volume_entity_id:
-              - "{{ _sb_household_entity }}"
-            key: lens_registry
-            value: "{{ _sb_new_reg | tojson }}"
+            mode: lens_registry
+            action_type: register
+            item: battery_notes
+            payload_json: "{{ _sb_provider_decl | tojson }}"
+        - variables:
+            _sb_reg_write: "{{ _sb_reg_write.get('result', _sb_reg_write) if _sb_reg_write is defined and _sb_reg_write is mapping else {} }}"
         - variables:
             _sb_reg_ok: >-
               {{ _sb_reg_write is mapping and _sb_reg_write.get('status', '') == 'success' }}
@@ -376,36 +359,17 @@ script:
                     without a household cabinet to read/write.
             - stop: return
               response_variable: final_response
-        - action: script.zen_dojotools_filecabinet
-          continue_on_error: true
-          response_variable: _sb_ureg_read
-          data:
-            action_type: read
-            volume_entity_id:
-              - "{{ _sb_household_entity }}"
-            key: lens_registry
-        - variables:
-            _sb_ureg_existing: >-
-              {%- set raw = _sb_ureg_read if _sb_ureg_read is mapping else {} -%}
-              {%- set val = raw.get('value', {}) -%}
-              {%- set parsed = val | from_json if val is string else val -%}
-              {{ parsed if parsed is mapping else {} }}
-        - variables:
-            _sb_ureg_new: >-
-              {%- set ns = namespace(result={}) -%}
-              {%- for k, v in _sb_ureg_existing.items() if k != 'battery_notes' -%}
-                {%- set ns.result = ns.result | combine({k: v}) -%}
-              {%- endfor -%}
-              {{ ns.result }}
-        - action: script.zen_dojotools_filecabinet
+        # Through the central lens writer (prompt_loader lens_registry): it runs
+        # queued, so two registrations never overwrite each other.
+        - action: script.zen_admintools_prompt_loader
           continue_on_error: true
           response_variable: _sb_ureg_write
           data:
-            action_type: upsert
-            volume_entity_id:
-              - "{{ _sb_household_entity }}"
-            key: lens_registry
-            value: "{{ _sb_ureg_new | tojson }}"
+            mode: lens_registry
+            action_type: unregister
+            item: battery_notes
+        - variables:
+            _sb_ureg_write: "{{ _sb_ureg_write.get('result', _sb_ureg_write) if _sb_ureg_write is defined and _sb_ureg_write is mapping else {} }}"
         - variables:
             final_response:
               status: "{{ 'success' if _sb_ureg_write is mapping and _sb_ureg_write.get('status', '') == 'success' else 'error' }}"

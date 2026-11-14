@@ -64,39 +64,39 @@ This catalog is a snapshot. The live catalog is built from each tool's `certs_re
 
 | Cert | Declared by | Covers |
 |---|---|---|
-| `alert_policy_edit` | alertmanager | `set_policy` (L1) |
-| `autovac_operate` | autovac | Vacuum dispatch and per-room queue state |
-| `autovac_setup` | autovac | Room definitions and system settings |
-| `cabinet_lifecycle_control` | admintools, provisioner | Cabinet restore, repair, reset, init, mount, schema, expand; provision and deprovision (L1) |
-| `calendar_control` | calendar | `delete` (L2) |
-| `camera_alert_policy_edit` | camera | `set_alert_policy` (L1) |
-| `climate_control` | utilities (climate) | Setpoint, mode, and fan speed |
-| `cover_control` | covers | Cover position and scenes. Opening a barrier-class cover needs a live acknowledgement every call |
-| `display_control` | display | Casting a view to a house display (max L1) |
-| `finance_account_control` | Firefly III plugin | `account_delete` (L2) |
-| `helper_boolean_edit`, `helper_datetime_edit`, `helper_number_edit`, `helper_select_edit`, `helper_text_edit`, `helper_timer_control`, `helper_zones_edit` | utilities | Writes to each helper domain |
-| `household_spatial_config_edit` | zenzork | Spatial configuration writes (north calibration and related) |
-| `infra_container_control` | infra | Container start, restart, stop, remove |
-| `infra_zwave_control` | infra | Enabling a Z-Wave device's diagnostic entities (max L2) |
-| `library_catalog_edit` | library | Physical item catalog writes |
-| `library_stacks_edit` | library | Document store writes |
-| `lighting_control` | lights | Brightness, color, and scene actuation |
-| `lock_control` | locks | Lock and unlock. Unlocking an `ext_lock` needs a live acknowledgement every call |
-| `media_prefs_edit` | media manager | Room and user AV configuration |
-| `pii_disclosure_control` | calendar, office, taskmaster, todo | Creating or sending content that can disclose what the agent has read (L1); mail whitelist changes (L2) |
-| `plant_auto_shutoff_config_edit` | plant | Enabling leak auto-shutoff (L1) |
-| `registry_lifecycle_control` | ectoplasm, labels | Reversible registry lifecycle changes; label create, update, delete, and area assignment (L1) |
-| `registry_purge` | ectoplasm | Irreversible cleanup of orphaned registry entries |
-| `room_behavior_control` | room manager | Room and house behavior toggles, and override writes other than setting `Paused` |
-| `room_control_override` | room manager | Clearing a room out of `Paused`. Live acknowledgement every call unless scoped to that area |
-| `room_topology_edit` | room manager, ectoplasm | Structural edits to the house model |
-| `scene_handling` | lights | Scene creation and staging |
-| `scribe_kfc_publish` | scribe | Writing a published KFC into live procedural memory |
-| `security_control` | security manager | Alarm arm and disarm, alert policy |
-| `spa_control` | spa manager | Spa jets, lights, water temperature, cover |
-| `teams_control` | office | Setting Teams presence (L1) |
-| `todo_control` | todo | `delete` (L2) |
-| `water_heater_control` | utilities | Water heater power, temperature, and mode |
+| `zenos.alerts.policy_edit` | alertmanager | `set_policy` (L1) |
+| `zenos.autovac.operate` | autovac | Vacuum dispatch and per-room queue state |
+| `zenos.autovac.setup` | autovac | Room definitions and system settings |
+| `zenos.system.cabinet_lifecycle_control` | admintools, provisioner | Cabinet restore, repair, reset, init, mount, schema, expand; provision and deprovision (L1) |
+| `zenos.comms.calendar_control` | calendar | `delete` (L2) |
+| `zenos.alerts.camera_policy_edit` | camera | `set_alert_policy` (L1) |
+| `zenos.actuation.climate_control` | utilities (climate) | Setpoint, mode, and fan speed |
+| `zenos.actuation.cover_control` | covers | Cover position and scenes. Opening a barrier-class cover needs a live acknowledgement every call |
+| `zenos.actuation.display_control` | display | Casting a view to a house display (max L1) |
+| `zenos.finance.account_control` | Firefly III plugin | `account_delete` (L2) |
+| `zenos.helper.boolean_edit`, `zenos.helper.datetime_edit`, `zenos.helper.number_edit`, `zenos.helper.select_edit`, `zenos.helper.text_edit`, `zenos.helper.timer_control`, `zenos.helper.zones_edit` | utilities | Writes to each helper domain |
+| `zenos.spatial.household_config_edit` | zenzork | Spatial configuration writes (north calibration and related) |
+| `zenos.infra.container_control` | infra | Container start, restart, stop, remove |
+| `zenos.infra.zwave_control` | infra | Enabling a Z-Wave device's diagnostic entities (max L2) |
+| `zenos.knowledge.catalog_edit` | library | Physical item catalog writes |
+| `zenos.knowledge.stacks_edit` | library | Document store writes |
+| `zenos.actuation.lighting_control` | lights | Brightness, color, and scene actuation |
+| `zenos.actuation.lock_control` | locks | Lock and unlock. Unlocking an `ext_lock` needs a live acknowledgement every call |
+| `zenos.media.prefs_edit` | media manager | Room and user AV configuration |
+| `zenos.comms.pii_disclosure` | calendar, office, taskmaster, todo | Creating or sending content that can disclose what the agent has read (L1); mail whitelist changes (L2) |
+| `zenos.plant.auto_shutoff_config_edit` | plant | Enabling leak auto-shutoff (L1) |
+| `zenos.registry.lifecycle_control` | ectoplasm, labels | Reversible registry lifecycle changes; label create, update, delete, and area assignment (L1) |
+| `zenos.registry.purge` | ectoplasm | Irreversible cleanup of orphaned registry entries |
+| `zenos.room.behavior_control` | room manager | Room and house behavior toggles, and override writes other than setting `Paused` |
+| `zenos.room.control_override` | room manager | Clearing a room out of `Paused`. Live acknowledgement every call unless scoped to that area |
+| `zenos.spatial.room_topology_edit` | room manager, ectoplasm | Structural edits to the house model |
+| `zenos.actuation.scene_handling` | lights | Scene creation and staging |
+| `zenos.knowledge.kfc_publish` | scribe | Writing a published KFC into live procedural memory |
+| `zenos.actuation.security_control` | security manager | Alarm arm and disarm, alert policy |
+| `zenos.actuation.spa_control` | spa manager | Spa jets, lights, water temperature, cover |
+| `zenos.comms.teams_control` | office | Setting Teams presence (L1) |
+| `zenos.comms.todo_control` | todo | `delete` (L2) |
+| `zenos.actuation.water_heater_control` | utilities | Water heater power, temperature, and mode |
 | `zenos.comms.dispatch` | postman | Message dispatch and policy. Life-safety dispatches are exempt (max L1) |
 | `zenos.identity.profile_write` | profile | Household, user, and family profile writes (max L1) |
 | `zenos.media.generate` | image generator | Image generation, which costs money per call (max L1) |
@@ -130,23 +130,25 @@ Every "Not yet built" box in the book, in one place.
 |---|---|---|
 | 4 | History cabinet as long-term episodic memory | In active development |
 | 4 | Self model layers (drives and values, meta-awareness); trajectory and prediction in SuperSummary | Design direction |
-| 8 | FileCabinet certification gate, single exit, envelope; no bypass traverse checking through mounts; security resolved before a LiveDrawer target runs | Scope of 2026.11.0 'This Is Spinal Tap' |
+| 8 | FileCabinet's canonical response envelope | Not yet; the gate and single exit landed in 2026.11.0 |
 | 10 | Tool search: send core tools and discover the rest on demand | Depends on Home Assistant's agent integration |
 | 14 | Search and vector backends behind the index, seamless to the agent | Under investigation |
 | 17 | A real `session_token` in the prompt frame | Arrives with session binding |
-| 18 | Partner-aware authorization | Design direction |
+| 18 | Partner-aware authorization beyond the cabinets | Design direction; the cabinet gate reads partners (enforced on a fresh install, audited on an upgrade) |
 | 18 | Cryptographic binding of an MCP session to a persona | Design direction. Every call resolves to the default agent |
 | 19 | A registered OID space, so dotted certification names become real object identifiers | Being pursued |
-| 19 | Certification expiry and revocation checks at use time | Design direction |
+| 19 | Certification expiry and revocation checks at use time | Design direction; grants record `not_after` since 2026.11.0 |
 | 19 | Signed certificates issued by a certificate authority | Design direction; the entry is already shaped for it |
 | 19 | Secure enclave cabinet for certifications, accessed only through a representative token derived from the conversation ID (salted and hashed), expiring at session start plus 5:30 | In progress |
 | 19 | A gate that reads `waives_live_ack` | Recorded by CertAdmin, read by no tool |
-| 20 | Admission enforcement: tools refuse an agent without `zenos.agent.basic` | 2026.11.0 |
-| 20 | A check after onboarding that the admission grant landed, and a log-only mode recording what the gate would deny | Planned |
-| 20 | Console-admin path for bundle grants | Planned |
+| 19 | Stage checks for SuperSummary and the scheduler, and removing the seed and act whitelists | Seed, emit and live-drawer stages checked since 2026.11.0; SuperSummary and the scheduler reserved; the lists go in 2026.12 |
+| 20 | Telling one agent or one session from another; the admission token bound to `zen_root_authentik` | Later phase; the token waits on an OIDC plugin |
+| 20 | A responsible agent for a family or a person, not only the household | Built for the household's pipeline since 2026.11.0 |
 | 20 | Administrative competency certification | Design direction for this release line |
-| 21 | Certifying a corpus (a cabinet) as an object, with hard links between cabinets enforced through cabinet ACLs | Direction; ACL structure exists, unenforced |
-| 21 | Filtering at the source: FileCabinet resolves security before returning any drawer, so each principal reads its own subgraph | In progress |
+| 21 | Certifying a corpus (a cabinet) as an object | Direction |
+| 21 | Cabinet ACLs enforced by default | Built in 2026.11.0 for a fresh install; an upgraded install audits until its administrator switches it |
+| 21 | Filtering at the source: unreadable drawers hidden from listings and search, caches keyed by caller, derived data inheriting its sources' rules | In progress; hiding planned for 2026.12.0 |
+| 21 | A LiveDrawer's tool call bounded by its reader's authority | Not settled; the read itself is gated |
 | 21 | Per-principal traversal | Arrives with session binding |
 | 21 | Membership edges that gate actions | Design direction |
 | 21 | Claims computed from a fold over the label graph | Design direction |

@@ -298,7 +298,7 @@ script.zen_dojotools_identity:
 
 **First occupant behavior:**
 - First `user` added → also fills `VolumeInfo.acls.owner` (Head of Household slot)
-- First `ai_user` added → also fills `VolumeInfo.acls.partner` with `role: prime`
+- First `ai_user` added → also fills `VolumeInfo.acls.prime`
 
 **This is not how residents join.** For a `user`, this mode fills the Head of Household slot and nothing else. Everyone else who lives in the home joins through a family: add them with `family_add_member`, and attach that family with `household_add_family` (above) if it isn't in the household yet. Family members become residents by traversal.
 
@@ -317,7 +317,7 @@ script.zen_dojotools_identity:
   member_type: user   # or ai_user
 ```
 
-Removes from `members.users` or `members.ai_users`. Does **not** clear the `acls.owner` or `acls.partner` slots — those require a dedicated admin transfer (SP1).
+Removes from `members.users` or `members.ai_users`. Does **not** clear the `acls.owner` or `acls.prime` slots — those require a dedicated admin transfer (SP1).
 
 ---
 
@@ -425,7 +425,7 @@ script.zen_dojotools_identity:
   ai_entity: sensor.<cabinet_b>       # any type: user, ai_user
 ```
 
-Writes to `VolumeInfo.acls.partner[]` on **both** entities. Each entry carries `{guid, entity_id, cab_type, role: partner, sid}`.
+Adds each entity's GUID to the other's `VolumeInfo.acls.partners`.
 
 Idempotent — re-running does not create duplicate entries.
 
@@ -438,7 +438,7 @@ script.zen_dojotools_identity:
   ai_entity: sensor.<cabinet_b>
 ```
 
-Removes each entity from the other's `acls.partner[]`.
+Removes each entity from the other's `acls.partners`.
 
 ---
 
@@ -462,7 +462,7 @@ script.zen_dojotools_identity:
   mode: set_principal
   member_entity: sensor.<cabinet>
   member_type: user      # user → fills/replaces acls.owner (HoH)
-                         # ai_user → fills/replaces acls.partner prime slot
+                         # ai_user → fills/replaces acls.prime
   # family_entity: sensor.<family_cabinet>  # optional — targets family instead of default household
 ```
 
@@ -553,15 +553,11 @@ Event data: {"kind": "identity_manifest_rebuild", "component": "system"}
 
 ## Full Wipe and Restart
 
-For a complete teardown of the identity layer — all users, AI users, labels, and Ring-0 cabinets — follow the nuclear sequence in [Troubleshooting — Step 7](troubleshooting.md#step-7--nuclear-cabinet-reset-last-resort).
+For a complete teardown of the identity layer — all users, AI users, labels, and cabinets — run `script.zen_admintools_cabinetadmin` with `mode: reset_all` (see [Troubleshooting — Step 7](troubleshooting.md#step-7--nuclear-cabinet-reset-last-resort)). Run it with `dry_run: true` first to see what goes.
 
-**Order matters:**
-1. `script.zen_admintools_reset_labels` (confirm: true) — nukes all `zen_` labels
-2. `script.zen_admintools_cabinetadmin` (op: reset_all, confirm: true) — wipes all Ring-0 cabinets, reseeds schemas, fires Flynn bootstrap
+> **The default `scope: all` wipes user and AI user cabinets too,** along with every other cabinet and every `zen_` label. `scope: core` wipes only the Ring-0 cabinets (Dojo, Kata, System, Household, etc.) and keeps labels and user cabinets. To wipe one user or AI user cabinet, use `cabinetadmin mode: reset` against that cabinet.
 
-> **User cabinets are not touched** by the nuclear sequence. Only Ring-0 canonical cabinets (Dojo, Kata, System, Household, etc.) are reset. If you need to wipe a specific user or AI user cabinet, use `cabinetadmin mode: reset` against that cabinet directly before or after the nuclear sequence.
-
-After the nuclear sequence completes, re-provision each identity cabinet via the provisioner and re-write profiles via the profile editor. Flynn handles label rebuild and schema seeding automatically.
+After the wipe, re-provision each identity cabinet via the provisioner and re-write profiles via the profile editor. Flynn handles label rebuild and schema seeding automatically.
 
 ---
 

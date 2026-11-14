@@ -1,7 +1,39 @@
 {# =====================================================================
    ZenOS-AI - Zen Query Engine (ZQ-1)
-   Version: 4.9.0
+   Version: 4.10.0
+   4.10.0: name matching survives HA dropping friendly_name. friendly_name_regex
+     matches the friendly_name while HA sets it, else the device name + entity
+     name HA composed it from. New entity_name_regex and device_name_regex match
+     one part only. entity_name() is used on HA 2026.4+ (version gate).
    ===================================================================== #}
+
+{#- One name surface of an entity, for regex matching. part: 'display' (the
+    legacy friendly_name, else device + entity name), 'entity', 'device'.
+    has_en: whether entity_name() is available (computed once per query). -#}
+{%- macro _zq_name(eid, part, has_en) -%}
+  {%- set _dn = device_name(eid) | default('', true) if device_id(eid) else '' -%}
+  {%- set _fn = state_attr(eid, 'friendly_name') | default('', true) -%}
+  {%- if part == 'device' -%}
+    {{- _dn -}}
+  {%- else -%}
+    {%- if has_en -%}
+      {%- set _en = entity_name(eid) | default('', true) -%}
+    {%- elif _dn != '' and _fn == _dn -%}
+      {%- set _en = '' -%}
+    {%- elif _dn != '' and _fn.startswith(_dn ~ ' ') -%}
+      {%- set _en = _fn[(_dn | length) + 1:] -%}
+    {%- else -%}
+      {%- set _en = _fn -%}
+    {%- endif -%}
+    {%- if part == 'entity' -%}
+      {{- _en -}}
+    {%- elif _fn != '' -%}
+      {{- _fn -}}
+    {%- else -%}
+      {{- ([_dn, _en] | reject('equalto', '') | join(' ')) if _en != _dn else _dn -}}
+    {%- endif -%}
+  {%- endif -%}
+{%- endmacro -%}
 
 {%- macro zen_filter(filter_json, entity_list) -%}
 
@@ -30,6 +62,11 @@
   {%- set regex             = f.get('regex') %}
   {%- set entity_id_regex      = f.get('entity_id_regex') %}
   {%- set friendly_name_regex  = f.get('friendly_name_regex') %}
+  {%- set entity_name_regex    = f.get('entity_name_regex') %}
+  {%- set device_name_regex    = f.get('device_name_regex') %}
+  {%- import 'zenos_ai/zen_target_resolve.jinja' as _ZQT -%}
+  {%- set _zq_v = _ZQT.ha_at_least(2026, 4) | trim %}
+  {%- set _zq_has_en = _zq_v == 'true' or (_zq_v == 'unknown' and entity_name is defined) %}
   {%- set sort_spec      = f.get('sort', {}) %}
 
   {# normalize shortcuts ----------------------------------------------- #}
@@ -79,11 +116,19 @@
   {%- elif (pipe.ids | count == 0) and friendly_name_regex %}
     {%- set _ns_fn = namespace(ids=[]) %}
     {%- for _s in states %}
-      {%- if state_attr(_s.entity_id, 'friendly_name') | default('') | regex_search(friendly_name_regex) %}
+      {%- if _zq_name(_s.entity_id, 'display', _zq_has_en) | regex_search(friendly_name_regex) %}
         {%- set _ns_fn.ids = _ns_fn.ids + [_s.entity_id] %}
       {%- endif %}
     {%- endfor %}
     {%- set pipe.ids = _ns_fn.ids %}
+  {%- elif (pipe.ids | count == 0) and (entity_name_regex or device_name_regex) %}
+    {%- set _ns_np = namespace(ids=[]) %}
+    {%- for _s in states %}
+      {%- if (entity_name_regex and _zq_name(_s.entity_id, 'entity', _zq_has_en) | regex_search(entity_name_regex)) or (device_name_regex and _zq_name(_s.entity_id, 'device', _zq_has_en) | regex_search(device_name_regex)) %}
+        {%- set _ns_np.ids = _ns_np.ids + [_s.entity_id] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = _ns_np.ids %}
   {%- endif %}
 
   {# --- 3. Domain filter ----------------------------------------------- #}
@@ -298,12 +343,25 @@
   {%- if friendly_name_regex and pipe.ids | count > 0 %}
     {%- set new = namespace(list=[]) %}
     {%- for ent in pipe.ids %}
-      {%- if state_attr(ent, 'friendly_name') | default('') | regex_search(friendly_name_regex) %}
+      {%- if _zq_name(ent, 'display', _zq_has_en) | regex_search(friendly_name_regex) %}
         {%- set new.list = new.list + [ent] %}
       {%- endif %}
     {%- endfor %}
     {%- set pipe.ids = new.list %}
   {%- endif %}
+
+  {# --- 10d. Regex on one name part (entity name, device name) -------- #}
+  {# Same SEED/FILTER roles as friendly_name_regex. entity_name_regex  #}
+  {# matches the entity's own name, device_name_regex its device's.   #}
+  {%- for _np in [['entity', entity_name_regex], ['device', device_name_regex]] if _np[1] and pipe.ids | count > 0 %}
+    {%- set new = namespace(list=[]) %}
+    {%- for ent in pipe.ids %}
+      {%- if _zq_name(ent, _np[0], _zq_has_en) | regex_search(_np[1]) %}
+        {%- set new.list = new.list + [ent] %}
+      {%- endif %}
+    {%- endfor %}
+    {%- set pipe.ids = new.list %}
+  {%- endfor %}
 
   {# =====================================================================
      11. SHORTCUTS — Core + Sugar Pack
@@ -707,11 +765,17 @@
         "Apply regex_search() to the ENTITY ID string. Keeps only entities whose entity_id matches the pattern. Example: ‘node_status$’ returns all node status sensors.",
 
       "friendly_name_regex":
-        "Apply regex_search() to the friendly_name attribute. "
+        "Apply regex_search() to the entity's display name: the friendly_name while HA still sets it, else its device name + entity name (HA plans to drop friendly_name). "
         "SEED: if pipe is empty (no domain/label/areas/target_entities), iterates ALL states — use for hostile-environment room discovery. "
         "FILTER: when pipe already has entities, narrows to name-matching subset. "
         "Use (?i) prefix for case-insensitive matching. "
         "Example: ‘(?i)foo’ catches ‘Foo Room’, ‘Foo\\’s Room’, ‘foo light’ across any naming convention.",
+
+      "entity_name_regex":
+        "Apply regex_search() to the entity's own name only (entity_name(), no device part; empty for a main entity named by its device). Same SEED/FILTER roles as friendly_name_regex.",
+
+      "device_name_regex":
+        "Apply regex_search() to the entity's device name (device_name(): the user-set name if any). Entities without a device never match. Same SEED/FILTER roles.",
 
       "shortcuts": {
         "numeric":

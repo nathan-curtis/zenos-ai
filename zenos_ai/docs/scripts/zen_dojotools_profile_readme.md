@@ -1,10 +1,12 @@
-# Zen DojoTools Profile Editor — v5.3.0 · Persona Editor v1.2.1
+# Zen DojoTools Profile Editor — v5.4.2 · Persona Editor v1.5.2
 
 *Read, write, sign, restore, and certify ZenOS identity profiles*
 
 ---
 
 > **Response envelope (2026.10.0):** `zen_dojotools_profile_editor` and `zen_dojotools_persona_editor` return the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only; Persona Editor's `cert_req_grant` and `cert_list` stay open, so an agent can ask for its pass. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -310,6 +312,15 @@ entry, a real data-loss risk for a "just add one more" call. To remove
 a single entry without touching the rest, submit that entity with
 `"acl": "remove"` — this deletes it from the merged scope rather than
 adding a third ACL state.
+
+**`cert_stages` (Persona Editor 1.5.0, 2026.11.0):** the request and
+revoke modes forward `cert_stages` to certadmin, so an agent can ask to
+use a cert from a pipeline stage: letters (`i` interactive, `l` live
+drawer, `s` Ninja seed, `e` Ninja emit, `m` SuperSummary, `c` scheduler)
+or names, e.g. `ie`. On a grant it is the whole stage set, and each stage
+must be allowed by the cert's tool; omit it to keep the stages held. On a
+revoke it drops only those stages. A human approves every change on the
+phone. See [Stages](../getting_started/security_certification_manual.md#64-stages).
 
 ---
 

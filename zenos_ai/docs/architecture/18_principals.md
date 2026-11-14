@@ -6,6 +6,8 @@ Identity began as an onboarding plan: interview the household, seed a persona fr
 
 This is also the part of ZenOS I came to with the most background. In a former life I was a Microsoft field engineer for identity, messaging, and core infrastructure. I speak PKI natively, and I have designed several hardware-backed public key infrastructures, some of which, as far as I know, are still operational. That is why everything in Part V is shaped the way it is: certification names shaped like OIDs, certification entries shaped like certificates, an identity root shaped like OIDC, and a certificate store headed for an enclave (Chapter 5). I know what it costs to retrofit an identity system that was not built for where it is going, and I would rather not.
 
+Part V follows one agent from the door to the alarm panel. A new agent with no backstage pass reaches help and its own onboarding, and nothing else, until a person approves the pass on their phone (Chapter 20). Its certifications say which domains it may act in, and each one was granted by a person, not by the agent (Chapter 19). Asking to put a paused room back on Auto sends a live acknowledgement to a household admin, because that takes back authority a human removed (Chapter 20). A target its scope denies is refused outright, with no one asked. And an agent without the security certification can be told the alarm is armed, but cannot reach it (Chapter 21). Same agent, same house, four answers. This chapter starts with who the agent is.
+
 ## 18.1 Principals are cabinets
 
 Every principal is backed by a cabinet, and the cabinet's type label says what kind of principal it is:
@@ -19,7 +21,7 @@ Every principal is backed by a cabinet, and the cabinet's type label says what k
 
 A cabinet's identity is its GUID, stored in its `AI_Cabinet_VolumeInfo` header. Names, friendly names, and entity IDs can change. The GUID does not.
 
-Cabinets come into service through `zen_dojotools_provisioner`. A cabinet waiting in the stacks pool is `init` or `online_unmounted`. Provisioning validates its GUID (present, valid UUID, unique across mounted cabinets), applies the type label, mounts it, and seeds the profile and essence drawers. Deprovisioning reverses it and returns the cabinet to the pool. Provisioning a principal is identity-slot activation, not hardware management. Both provision and deprovision require the `cabinet_lifecycle_control` certification.
+Cabinets come into service through `zen_dojotools_provisioner`. A cabinet waiting in the stacks pool is `init` or `online_unmounted`. Provisioning validates its GUID (present, valid UUID, unique across mounted cabinets), applies the type label, mounts it, and seeds the profile and essence drawers. Deprovisioning reverses it and returns the cabinet to the pool. Provisioning a principal is identity-slot activation, not hardware management. Both provision and deprovision require the `zenos.system.cabinet_lifecycle_control` certification.
 
 ## 18.2 Occupancy and belonging
 
@@ -35,9 +37,11 @@ The data model allows families to nest to any depth. Security resolution walks a
 
 ## 18.3 Partners
 
-A partner link is delegation, not a social relationship. `link_partners` writes each principal into the other's `acls.partner`, meaning each is authorized to act on the other's behalf. It works between any pair: person and person, person and AI persona, or two AI personas. `unlink_partners` severs it.
+A partner link is delegation, not a social relationship. `link_partners` adds each principal's GUID to the other's `acls.partners`, meaning each is authorized to act on the other's behalf. It works between any pair: person and person, person and AI persona, or two AI personas. `unlink_partners` severs it.
 
-> **Not yet built.** Partner links are recorded but no gated tool reads `acls.partner` when deciding whether to allow an action today. Authorization runs through certification (Chapter 19). Partner-aware authorization is design direction.
+FileCabinet's cabinet gate reads partner links. By default a person's cabinet answers to that person, their partners and the prime agent, and a cabinet rule can name `@partner` (Chapter 21).
+
+> **Not yet built.** On an upgraded install the cabinet gate runs in audit mode, so there a partner link changes what the gate logs, not what it refuses. On a fresh install, which enforces, it changes what the gate allows. No other gated tool reads `acls.partners`: outside the cabinets, certification (Chapter 19) decides. Partner-aware authorization beyond the cabinets is design direction.
 
 ## 18.4 Resolving the caller
 

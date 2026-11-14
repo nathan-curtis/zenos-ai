@@ -1,6 +1,6 @@
 # Zen DojoTools AdminTools
 
-**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.1.1 · `reset_labels` 1.0.0 · `cabinetadmin` 4.6.0 · `cabinetadmin_factory` 1.0.0 · `prompt_loader` 44.2 · `run_repair` 5.1.0.
+**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.2.0 · `reset_labels` 1.1.0 · `cabinetadmin` 4.9.0 · `cabinetadmin_factory` 1.1.0 · `prompt_loader` 45.7 · `run_repair` 5.2.0.
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -22,13 +22,13 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 
 | Script | Version | MCP-Exposed | Purpose |
 |---|---|---|---|
-| `zen_admintools_reset_template` | 5.1.1 | **No** | Press zen_template and kfc_template into cabinets |
-| `zen_admintools_reset_labels` | 4.5.0 | No | Nuclear: delete all zen_ labels and assignments, trigger Flynn rebuild |
-| `zen_admintools_cabinetadmin` | 4.6.0 | No | Inspect, restore, reset, hammer, init, expand_drawer, repair_volumeinfo, or reset_all Ring-0 cabinets |
+| `zen_admintools_reset_template` | 5.2.0 | **No** | Press zen_template and kfc_template into cabinets |
+| `zen_admintools_reset_labels` | 1.1.0 | No | Nuclear: delete all zen_ labels and assignments, trigger Flynn rebuild. Label delete cert and a live ack on every call |
+| `zen_admintools_cabinetadmin` | 4.9.0 | No | Inspect, restore, reset, hammer, init, repair_volumeinfo, or reset_all (every cabinet and label, or the Ring-0 cabinets) |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
-| `zen_admintools_prompt_loader` | 44.2 | No | Load versioned Cortex, Directives, and Purpose (v44 = Open Door (default/latest), v43 = Rule Zero, v42 = The Answer). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`. |
-| `zen_admintools_run_repair` | 4.5.6 | **No** | Human-confirmed passthrough to versioned maint/ repair scripts |
+| `zen_admintools_prompt_loader` | 46.0 | No (never exposed) | Load versioned Cortex, Directives, and Purpose (v46 = Open Door (default/latest), v45 = Open Door, v44 = Open Door). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`, the FileCabinet lock via `mode=fc_acl_mode`, and the read-cert switch via `mode=seed_cert_mode` (both console only). Declares `never_expose`: it is never exposed to the agent. |
+| `zen_admintools_run_repair` | 5.2.0 | **No** | Human-confirmed passthrough to identity `acl_migrate` (the one repair action) |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
 
@@ -45,8 +45,9 @@ Called automatically by **Flynn gate-3** if the templates are missing at boot. C
 ### Behavior
 
 - Reads the Kata cabinet and Dojo cabinet (resolved via labels `zen_summary,zen,summary` and `kfc,dojo,zen`)
-- If `zen_template` is absent from the Kata cabinet → writes seed template
+- If `zen_template` or `kata_template` is absent from the Kata cabinet, or carries an older schema version → writes its seed template
 - If `kfc_template` is absent from the Dojo cabinet → writes seed template
+- Each seed is written with `mode: upsert` and `write_mode: replace`, so it creates a drawer that doesn't exist yet (5.1.2; before that the write was an update, which does nothing on a missing drawer, so a fresh install never got its templates)
 - Uses `force_action: true` — will overwrite if explicitly needed
 
 ### When to Use
@@ -63,7 +64,7 @@ Called automatically by **Flynn gate-3** if the templates are missing at boot. C
 
 Use this when label IDs are corrupt, have wrong names, or you need a full label reinstall. For wiping assignments only (labels survive), use `zen_dojotools_labels` with `action_type: reset` instead.
 
-**Not MCP-exposed.** Admin use only.
+**Not MCP-exposed.** Admin use only. Needs `zenos.registry.label_lifecycle_control` at level 2, and asks the household admin for a live yes on every call (the console override stands in). Not granted answers `status: denied`.
 
 ### What It Does
 
@@ -79,16 +80,9 @@ Flynn re-engages automatically: `zen_label_health` flips to `critical` → Stepg
 |---|---|---|---|
 | `confirm` | boolean | `false` | Must be `true` — refuses without it |
 
-### Full Nuclear Reset Sequence
+### Full Nuclear Reset
 
-To completely rebuild from scratch (labels + cabinets):
-
-```
-1. zen_admintools_reset_labels          — nuke + rebuild all zen_ labels
-2. zen_admintools_cabinetadmin          — op: reset_all (wipe cabinets + reseed + Flynn)
-```
-
-Two tool calls. Order matters — labels first, then cabinets.
+To completely rebuild from scratch (cabinets + labels), one call is enough: `zen_admintools_cabinetadmin` with `mode: reset_all` (default `scope: all`) wipes every cabinet and every `zen_` label, and Flynn rebuilds the install as a fresh one. Run it with `dry_run: true` first. See [reset_all](#reset_all-scope-and-dry-run) below.
 
 ---
 
@@ -109,9 +103,8 @@ Ring-2 cabinet maintenance tool. Provisions new expansion cabinets, inspects cab
 | `confirm_init` | boolean | `false` | `hammer` only — re-stamp fresh VolumeInfo immediately after wipe. Set `cab_type` accordingly |
 | `hammer_ok` | boolean | `false` | Required `true` for `hammer` mode |
 | `confirm` | boolean | `false` | Required `true` for `reset_all` |
-| `source_cabinet` | entity (sensor) | — | `expand_drawer` only — cabinet the drawer currently lives on (target_cabinet is the destination) |
-| `source_drawer` | text | — | `expand_drawer` only — leaf drawer key to migrate. Subtree/Cabception parent keys are rejected |
-| `space_threshold` | number | — | `expand_drawer` only — abort if either source or target cabinet would cross this capacity percentage |
+| `scope` | select | `all` | `reset_all` only. `all`: every cabinet and every `zen_` label. `core`: the Ring-0 cabinets only, labels kept |
+| `dry_run` | boolean | `false` | `reset_all` only. List the cabinets and labels it would wipe; write nothing |
 
 ### Modes
 
@@ -126,8 +119,7 @@ Ring-2 cabinet maintenance tool. Provisions new expansion cabinets, inspects cab
 | `mount_status` | No | Return mounted/unmounted state for all `zen_cabinet` entities. No target needed |
 | `repair_mount` | No | Force `meta.mounted: true` on a stuck cabinet. Does not touch drawer content |
 | `repair_dismount` | No | Force `meta.mounted: false` on a stuck cabinet. Mirror of `repair_mount` |
-| `expand_drawer` | **Yes** (has rollback) | Atomically migrate one leaf drawer from `target_cabinet` to an expansion cabinet: validates the key is a leaf (rejects subtrees/Cabception children), checks space threshold on both source and target, copies the value, replaces the source entry with a `mount_point` pointer, then round-trip verifies the mount resolves through `zen_dojotools_filecabinet` before declaring success. Any failure at any step rolls back (restores original value, deletes target copy). Requires `source_cabinet`, `source_drawer`, optional `space_threshold` |
-| `reset_all` | **NUCLEAR** | Wipe all Ring-0 cabinets + reseed schemas + trigger Flynn bootstrap. `confirm: true` required. User and expansion cabinets untouched |
+| `reset_all` | **NUCLEAR** | A true fresh start (`scope: all`, the default) or the Ring-0 cabinets only (`scope: core`), then Flynn rebuilds. `confirm: true` and a live household-admin ack required; `scope: all` also needs the label delete cert. See [reset_all](#reset_all-scope-and-dry-run) |
 | `flip_schema_version` | No | Toggle `cab_schema_version` in syscab (0=legacy, 1+=mount-aware). Controls Flynn operating mode |
 | `repair_volumeinfo` | No | Targeted repair for a cabinet whose `VolumeInfo` is a JSON string instead of a mapping — parses and rewrites as a proper dict. Also self-heals the missing-header case (cabinet in `init` state with no VolumeInfo at all): stamps a fresh header via `cabinetadmin_factory`, no `hammer`/rearm needed. Skips silently if VolumeInfo is already a valid mapping |
 
@@ -175,7 +167,25 @@ sensor.zenos_default_ai_user_history_cabinet
 - **reset** — nuke a cabinet's contents cleanly (e.g., clear scratchpad, reset history)
 - **hammer** — full wipe with audit trail; last resort before re-init
 - **init** — fresh cabinet initialization; sets VolumeInfo metadata
-- **reset_all** — full nuclear cabinet reset + fires Flynn via `zen_cabinet_health` state change. Does **not** call `reset_template` directly — cabinets are still genuinely virgin at this point, and writing template content into them would make cabinetadmin's own classifier see them as `potentially_bad` instead of `virgin`. Flynn's own gate-3 calls `reset_template` idempotently once cabinets are re-stamped and resolvers are settled. If you want to customize the sequence (skip a cabinet, change order), run the steps individually — that is exactly what `reset_all` orchestrates under the hood.
+- **reset_all** — full nuclear reset + fires Flynn via `zen_cabinet_health` state change (details below). Does **not** call `reset_template` directly — cabinets are still genuinely virgin at this point, and writing template content into them would make cabinetadmin's own classifier see them as `potentially_bad` instead of `virgin`. Flynn's own gate-3 calls `reset_template` idempotently once cabinets are re-stamped and resolvers are settled. If you want to customize the sequence (skip a cabinet, change order), run the steps individually — that is exactly what `reset_all` orchestrates under the hood.
+
+---
+
+### reset_all: scope and dry run
+
+| | `scope: all` (default) | `scope: core` |
+|---|---|---|
+| Cabinets | Every cabinet a fresh install wouldn't have: the Ring-0 list, every slot in the health map (the vault and expansions included), and every `zen_cabinet`-labelled cabinet, so your provisioned user and AI user cabinets too | The 14 Ring-0 cabinets only |
+| Labels | Every `zen_` label on the house is untagged and deleted, your own included. Flynn recreates only its own | Kept |
+| Certs needed | `zenos.system.cabinet_lifecycle_control` and `zenos.registry.label_lifecycle_control` at level 2 | `zenos.system.cabinet_lifecycle_control` |
+
+Either way it needs `confirm: true` and a live household-admin yes on every call, and the prompt says how many cabinets and labels it will wipe. Only a cabinet that holds something is wiped; an empty one is listed as skipped.
+
+`dry_run: true` answers `status: dry_run` with `targets`, `target_count`, `skipped_empty`, `labels` and `label_count`, and writes nothing. Run it first.
+
+A clear the cabinet writer refuses is not hidden: the answer is `status: partial` with a `failed` list of `{cabinet, answer}`.
+
+The wipe also clears the console override and every cert, which live in those cabinets: throw the override from the console and re-request certs afterwards. Flynn sets the system cabinet up again as on a fresh install, so the FileCabinet lock arms and then locks once the ACL migration runs.
 
 ---
 
@@ -199,9 +209,10 @@ Use this when a cabinet is missing its metadata header — for example, after cr
 | `auto_profile` | boolean | `true` | Auto-detect security flag profile from cabinet type |
 | `explicit_flag_profile` | select | `standard` | Override flag profile: `system`, `secure`, `public`, `standard` |
 | `mount_scan` | boolean | `true` | Scan existing drawers for `[mount:GUID]` links |
-| `owner_person` | entity (person) | — | Owner reference (HA person entity) |
-| `partner_person` | entity (person) | — | Partner reference |
-| `family_guid` | text | — | Family GUID for ACL |
+| `owner_person` | entity (person) | — | Owner, stamped into the ACL as the person's member cabinet GUID |
+| `partner_person` | entity (person) | — | Partner, stamped the same way |
+
+The factory stamps the ACL as v2 (`{v: 2, owner, prime, partners, ops}`) and the cabinet's `class`, from `cabinet_type`. Family membership lives in the `members` drawers, not in the ACL.
 
 ### Flag Profiles (Auto-Detected)
 
@@ -283,25 +294,36 @@ On every run, the prompt loader also stamps `meta.mounted: true` on syscab — e
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `mode` | select | `load` | `load` — stamp Purpose/Directives/Cortex into syscab. `whitelist` — manage act or seed whitelists. |
-| `cortex_version` | select | `latest` | `latest` or `44` = Open Door (default). `43` = Rule Zero. `42` = The Answer. Only used when `mode=load`. |
-| `ship_zen_system` | boolean | `true` | When ON (default), chains `zen_admintools_kungfu_loader` in factory mode — deploys `zen_system` and `trapper_keeper`. `taskmaster`, `alert_manager`, `camera_manager`, and `security_manager` all self-register via KF5 instead (see each tool's own `mode=kfc_manifest`) and are no longer shipped from here. Turn OFF to load the prompt only, skipping all KFC deployment. |
-| `sim_mode_allowed` | boolean | `false` | Stamped into `integrations_config.identity.sim_mode_allowed` on every factory run. OS-level policy switch (see `zen_dojotools_identity resolve_caller_identity`) — `false` (default) fails closed on any simulated/shunted identity result until real Authentik/OIDC (SP1) is live. Leave off unless you deliberately want simulated identity resolution accepted platform-wide. |
+| `mode` | select | `load` | `load` — stamp Purpose/Directives/Cortex into syscab. `whitelist` — manage act or seed whitelists. `fc_acl_mode` — the FileCabinet lock (see below). `lens_registry` — the one writer for household lens providers. `codex_registry` — the one writer for household finance codices (`list`/`get`/`register`/`unregister`). Runs queued, up to 25 at once. |
+| `cortex_version` | select | `latest` | `latest` or `46` = Open Door (current), `45` = Open Door, `44` = Open Door. Only used when `mode=load`. |
+| `sim_mode_allowed` | boolean | — | Stamped into `integrations_config.identity.sim_mode_allowed` only when it is unset; an existing value is never changed. Omitted, the stamp follows Flynn's `input_boolean.zenos_sim_mode_override` (Flynn also keeps the two in step on every boot). `false` fails closed on any simulated/shunted identity result until real Authentik/OIDC (SP1) is live (see `zen_dojotools_identity resolve_caller_identity`). |
 | `whitelist_type` | select | — | `mode=whitelist` only. `act` = `zen_summarizer_act_whitelist`. `seed` = `zen_summarizer_seed_whitelist`. |
-| `action_type` | select | `list` | `mode=whitelist` only. `list` \| `add` \| `remove` \| `reset`. |
+| `action_type` | select | `list` | `mode=whitelist`: `list` \| `add` \| `remove` \| `reset`. `mode=fc_acl_mode`: `status` (default) \| `audit` \| `enforce`. |
 | `item` | text | — | `mode=whitelist add/remove` only. Event kind string (act) or script name (seed). |
 
 Use the `cortex_version` field to select which version to load. The three primitives (Purpose, Directives, Cortex) are versioned together as a set:
 
 | Version | Codename | Notes |
 |---|---|---|
-| `42` | The Answer | v10.0.0. INSTALLATION OVERRIDE (GetLiveContext blocked). WHO/WHAT/WHEN/WHERE/WHY/HOW tool map. MANAGED MACHINES directive. `inventory` replaces `grocy_helper` in core and domain tools. |
-| `43` | Rule Zero | DojoTools supersede all HA built-ins. Not preference. Authority. Domain routing table in directives. Successor to v42 'The Answer'. |
-| `44` / `latest` | Open Door | v43 plus one clarification: Assist entity exposure is a routing switch, not an existence signal. An entity that is not exposed but is enabled in Home Assistant is still real and current through the Index and DojoTools. Purpose and Directives carry the same text as v43 under a v44 header; only the Cortex changes. |
+| `46` / `latest` | Open Door | v45's text. Its `os_release` stamp carries only `cortex`, `cortex_codename` and `pressed_at`; 45 and earlier also wrote a hand-kept list of component versions that had gone stale. |
+| `45` | Open Door | v44 with one fix: the `core_tools` list names the real log viewer, `script.zen_dojotools_ha_log_viewer`. Purpose and Directives carry the same text as v44 under a v45 header. |
+| `44` | Open Door | v43 plus one clarification: Assist entity exposure is a routing switch, not an existence signal. An entity that is not exposed but is enabled in Home Assistant is still real and current through the Index and DojoTools. Its `core_tools` list names a log viewer that does not exist; v45 corrects it. |
 
-Selecting `latest` or passing no `cortex_version` loads v44. A load writes purpose, directives, cortex, and `os_release` to the system cabinet with a one-second pause between writes, so consecutive `set_variable` events can't overwrite each other.
+Selecting `latest` or passing no `cortex_version` loads v46. The v43 'Rule Zero' slot is retired. A load writes purpose, directives, cortex, and `os_release` to the system cabinet with a one-second pause between writes, so consecutive `set_variable` events can't overwrite each other.
 
 The response carries a `write_report`, one entry per key (`purpose`, `directives`, `cortex`, `os_release`) with `status` (`ok`/`failed`), `ts_ok`, `content_ok`, `actual`, and `expected`. A key is `ok` only if its timestamp moved and its content carries the version that was loaded. If any key failed, the overall `status` is `error`.
+
+### The FileCabinet lock (`mode=fc_acl_mode`, 45.3)
+
+The switch for FileCabinet's ACL gate: the system cabinet's `fc_acl_mode` drawer.
+
+| `action_type` | Does |
+|---|---|
+| `status` (default) | Answers `fc_acl_mode` (`audit` or `enforce`), `set` (whether the drawer exists) and `armed` (whether a fresh install armed it) |
+| `enforce` | Locks the gate. Console only |
+| `audit` | Unlocks it: denies are logged and let through. Console only |
+
+`audit` and `enforce` need a live console session (`context.user_id`), like `cert_bypass`, and refuse any call no user started, so no agent, script or automation can flip the lock. They write through the admin door and answer `was`, the new `fc_acl_mode` and the `console_user`. Setting it by hand drops a fresh install's arm flag. See the [FileCabinet readme](zen_dojotools_filecabinet_readme.md#access-control-acl-v2).
 
 ### Whitelist Management
 
@@ -313,7 +335,9 @@ The response carries a `write_report`, one entry per key (`purpose`, `directives
 | `seed` | `zen_summarizer_seed_whitelist` | `allowed_scripts` | Script name |
 | `fc` | `fc_mount_callout_whitelist` | `allowed_tools` | `tool` (deprecated) \| `tool:*` (preferred) \| `tool:mode` (KF5 mode-scoped) |
 
-`seed` and `act` replace the deleted `zen_admintools_summarizer_act` and `zen_admintools_summarizer_seed` standalone scripts. `fc` is the FileCabinet live-drawer callout whitelist used by KF5 self-registering tools — see [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools).
+`seed` and `act` replace the deleted `zen_admintools_summarizer_act` and `zen_admintools_summarizer_seed` standalone scripts.
+
+> **Deprecated in 2026.11.0, removed in 2026.12.** The seed and act lists are a bridge. A seed is now a mode the tool declares in its `tool_manifest` `seed_modes`, and an act needs the target tool's emit cert granted with the Ninja emit stage (`cert_req_grant cert_stages=ie`, or the `zenos_agent_autonomous` bundle). `mode=whitelist type=seed|act` still works through 11 and answers with a `deprecated` note naming the replacement. See [Stages](../getting_started/security_certification_manual.md#64-stages). `fc` is the FileCabinet live-drawer callout whitelist used by KF6 self-registering tools — see [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract).
 
 ```yaml
 # Add Room Manager as a seed source
@@ -362,7 +386,7 @@ Human-confirmed passthrough to versioned one-time maintenance scripts. Each repa
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `repair_action` | select | — | Which repair to run. See table below. |
-| `entity_id` | text | — | Cabinet entity ID. Required for `stamp_cab_guid_4_5_6` only. |
+| `entity_id` | text | — | Optional. `acl_migrate` repairs only this cabinet (default every zen_cabinet). |
 | `confirm_action` | boolean | `false` | Must be `true` — refuses without it. |
 | `caller_token` | text | — | Opaque correlation token (echoed in response). |
 
@@ -370,13 +394,11 @@ Human-confirmed passthrough to versioned one-time maintenance scripts. Each repa
 
 | Action | What It Does |
 |---|---|
-| `identity_family_repair_4_5_6` | Wire the default family cabinet into the household graph. Targets pre-4.5.6 installs missing the family link. |
-| `stamp_cab_guid_4_5_6` | Stamp a GUID onto a single cabinet. Requires `entity_id`. Targets installs where a cabinet was created without a GUID. |
-| `roster_guid_repair_4_5_6` | Stamp GUIDs and re-wire all default cabinet roster entries. Targets pre-provisioner installs only — destructive on live provisioner installs. |
+| `acl_migrate` | Identity's cabinet repair: stamps missing ids (a legacy `guid` field becomes the id), converts ACLs to v2, fixes members guids, restores VolumeInfo from and removes stray copies (`ai_cabinet_volumeinfo`, `_ai_cabinet_volumeinfo`). Dry run it first with `zen_dojotools_identity mode: acl_migrate`. |
 
 ### When to Use
 
-Run only when directed by an upgrade path document or a Nyx UAT report. These scripts are not idempotent in the general case — they were designed for specific transition states. If uncertain, run `identity_family_repair_4_5_6` with `dry_run` first if the script supports it; otherwise inspect the target cabinet with `cabinetadmin mode: inspect` before committing.
+Run when a cabinet fails identity's ACL schema check (identity answers `acl_schema_upgrade_required`) or when an upgrade note says to. `acl_migrate` is idempotent: a clean cabinet plans nothing. Dry run it first with `zen_dojotools_identity mode: acl_migrate` to see the plan; this passthrough applies it.
 
 ---
 
@@ -395,7 +417,35 @@ Run only when directed by an upgrade path document or a Nyx UAT report. These sc
 
 | Version | Change |
 |---------|--------|
-| v5.4.5 | cabinetadmin refusals hold: a cert denial, a missing `hammer_ok`, or a refused live acknowledgement no longer falls through to the operation, and `mode=help` answers. `reset` asks the same live household-admin acknowledgement as `hammer`. |
+| v5.14.0 | prompt_loader 46.0: cortex 46 (Open Door), the same text as 45. `os_release` carries only `cortex`, `cortex_codename` and `pressed_at`. `latest` = 46; slot 43 retired (slots 44, 45, 46). |
+| v5.13.0 | prompt_loader 45.7: the `seed_cert_mode` enforce parity ask uses stages `ise`. |
+| v5.12.0 | prompt_loader 45.6 declares `mcp_exposed=false` and `never_expose`: it holds the lock switches and the cortex. Anything that exposes entities must refuse it. |
+| v5.11.0 | prompt_loader 45.5: switching `seed_cert_mode` to enforce stamps the katas of summaries whose read cert is missing, so their data leaves the prompt at once. |
+| v5.10.0 | prompt_loader 45.4: `mode=seed_cert_mode` (`status`, `audit`, `enforce`; console only). `status` lists the parity certs still missing; `enforce` asks for parity once. See [Read certs and parity](../getting_started/security_certification_manual.md#66-read-certs-and-parity). |
+| v5.9.0 | reset_template 5.2.0: `kfc_template` schema 1.5.0 (existing installs re-press it). Its notes give the KF6 rules: `meta.requires` is enforced on the responsible agent with stage `s`, and `suggested_act_event` needs the emit-stage cert. |
+| v5.8.0 | cabinetadmin 4.9.0: `reset_all` takes `scope` (`all`, the default: every cabinet and every `zen_` label; `core`: the Ring-0 cabinets) and `dry_run`; `scope: all` also needs the label delete cert; a refused clear is reported (`partial`). reset_labels 1.1.0: the label delete cert at level 2 and a live ack on every call. |
+| v5.7.0 | prompt_loader 45.3: `mode=fc_acl_mode`, the console-only FileCabinet lock switch. |
+| v5.6.3 | reset_template 5.1.2 writes `zen_template`, `kata_template` and `kfc_template` with upsert, so it creates them on a fresh install. |
+| v5.6.0 | cabinetadmin `init` knows the Vault Cabinet type (class `vault`), so Flynn provisions the required vault on boot. cabinetadmin_factory 1.1.0 waits up to 10 seconds for the VolumeInfo GUID to land and answers an error instead of a false "initialized". |
+| v5.5.2 | prompt_loader 45.1: `cert_bypass` reads the console user from the session (`context.user_id`), not `whoami`, which shows nothing about the console before the agent holds its pass, so the console override can be switched on before approval. The person falls back to the HA person whose `user_id` matches. The loader's version follows the newest cortex slot. |
+| v5.5.1 | Plain cert descriptions for the approval prompt; real `max_level`. |
+| v5.5.0 | Cert names under `zenos.*` (one-release alias). |
+| v5.4.21 | cabinetadmin's `expand_drawer` is retired, with its `source_cabinet`, `source_drawer` and `space_threshold` fields. Use [FileCabinet's `expand_drawer` and `collapse_drawer`](zen_dojotools_filecabinet_readme.md#expansions--expand_drawer-and-collapse_drawer), the only way to make an expansion. A missing, unknown or retired mode answers help, and help names the replacement. |
+| v5.4.20 | cabinetadmin_factory stamps the cabinet `class` from `cabinet_type`. |
+| v5.4.19 | cabinetadmin's result carries `repair_results` only for `repair_volumeinfo`; `hammer_ok` defaults to `false` when absent. |
+| v5.4.18 | prompt_loader stamps an unset `sim_mode_allowed` from Flynn's `input_boolean.zenos_sim_mode_override`, so a load right after `reset_all` still resolves its caller. |
+| v5.4.17 | cabinetadmin `reset_all` wipes: its ack and wipe are gated on `confirm` and the ack's answer. |
+| v5.4.16 | Wipe acks name the console override as the stand-in for the human (identity 5.8.0). |
+| v5.4.15 | run_repair 5.2.0 runs identity `acl_migrate`; `maint_4_5_6` and `repair_fam_cab_volumeinfo` are retired. A refusal answers `error`. |
+| v5.4.14 | cabinetadmin_factory stamps the ACL as v2; `family_guid` is gone. |
+| v5.4.13 | prompt_loader `mode=codex_registry`: the one queued writer for the household finance codex registry. |
+| v5.4.12 | prompt_loader runs queued (max 25). |
+| v5.4.11 | prompt_loader's syscab `cabinet_ro` stamp writes VolumeInfo unwrapped; system cabinet reads use its resolver. |
+| v5.4.10 | Purpose, directives and cortex go through the admin door, verified by `content_verified`. No raw cabinet write events remain in AdminTools. |
+| v5.4.9 | Every other AdminTools cabinet write goes through the admin door. `flip_schema_version` reads the stored `{value: N}`. |
+| v5.4.8 | prompt_loader no longer chains the retired KungFu Loader; `ship_zen_system` is gone. A prompt load only loads the prompt. |
+| v5.4.7 | cabinetadmin refusals hold (cert denial, `hammer_ok`, live-ack denial); `reset` asks the same live household-admin ack as hammer. |
+| v5.4.6 | prompt_loader: cortex v45 (Open Door) replaces the v42 slot; `core_tools` names the real log viewer. Selectable versions: 45, 44, 43. |
 | v5.3.5 | prompt_loader: `mode=load` returns a per-key `write_report` and reports `error` if any write failed, instead of an unconditional success. |
 | v5.3.4 | prompt_loader: v44 has its own purpose/directives copy (header version 44 / Open Door). |
 | v5.3.3 | prompt_loader: v44 loads purpose, directives, and `os_release` (cortex 44, Open Door); unreachable v40 branches removed. One-second settle delay after every system-cabinet write, on every version, so none is dropped. `tool_manifest` 44.2. |

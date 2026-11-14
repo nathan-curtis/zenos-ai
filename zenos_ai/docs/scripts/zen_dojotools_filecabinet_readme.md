@@ -1,9 +1,11 @@
-# Zen DojoTools FileCabinet — v6.9.0
+# Zen DojoTools FileCabinet — v6.38.0
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
-**ZenOS Release:** 2026.7.0 'Neo'
+**ZenOS Release:** 2026.11.0 'This Is Spinal Tap'
 
 ---
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -22,7 +24,11 @@ zen_dojotools_filecabinet  (DojoTool, MCP-facing — expose this to MCP)
                         → CABS (reads) + set/remove_variable_legacy (writes)
 ```
 
-`zen_sutra_filecabinet` is the internal terminus. It is **not** MCP-exposed. Callers always go through `zen_dojotools_filecabinet`.
+`zen_sutra_filecabinet` is the engine. It is **not** MCP-exposed. Agents and MCP callers go through `zen_dojotools_filecabinet`; ZenOS scripts call `zen_sutra_filecabinet` directly for get, list, create, update, upsert and delete (one script run instead of two). The wrapper still accepts every action.
+
+Structural drawers (`AI_Cabinet_VolumeInfo`, `meta`, `_label_index`, `_zen_relationships`), the system cabinet and the vault are written only through the admin door, `zen_admintools_cabinet_writer`. FileCabinet refuses those keys.
+
+**Caller origin.** The wrapper stamps `caller_origin: agent` on every engine call it makes. Any other caller of `zen_sutra_filecabinet` is internal. A tool may name itself with `caller_tool: <script>`, as a constant in its own call and never taken from its input; the ACL gate matches it against `@tool:<script>` rules. Identity, the provisioner and Flynn's history mount name themselves. A tool that passes an agent-chosen cabinet and key straight to the engine should stamp `caller_origin: agent` itself.
 
 `stack=wiki` routes to `zen_sutra_wikijs`. FileCabinet is the single surface for both knowledge stacks. The former standalone `zen_dojotools_wikijs` script no longer exists.
 
@@ -34,10 +40,10 @@ There are exactly two licensed paths to cabinet data, and they must never be cro
 
 | Path | Who uses it | Purpose |
 |------|-------------|---------|
-| `script.zen_dojotools_filecabinet` | Scripts, automations, AI agents, MCP callers | All reads and writes |
-| `zenos_cabinets.jinja` CABS macros | Templates only — and only inside `zen_sutra_filecabinet` | Internal terminus reads |
+| `script.zen_dojotools_filecabinet` or `script.zen_sutra_filecabinet` | Scripts, automations, AI agents, MCP callers (agents only through the wrapper) | All drawer reads and writes |
+| `zenos_cabinets.jinja` CABS macros | Templates | Reads |
 
-Scripts must call `script.zen_dojotools_filecabinet`. Templates must import CABS. Never cross these paths — calling the Sutra directly from outside the Sutra creates a loop at prod rename.
+Scripts write through FileCabinet (or the admin door, for structural keys). Templates read through CABS. Never fire raw cabinet events.
 
 ---
 
@@ -46,18 +52,20 @@ Scripts must call `script.zen_dojotools_filecabinet`. Templates must import CABS
 ### Drawer Operations
 Implements the full CRUD+M model:
 
-- `create` — create a new drawer; errors if key exists (use `upsert` or `force_action` to overwrite)
-- `update` — full overwrite of an existing drawer (default mode: replace)
-- `upsert` — create if absent, update if present (default mode: merge)
+- `create` — create a new drawer; errors if key exists (`force_action` overwrites the whole drawer)
+- `update` — overwrite an existing drawer (default `write_mode`: replace); `not_found` if the key is missing (`force_action` creates it)
+- `upsert` — create if absent, update if present (default `write_mode`: merge)
 - `delete` — remove a drawer and cascade to all children
-- `move` — transfer a drawer to another key or cabinet; cascade + index migration
+- `move` — transfer a drawer to another key or cabinet; cascade + index migration; refuses a destination that resolves to the source key
 - `copy` — copy a drawer; cascade; inherits source labels if no tags supplied
 - `relabel` — update the `_label_index` for a drawer without touching its value
 
-All writes are re-read and verified for correctness via `wait_template`.
+Every write states merge or replace: pass `write_mode: merge` or `write_mode: replace`. A read-modify-write caller passes `write_mode: replace`; under a merge, a key the caller removed comes back. `write_mode` wins over the older `merge: true|false` and the legacy `mode: merge|replace`, which still work.
+
+All writes are re-read and verified via `wait_template`. A write the cabinet never confirmed answers `status: error`, `code: write_unverified`, `write_verified: false`, and logs a system_log warning (logger `zen_sutra_filecabinet`), so a caller that never reads the answer still leaves a trace.
 
 ### Reads (Four Modes)
-1. **Direct Read** (`get`) — read a specific drawer; surfaces subdrawers and mount traversal
+1. **Direct Read** (`get`, alias `read`) — read a specific drawer; the content is in `value`; surfaces subdrawers and mount traversal
 2. **Directory** (`list`) — list all non-system drawers in a volume; supports `path_prefix` filter
 3. **Label + Text Search** (`search`) — match drawers by label via `_label_index` or text scan across key/title/content
 4. **Global Manifest** (`manifest`) — delegates to `zen_dojotools_manifest`
@@ -78,6 +86,8 @@ Labels are:
 Broken `_label_index` formats (legacy Python-literal strings) are repaired in flight.
 
 HA Labels **are** the tag system. There is no separate tags field in the storage envelope — labels live in the index drawer, not on the drawer itself.
+
+The index lives in the cabinet a caller addresses, keyed by the drawer's path, so an expanded drawer's labels stay in its host's index. `move`, `copy` and `delete` carry a tree's labels with it (`move` and `delete` take them off the source), and a cross-cabinet copy adds to the destination's index rather than replacing it. `relabel` and `create` answer only after their index write lands.
 
 ### Health-Aware Write Pipeline
 Before any write, FileCabinet checks:
@@ -100,20 +110,26 @@ All moves verify the destination write before deleting the source. This prevents
 
 ---
 
-## Storage Format (v6.2+)
+## Storage Format (v6.16+)
 
-Each drawer is stored as:
+Each drawer is stored as an envelope:
 
 ```json
 {
   "drawer_key": {
     "value": <raw content — string, dict, list, number, bool, or null>,
-    "timestamp": "2026-06-16T12:00:00-05:00"
+    "meta": {"expires_after": null, "no_autoexpire": false, "no_autorecycle": false},
+    "timestamp": "2026-06-16T12:00:00-05:00",
+    "acl": {"ops": {}}
   }
 }
 ```
 
-The `meta` key is reserved for future ACL use and is not yet written by the Sutra.
+- `value` is the content. Reads return it in `value`.
+- `meta` is always present and holds expiry and drawer flags such as `ro`. A cabinet set keeps `meta` and `acl` instead of rebuilding the drawer; incoming `meta` merges over the stored one.
+- `acl` is optional and may set `ops` only. See [Access Control](#access-control-acl-v2).
+
+Expiry stored inside an older drawer's value still counts. FileCabinet GC's `repair` mode moves it into `meta`, and GC normalizes every drawer it moves.
 
 ### dict-in / dict-out Contract
 
@@ -134,6 +150,8 @@ Old v1-envelope drawers — where `value` is a dict with `v: 1` and a `content` 
 ### content → value Migration
 
 FC GET no longer returns a `content` key. All callers read `.get('value', {})` from the response. The `content` key is an internal v1 artifact that is unwrapped silently.
+
+`result` is only the tool envelope. The `{path: value}` map that `read` once returned in `result` is retired; `read` returns exactly what `get` returns.
 
 ---
 
@@ -212,7 +230,9 @@ A VirtualDrawer has `mount_point: true` in its `value`:
 }
 ```
 
-Mount traversal is a redirect, not execution. The Sutra follows the mount chain up to depth 8. Loop detection and depth-limit guards are enforced.
+Mount traversal is a redirect, not execution. `get`, `create`, `update` and `upsert` resolve the whole chain once (CABS `fc_resolve`, up to 8 hops) and act on the real target. A chain that loops, runs too deep or has no target refuses with `mount_traversal: {status, reason, loop_at, depth, visited}`. Delete, move, copy and the mount commands act on a softlink itself; the pointers `expand_drawer` leaves behave differently (see [Expansions](#expansions--expand_drawer-and-collapse_drawer)).
+
+Softlinks and expansions are one chain. At any cabinet on the way, a key under an expanded root hops into that expansion, and a softlink there is followed on. Softlinks from and to expanded drawers are normal.
 
 Mounts are set with `set_mount` (requires `key` + `target_guid`). They are removed with `remove_mount`. The `clone` action copies mount point drawers through to the destination (noted in the response as `mounts_copied`).
 
@@ -226,10 +246,10 @@ A LiveDrawer absorbs the KF4 schema. It is a VirtualDrawer variant where the mou
 
 | Field | Purpose |
 |-------|---------|
-| `tool` | Script name to call (e.g. `zen_dojotools_inventory`) |
+| `tool` | Script name to call (e.g. `zen_dojotools_inventory`). `action_type` is read when `tool` is absent; a drawer that names two different scripts in the two fields is refused with `tool_call_blocked`, because it could pass the whitelist as one and run as the other. |
 | `params` | Params dict passed to the tool call |
 | `cache.ttl_seconds` | Cache TTL in seconds |
-| `cache.digest_fields` | Optional: field paths to extract from the tool response for caching |
+| `cache.digest_fields` | Optional: field paths to extract from the tool response for caching. Each path returns only its own field. |
 
 **Read behavior:**
 
@@ -242,7 +262,7 @@ Auto-expiry is managed by FC. The caller does not manage staleness.
 LiveDrawers are set via `set_mount` with `fc_args` instead of `target_guid`:
 
 ```yaml
-action_type: set_mount
+mode: set_mount
 volume_entity_id: sensor.my_cabinet
 key: live_inventory
 fc_args: >
@@ -253,7 +273,11 @@ fc_args: >
   }
 ```
 
-Tool calls are gated by a whitelist stored in `sensor.zenos_system_cabinet` (`fc_mount_callout_whitelist`). If the drawer's `fc_args.tool`/mode combination is not covered by the whitelist, the read returns `tool_call_blocked`.
+Tool calls are gated by a whitelist stored in `sensor.zenos_system_cabinet` (`fc_mount_callout_whitelist`). If the drawer's `fc_args.tool`/mode combination is not covered by the whitelist, the read returns `tool_call_blocked`, unless the tool is certified for it.
+
+**A certified tool (6.38.0).** On a whitelist miss, FileCabinet asks the drawer's tool for its `tool_manifest`. The read goes ahead when a `certs_required` entry lists the drawer's mode in `modes` and allows `l` in `st_ok`, and the agent the drawer runs as holds that cert at that level with stage `l`. This check is strict whatever `seed_cert_mode` says, since nothing stands behind it. `zen_admintools_*` never qualifies, a drawer whose `tool` and `action_type` name different scripts is still refused, and any error leaves the read blocked. `zen_event` `live_cert_yield` records each one. Print Shop's `summary` is the first such mode: `{cert: zenos.media.print_status, level: 1, modes: ['summary'], st_ok: 'isl'}`.
+
+**Stage `l` (live drawer) cert check.** The drawer's tool runs as the agent responsible for the household (the prime, else the default agent). When the drawer's mode is one the tool gates in its `certs_required`, that agent must hold the cert with stage `l`. `help`, `tool_manifest`, `kfc_manifest` and a bare call are ungated. `seed_cert_mode` decides what a miss does: in audit (the default when the drawer is missing) FileCabinet fires `zen_event` `live_cert_audit` with `would_deny` and runs the call; in enforce it refuses with `live_cert_required`. A tool lists `l` in a cert's `st_ok` before that stage can be granted. Print Shop's `zenos.media.print_status` is the first.
 
 A live drawer whose tool call reads the same drawer back, directly or through another mount (A reads B, B reads A), is refused with `tool_call_cycle_detected`. While a resolution is in flight, FileCabinet keeps a `<key>/mount_resolving` marker on the volume and clears it on every exit. The marker is only checked when the cache misses, and one left behind by a crashed run expires after 30 seconds.
 
@@ -271,7 +295,54 @@ The whitelist supports three entry formats, parsed via a `tool[:mode]` split:
 
 Adding a bare `*` or a `tool:` entry with an empty mode suffix is rejected by Admintools on add.
 
-Mode-scoping exists so a live drawer can expose a self-describing or read-only mode (e.g. `kfc_manifest`) without opening any write path on that tool. `zen_dojotools_finance`, for example, is scoped `zen_dojotools_finance:kfc_manifest` only — no live drawer can reach a finance write mode. See [Building a KFC — KF5](../kung_fu/building_a_kfc.md#kf5-self-registering-tools) for the self-registration flow that writes these entries.
+Mode-scoping exists so a live drawer can expose a self-describing or read-only mode (e.g. `kfc_manifest`) without opening any write path on that tool. `zen_dojotools_finance`, for example, is scoped `zen_dojotools_finance:kfc_manifest` only — no live drawer can reach a finance write mode. See [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract) for the self-registration flow that writes these entries.
+
+---
+
+## Expansions — `expand_drawer` and `collapse_drawer`
+
+An expansion gives a cabinet more room. `expand_drawer` moves a root drawer and its whole tree (`path` and every `path/...` child) into an expansion slot, and leaves one mount pointer per key in the source cabinet. Each drawer moves unchanged: value, meta and the drawer's own `acl`.
+
+**The rules:**
+
+- **An expansion mounts at a root drawer.** A nested path is refused.
+- **One expansion holds one drawer and its children.** A slot that already holds another drawer is refused with `target_holds_another_drawer`.
+- **A drawer expands once.** A drawer that is already expanded, or a tree that holds any expansion pointer, is refused before anything is written.
+- **An expanded drawer is a permanent redirect for its whole tree.** Reads and writes follow it, and so do children written after the move: they land in the expansion. `get` (children) and `list` show the cabinet and its expansion as one tree.
+- **Pointers are immutable.** `expand_drawer` creates them. Only `move`, `delete` and `collapse_drawer` remove them. `set_mount` and `remove_mount` refuse them, and they are never copied, moved or rewritten.
+- **An expansion is its host's.** It answers with the host cabinet's ACL, and a drawer's own `acl` travels with it (see [Access Control](#access-control-acl-v2)).
+
+Any root drawer that isn't a system drawer can be expanded; credential and approval drawers do not move. `lens_registry`, one of the household cabinet's biggest drawers, is a good candidate: lens register and unregister write through the central lens writer and read through the pointer, so the registry stays whole. One call moves at most 200 keys per root drawer. A bigger tree is refused with the fix: move some children under a new root drawer (`mode=move`), then expand each root.
+
+### `expand_drawer`
+
+| Field | Required | Meaning |
+|---|---|---|
+| `source_cabinet` | yes | The cabinet that holds the drawer |
+| `path` | yes | A root drawer (no `/`) |
+| `target_cabinet` | no | A free expansion slot. Omitted, FileCabinet picks one with room. |
+| `space_threshold` | no | Abort if the source cabinet stays at or above this percentage (default 85) |
+
+The call mounts the slot if it needs to, then merges the expansion stamp (`cabinet_class: expansion`, `hosted_by`) into the slot's VolumeInfo. The slot keeps its id, flags and acls. It copies the tree, verifies every key byte for byte, proves each read resolves through the source, and only then reports `success` with `moved_keys`, `bytes_moved` and the source cabinet's space before and after. Any failure rolls everything back.
+
+A bad target (not a slot, or a slot that belongs to another host) answers `status: error` with a `guarded:` reason. No room answers `abort` with `insufficient_target_space` or `no_expansion_slot_has_room`.
+
+### `collapse_drawer`
+
+Takes `source_cabinet` and `path`, and undoes an expansion:
+
+1. **Size preflight.** If the tree won't fit back in the source cabinet, the call is refused with `insufficient_source_space` before anything is written.
+2. **Copy back.** The children are copied over their pointers first, and the root last.
+3. **Verify.** Every key is compared byte for byte. A failure puts the pointers back and leaves the expansion untouched.
+4. **Teardown.** The expansion's copies are removed, the expansion stamp comes off VolumeInfo, and the slot is dismounted. `slot_torn_down` reports it. If the slot doesn't confirm its teardown, the answer is `warning`: the drawer is back and verified, and `expansion_sitrep` shows the slot.
+
+### Move, copy and delete in an expanded tree
+
+`get`, `list`, `move`, `copy` and `delete` work on the real drawers wherever they live. A destination under an expanded root lands in its expansion. Every write is size-checked per destination cabinet before anything is written, and a failed write is taken back. `move` and `delete` drop the source pointers. An operation that empties an expansion (moving or deleting the expanded root) tears it down, so no orphan is left behind.
+
+Softlinks inside an expanded tree are ordinary drawers. `set_mount` and `remove_mount` on a key under an expanded root act in the expansion that holds the tree. `delete` removes a softlink. `move` and `copy` refuse one as they refuse any mount (`force_action` carries the pointer as is). `expand_drawer` and `collapse_drawer` carry softlinks unchanged, and refuse one that would point at its own cabinet afterwards.
+
+**Upgrading:** a slot stamped by the older `expand_drawer` now answers with its host's ACL. The class stamped on the slot itself no longer applies.
 
 ---
 
@@ -293,6 +364,8 @@ Cross-stack copy and move are supported via `destination_stack`.
 
 ## Action Model
 
+`mode` names the action on both the agent-facing tool and the engine (`mode: get`, like every other tool). `action_type` is a legacy alias and still works, so existing callers are unchanged; new code uses `mode`, and `write_mode` for merge or replace.
+
 ### Action Aliases
 
 | Alias | Resolves to |
@@ -305,7 +378,7 @@ Cross-stack copy and move are supported via `destination_stack`.
 Delegates to `zen_dojotools_manifest`. Returns the full Cabinet manifest. Supports `show_hidden_volumes` and `show_stacks`.
 
 ### `get`
-Read a specific drawer. Returns `value`, `tags`, `updated_at`, and optionally `drawers` (immediate children) and `subdrawers` (full CabCeption paths) if the key has children.
+Read a specific drawer (alias `read`). Returns `value`, `tags`, `updated_at`, the drawer's expiry from `meta`, and optionally `drawers` (immediate children) and `subdrawers` (full CabCeption paths) if the key has children.
 
 Mount traversal is transparent — if the drawer is a VirtualDrawer, FC follows the chain and returns the resolved value with `mount_traversal` metadata. If it is a LiveDrawer with a warm cache hit, FC fires the tool call and returns the result.
 
@@ -313,32 +386,32 @@ Mount traversal is transparent — if the drawer is a VirtualDrawer, FC follows 
 List all non-system drawers in a volume. Supports `path_prefix` to filter by key prefix. Returns `key`, `title`, `description`, `created_at`, `updated_at` for each drawer.
 
 ### `create`
-Requires `path` and `value` (or `title`/`description`). Errors if the key already exists — use `upsert` or `force_action: true` to overwrite.
+Requires `path` and `value` (or `title`/`description`). Errors if the key already exists — use `upsert`, or `force_action: true` to overwrite the whole drawer.
 
 ### `update`
-Full overwrite of an existing drawer. Default mode is `replace`. Pass `merge: true` to force deep-merge instead. Errors if the key does not exist — use `upsert` or `force_action: true` to create-if-missing.
+Full overwrite of an existing drawer. Default `write_mode` is `replace`. Pass `write_mode: merge` to deep-merge instead. Answers `not_found` and logs a warning if the key does not exist — use `upsert`, or `force_action: true` to create it.
 
 ### `upsert`
-Creates if absent, updates if present. Default mode is `merge` (deep-merge into existing value). Pass `merge: false` or use `mode: replace` to force replace. Atomic — no separate existence check needed from the caller.
+Creates if absent, updates if present (alias `write`). Default `write_mode` is `merge` (deep-merge into existing value). Pass `write_mode: replace` to replace. Atomic — no separate existence check needed from the caller.
 
 ### `delete`
-Removes the drawer, prunes `_label_index`, verifies deletion, then cascades to all children via prefix scan.
+Removes the drawer, prunes `_label_index`, verifies deletion, then cascades to all children via prefix scan. The answer counts the children removed in `children_deleted`.
 
 ### `move`
-Transfers a drawer to `destination_path` (same cabinet) or `destination_volume_entity_id` (cross-cabinet). Cascades to all children. Each child write is verified before the source child is deleted. Label index is migrated: source index is pruned, destination index is updated with moved labels.
+Transfers a drawer to `destination_path` (same cabinet) or `destination_volume_entity_id` (cross-cabinet). A destination that resolves to the source key refuses with `code: same_key`. Cascades to all children. The drawer and every child keep their `meta` and their own `acl`, so a move never declassifies a drawer. Each child write is verified before the source child is deleted. Label index is migrated: source index is pruned, destination index is updated with moved labels.
 
 **Mounted drawer protection:** If the drawer is a VirtualDrawer or LiveDrawer, `move` returns `status: error, code: mounted_drawer` with the mount type. Use `set_mount` at the destination key + `delete` at the source instead. Pass `force_action: true` to bypass — the full mount config transfers intact (the mount_point structure moves with the entry, not just `.value`). Without `force_action`, the operation is hard-blocked; a plain move without it would silently strip the mount config, leaving a dead entry at the destination.
 
 ### `copy`
-Copies a drawer to `destination_path`. Cascades subtree. If no `tags` are supplied, the source drawer's existing labels are inherited at the destination.
+Copies a drawer to `destination_path`, or into another cabinet with `destination_volume_entity_id`. Cascades the subtree; a cross-cabinet copy writes the children into the destination. The drawer and every child keep their `meta` (expiry) and their own `acl`, so a copy never declassifies a drawer. If no `tags` are supplied, the source drawer's existing labels are inherited at the destination. A destination write the cabinet never confirms answers `write_unverified`, and the copy then skips the labels and children.
 
 **Mounted drawer protection:** Same guard as `move`. Copying a mount without `force_action: true` is blocked to prevent silent mount config loss at the copy destination.
 
 ### `relabel`
-Updates the `_label_index` for an existing drawer without touching its value. Use this to fully replace a drawer's labels rather than adding to them.
+Updates the `_label_index` for an existing drawer without touching its value. Use this to fully replace a drawer's labels rather than adding to them. Takes a key an expansion holds.
 
 ### `search`
-Label match via `_label_index` (pass `anchor_ids`) plus full-text scan against key, title, content, and description (pass `query`). Both filters can be combined.
+Label match via `_label_index` (pass `anchor_ids`) plus full-text scan against key, title, content, and description (pass `query`). Both filters can be combined. Search reads the real drawers behind an expanded root, and a label match finds nested (`a/b`) drawers.
 
 ### `clone`
 Copies the full content of one cabinet into another. Health checks run on both source and destination before any write.
@@ -363,7 +436,7 @@ Creates a VirtualDrawer or LiveDrawer at the specified key.
 - Blocked if the key exists and is not already a mount point, unless `force_action: true`
 
 ### `remove_mount`
-Removes a mount point drawer. Errors if the key does not exist or is not a mount point.
+Removes a mount point drawer. Errors if the key does not exist or is not a mount point. Refuses the pointers `expand_drawer` made; use `collapse_drawer`, `move` or `delete`.
 
 ### `mount_cabinet`
 Transitions a cabinet from `online_unmounted` to `online_mounted`. Idempotent if already mounted.
@@ -375,6 +448,9 @@ Transitions a cabinet to `online_unmounted` (puts it in the stacks). Blocked if:
 
 ### `set_cabinet_ro`
 Stamps `cabinet_ro: true` in the cabinet's `AI_Cabinet_VolumeInfo.flags`. Blocked on `sensor.zenos_system_cabinet`.
+
+### `expand_drawer` / `collapse_drawer`
+Moves a root drawer and its tree into an expansion slot, and back. See [Expansions](#expansions--expand_drawer-and-collapse_drawer).
 
 ### `inspect`
 Returns the Lens Bus registry entry for the FileCabinet provider. Surfaces subdrawers inline when called on a CabCeption path.
@@ -424,7 +500,60 @@ All outputs follow a consistent envelope:
 }
 ```
 
-Fields present depends on the action. `value` is present on `get`. `write_verified` is present on writes. `has_children` and `subdrawers` are present only when children exist.
+Fields present depends on the action. `value` is present on `get`. `write_verified` is present on writes; an unconfirmed write answers `status: error` with `code: write_unverified`. `has_children` and `subdrawers` are present only when children exist. `children_deleted` is present on delete, and `acl_audit` only when the ACL gate would deny or ask (see below).
+
+---
+
+## Access Control (ACL v2)
+
+FileCabinet enforces the ACL record Identity writes: VolumeInfo `acls` `{v: 2, owner, prime, partners, ops}`, with cabinet GUIDs as principals, plus the cabinet's `class`. `ops` holds one rule per op class, `{cert, ack, who}`. `who` may list GUIDs, `*`, `@owner`, `@prime`, `@partner`, `@self`, `@internal` (any tool calling the engine) or `@tool:<script>`; an empty `who` means admin door only. A drawer's envelope `acl` may set `ops` only.
+
+Each op resolves on its own: a built-in lock, else the drawer's rule, else the cabinet's, else the default row for the cabinet's class. The class defaults and the built-in locks (`zen_ai_certs`, `integrations_config` and `alert_response_*` take writes only from tools; `cert_admin_console_bypass` and `fc_acl_mode` only from the admin door) are tabled in [zenos_cabinets.jinja](../custom_templates/zenos_cabinets_jinja.md#acl-v2). A caller matched by `@tool:<script>` passes on that tool's own gates, with no rule cert or ack.
+
+| Op | Actions |
+|---|---|
+| `r` | get, list, search and other reads |
+| `w` | create, update, upsert, relabel, set_mount, the copy destination |
+| `d` | delete, move, remove_mount |
+| `a` | mount_cabinet, dismount_cabinet, set_cabinet_ro, expand_drawer, collapse_drawer, and any unknown action |
+
+**Every hop is checked.** Each pointer a mount chain passes needs `r`, and the drawer the chain ends on needs the action's op. A caller that can't read a pointer doesn't get past it. `expand_drawer` checks `a` on the source.
+
+**A pointer answers with its cabinet's ACL,** never a drawer `acl`. **An expansion answers with its host's ACL** (one hop; the answer names it in `inherited_from`). An expansion can't have an ACL of its own: Identity's `acl_set` and `take_ownership` refuse it and name the host. A drawer keeps its own `acl` wherever it lives, so a drawer-scope `acl_set` on an expanded key writes it on the copy in the expansion.
+
+**A fresh install enforces; an upgraded one audits.** The gate's mode is the system cabinet's `fc_acl_mode` drawer, `{mode: audit|enforce}`. Only the admin door writes it, and a missing or unreadable drawer reads as audit. When Flynn sets up the system cabinet (a fresh install, or after `reset_all`), it writes the drawer as audit with `arm_on_acl_v2: true`, and Identity's `acl_migrate` turns an armed drawer to enforce once the ACL schema is current. An upgraded install has no drawer, so it stays in audit until an admin sets it.
+
+| Mode | A deny | A rule that asks for a live ack |
+|---|---|---|
+| `audit` (default) | Let through; logged | Let through; logged |
+| `enforce` | Refused: `status: error`, `guarded: the ACL denies ...` | Identity's `request_live_ack` asks the household admin every time (the console override stands in). Not granted: `status: denied` |
+
+Either way, when the gate would deny or would ask, it logs `fc_acl_audit` (with the mode) and the answer carries:
+
+```json
+"acl_audit": {
+  "mode": "audit|enforce",
+  "action": "upsert",
+  "origin": "agent|internal",
+  "checks": [{"op": "w", "target": "...", "source": "builtin|drawer|cabinet|default", "via": "...", "why": "..."}],
+  "would_deny": false,
+  "reasons": [],
+  "would_ack": false
+}
+```
+
+To turn enforcement on, run the switch from a Home Assistant console session (Developer Tools). It refuses a call no user started, so no agent, script or automation can flip it:
+
+```yaml
+action: script.zen_admintools_prompt_loader
+data:
+  mode: fc_acl_mode
+  action_type: enforce   # status | audit | enforce
+```
+
+`status` answers the mode, whether the drawer is set, and whether a fresh install armed it. `audit` is the rollback. Setting it by hand drops the arm flag, so your choice stands. The answer carries `was` and the `console_user` that set it. The admin door's own gate is separate and still audit only.
+
+Read the record only through the CABS macros (`acl_record`, `acl_for`, `acl_check`); see [zenos_cabinets.jinja](../custom_templates/zenos_cabinets_jinja.md). Identity's `acl_migrate`, `acl_set` and `take_ownership` write it; see [Identity](zen_dojotools_identity_readme.md).
 
 ---
 
@@ -463,7 +592,7 @@ Drawers in a cabinet have three visibility tiers:
 |------|-------------|
 | Active / described | Regular drawer with `title` or `description` in the envelope; surfaced by list and inspect |
 | Hidden / undescribed | Regular drawer with no title/description; surfaced by list but not featured in summaries |
-| System-protected | Keys prefixed with `_` (e.g. `_label_index`) or `AI_Cabinet_VolumeInfo`; require `force_action: true` to write; `sensor.zenos_system_cabinet` is hard read-only |
+| System-protected | `AI_Cabinet_VolumeInfo`, `meta`, `_label_index` and `_zen_relationships` are refused (`protected_drawer`); write them through the admin door. `sensor.zenos_system_cabinet` is hard read-only |
 
 ---
 
@@ -502,7 +631,7 @@ Drawers support two GC fields set on write:
 | `no_autoexpire` | `true` suppresses auto-expiry even past `expires_after` |
 | `no_autorecycle` | `true` suppresses the auto-recycle pass |
 
-These fields are stored in the drawer envelope by the Sutra. GC runs independently; FC does not enforce expiry at read time.
+These fields are stored in the drawer's `meta` by the Sutra and reported by `get`. GC runs independently; FC does not enforce expiry at read time.
 
 ### GC Operator (`zen_dojotools_kata_gc`)
 
@@ -539,7 +668,10 @@ Writes blocked when:
 - per-drawer `meta.ro` flag
 
 ### Write Verification
-Every write uses `wait_template` (30-second timeout) to confirm the updated timestamp is visible in state before returning. `write_verified: true` in the response means the post-write read confirmed the change landed.
+Every write uses `wait_template` (30-second timeout) to confirm the updated timestamp is visible in state before returning. `write_verified: true` in the response means the post-write read confirmed the change landed. Otherwise the answer is `status: error`, `code: write_unverified`, and a warning is logged.
+
+### Cabinet Guards
+The cabinet itself refuses a write past its 128 KB size cap, and a write to a cabinet whose contents are unknown at boot, leaving the cabinet as it was. FileCabinet answers `write_unverified`.
 
 ### Move Safety
 For `move`, the destination write is verified before the source is deleted. If the destination write times out, the operation returns `status: partial` and leaves the source intact. No data loss on timeout.
@@ -559,14 +691,14 @@ Malformed JSON always returns a structured error — never a partial write.
 
 ### List drawers in a volume
 ```yaml
-action_type: list
+mode: list
 volume_entity_id: sensor.household_cabinet
 stack: cabinet
 ```
 
 ### Read a drawer
 ```yaml
-action_type: get
+mode: get
 volume_entity_id: sensor.household_cabinet
 path: favorite_color
 stack: cabinet
@@ -574,7 +706,7 @@ stack: cabinet
 
 ### Read a CabCeption nested drawer
 ```yaml
-action_type: get
+mode: get
 volume_entity_id: sensor.my_cabinet
 path: character_sheet/inventory
 stack: cabinet
@@ -582,7 +714,7 @@ stack: cabinet
 
 ### Read drawers by label
 ```yaml
-action_type: search
+mode: search
 volume_entity_id: sensor.household_cabinet
 anchor_ids: "profile, preferences"
 stack: cabinet
@@ -590,7 +722,7 @@ stack: cabinet
 
 ### Create a drawer
 ```yaml
-action_type: create
+mode: create
 volume_entity_id: sensor.household_cabinet
 path: favorite_color
 value: "blue"
@@ -600,7 +732,7 @@ stack: cabinet
 
 ### Upsert a drawer (atomic create or update)
 ```yaml
-action_type: upsert
+mode: upsert
 volume_entity_id: sensor.household_cabinet
 path: settings
 value:
@@ -612,18 +744,18 @@ stack: cabinet
 
 ### Update with explicit replace mode
 ```yaml
-action_type: update
+mode: update
 volume_entity_id: sensor.household_cabinet
 path: settings
 value:
   theme: light
-merge: false
+write_mode: replace
 stack: cabinet
 ```
 
 ### Delete a drawer (cascades to children)
 ```yaml
-action_type: delete
+mode: delete
 volume_entity_id: sensor.my_cabinet
 path: character_sheet
 force_action: true
@@ -632,7 +764,7 @@ stack: cabinet
 
 ### Move a drawer (same cabinet)
 ```yaml
-action_type: move
+mode: move
 volume_entity_id: sensor.source_cabinet
 path: settings
 destination_path: settings_archive
@@ -641,7 +773,7 @@ stack: cabinet
 
 ### Move cross-cabinet
 ```yaml
-action_type: move
+mode: move
 volume_entity_id: sensor.source_cabinet
 path: settings
 destination_path: settings
@@ -651,7 +783,7 @@ stack: cabinet
 
 ### Copy a drawer
 ```yaml
-action_type: copy
+mode: copy
 volume_entity_id: sensor.household_cabinet
 path: template_profile
 destination_path: user_profile_copy
@@ -660,7 +792,7 @@ stack: cabinet
 
 ### Relabel a drawer
 ```yaml
-action_type: relabel
+mode: relabel
 volume_entity_id: sensor.household_cabinet
 path: my_drawer
 tags: "profile, active"
@@ -669,7 +801,7 @@ stack: cabinet
 
 ### Set a VirtualDrawer (cross-cabinet mount)
 ```yaml
-action_type: set_mount
+mode: set_mount
 volume_entity_id: sensor.my_cabinet
 path: shared_config
 target_guid: "abc-123-def-456"
@@ -678,7 +810,7 @@ stack: cabinet
 
 ### Set a LiveDrawer (tool-call mount)
 ```yaml
-action_type: set_mount
+mode: set_mount
 volume_entity_id: sensor.my_cabinet
 path: live_inventory
 fc_args: >
@@ -692,7 +824,7 @@ stack: cabinet
 
 ### Remove a mount point
 ```yaml
-action_type: remove_mount
+mode: remove_mount
 volume_entity_id: sensor.my_cabinet
 path: shared_config
 stack: cabinet
@@ -700,7 +832,7 @@ stack: cabinet
 
 ### Clone a cabinet (content copy)
 ```yaml
-action_type: clone
+mode: clone
 volume_entity_id: sensor.source_cabinet
 destination_cabinet: sensor.dest_cabinet
 stack: cabinet
@@ -709,7 +841,7 @@ stack: cabinet
 ### Clone with GUID transfer (Highlander mode)
 Moves identity ownership. Source is cleared and marked for restamping.
 ```yaml
-action_type: clone
+mode: clone
 volume_entity_id: sensor.source_cabinet
 destination_cabinet: sensor.dest_cabinet
 transfer_guid: true
@@ -719,40 +851,40 @@ stack: cabinet
 
 ### Mount a cabinet
 ```yaml
-action_type: mount_cabinet
+mode: mount_cabinet
 volume_entity_id: sensor.expansion_cabinet_1
 stack: cabinet
 ```
 
 ### Dismount a cabinet
 ```yaml
-action_type: dismount_cabinet
+mode: dismount_cabinet
 volume_entity_id: sensor.expansion_cabinet_1
 stack: cabinet
 ```
 
 ### System-wide health check
 ```yaml
-action_type: health
+mode: health
 stack: cabinet
 ```
 
 ### Single-volume health check
 ```yaml
-action_type: health
+mode: health
 volume_entity_id: sensor.household_cabinet
 stack: cabinet
 ```
 
 ### Full cabinet manifest
 ```yaml
-action_type: manifest
+mode: manifest
 stack: cabinet
 ```
 
 ### Wiki read (stack=wiki)
 ```yaml
-action_type: get
+mode: get
 path: /projects/my-page
 stack: wiki
 ```
@@ -763,19 +895,20 @@ stack: wiki
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `action_type` | yes | Action to perform. Aliases: `read`=`get`, `write`=`upsert`, `scan`=`list` |
+| `mode` | yes | Action to perform. Aliases: `read`=`get`, `write`=`upsert`, `scan`=`list`. `action_type` is the legacy name and still works |
+| `write_mode` | no | `merge` (deep-merge into the existing value) or `replace`. Omit for the action's default: `update` replaces, the rest merge |
 | `stack` | no | `cabinet` (default) \| `wiki` \| `all` |
-| `volume_entity_id` | for cabinet | Real cabinet sensor entity_id (e.g. `sensor.zenos_expansion_cabinet_1`). Do not pass resolver sensors. |
+| `volume_entity_id` | for cabinet | Real cabinet sensor entity_id (e.g. `sensor.zenos_expansion_cabinet_1`). Do not pass resolver sensors. A one-item list, or a JSON list string (how an MCP client sends an array), is read as its first entry. |
 | `path` | varies | Drawer key (cabinet) or page path (wiki). Segments slugified individually; `/` preserved as CabCeption separator |
 | `value` | for writes | Drawer content. Native dict/list/string/number — do NOT `\| tojson` before passing |
 | `title` | for create/upsert | Document or drawer title |
 | `description` | no | Short description |
-| `merge` | no | `true` = force deep-merge; `false` = force replace; omit = action default |
+| `merge` | no | Legacy: `true` = deep-merge, `false` = replace. Use `write_mode` |
 | `tags` | no | HA label names. Comma-separated string or list. Additive on write; use `relabel` to fully replace |
 | `create_label` | no | `true` = auto-create HA labels not yet in registry |
 | `destination_path` | for move/copy | Target key (same-stack) |
 | `destination_stack` | no | `wiki` or `cabinet` for cross-stack copy/move |
-| `destination_volume_entity_id` | for cross-cab | Target cabinet entity for cross-cabinet move/copy |
+| `destination_volume_entity_id` | for cross-cab | Target cabinet entity for cross-cabinet move/copy. A list or JSON list string is read as its first entry, as for `volume_entity_id` |
 | `destination_cabinet` | for clone | Target cabinet entity for clone |
 | `path_prefix` | no | Filter `list` results to keys starting with prefix |
 | `query` | for search | Text to match against key, title, content, description |
@@ -841,7 +974,7 @@ Check `_h.get('writeable', true)` in the health snapshot. A cabinet that is `onl
 Two drawers are pointing at each other via `mount_point`. Use `remove_mount` to clear one of the pointers and re-wire the chain. The traversal aborts at depth 8 even without a strict loop.
 
 ### LiveDrawer returns `tool_call_blocked`
-The `fc_args.action_type` or `fc_args.tool` is not in the `fc_mount_callout_whitelist` stored in `sensor.zenos_system_cabinet`. Check the whitelist value in Developer Tools, add the tool to the allowed list, then retry.
+The `fc_args.action_type` or `fc_args.tool` is not in the `fc_mount_callout_whitelist` stored in `sensor.zenos_system_cabinet`. Check the whitelist value in Developer Tools, add the tool to the allowed list, or have the tool declare the mode with a cert that allows stage `l` (see above), then retry.
 
 ### dismount_cabinet blocked: pipeline is live
 Turn off the summarizer pipeline switches first. The error message names the specific switches that are on. Use `zen_dojotools_systemtools` (tool=select_control, mode=toggle) or the HA helper UI to disable them, then retry the dismount.
@@ -905,6 +1038,10 @@ Stored as a drawer value (JSON):
 - Output truncated at 8KB (`truncated: true` + `dropped_sources` list in response)
 - Any output >2KB: response includes `virtual_drawer_hint` with a call shape to save the result as a LiveDrawer
 
+### Access
+
+`weave` and `weave_preview` check read (`r`) on every source drawer and every nested definition for the caller, the same check a `get` runs. Denied sources are logged to `fc_acl_audit`. With `fc_acl_mode` enforce their content is never read, and each one is listed in `errors` as `acl_denied`.
+
 ### Tapestry Implementation Notes
 
 **CabCeption path keys must not be slugified whole.** `key | lower | slugify` converts `/` to `-` — a lookup for `scratch/zen_os_snapshot` becomes `scratch-zen-os-snapshot` and misses. Correct pattern: `key.split('/') | map('lower') | map('slugify') | join('/')`. Applies at all weave compile pass sites (definition load, passes 0/1/2 for both drawer and nested weave reads).
@@ -924,7 +1061,7 @@ Tapestry is how you build a composed knowledge surface from multiple live drawer
 | Mode | What It Does |
 |------|-------------|
 | `fleet` | Lists all known cabinet volumes with health, mount state, GUID, and capacity. System-wide view. |
-| `expansion_sitrep` | Returns the status of all expansion cabinet mounts: which are online_mounted, which are online_unmounted (stacks), which have pending mount activation. |
+| `expansion_sitrep` | Returns the status of all expansion cabinet mounts: which are online_mounted, which are online_unmounted (stacks), which have pending mount activation, what each slot holds, and how full it is. |
 
 ---
 

@@ -311,7 +311,6 @@ Identity cabinets are normal cabinets plus role-specific drawers and membership 
 | Profile drawer | `_user_profile.value` mapping |
 | Profile identity | At least one usable display field: `name`, `preferred_name`, or `first_name` |
 | Membership | `AI_Cabinet_VolumeInfo.value.default_family_guid` when joined to a family |
-| Family ACL | `AI_Cabinet_VolumeInfo.value.acls.family[]` mirrors family membership |
 | Presence consent | `_user_profile.value.tracking.gps_zone` / `.room` explicitly true before Identity returns those fields |
 
 Minimal profile payload:
@@ -340,7 +339,7 @@ Minimal profile payload:
 | VolumeInfo | Stable GUID, validation string, family flag where present |
 | Profile drawer | `_family_profile.value` mapping when named metadata exists |
 | Members drawer | `members.value` mapping with `users`, `ai_users`, and `families` lists |
-| Principal slots | `AI_Cabinet_VolumeInfo.value.acls.owner` and optional `acls.partner[]` |
+| Principal slots | `AI_Cabinet_VolumeInfo.value.acls.owner` (primary user GUID) and optional `acls.prime` and `acls.partners` |
 | Nesting | Sub-families may appear in `members.families`; security resolution follows depth 2 only |
 
 Minimal members payload:
@@ -365,8 +364,8 @@ Minimal members payload:
 | VolumeInfo | Stable GUID, validation string, household/system flags where present |
 | Profile drawer | `_household_profile.value` mapping with household name/address fields as known |
 | Members drawer | `members.value.users`, `.ai_users`, `.families` lists |
-| Head of Household | `AI_Cabinet_VolumeInfo.value.acls.owner` points to the HoH user cabinet |
-| Prime AI | `AI_Cabinet_VolumeInfo.value.acls.partner[]` contains one `role: prime` AI entry |
+| Head of Household | `AI_Cabinet_VolumeInfo.value.acls.owner` holds the HoH user cabinet's GUID |
+| Prime AI | `AI_Cabinet_VolumeInfo.value.acls.prime` holds the prime AI cabinet's GUID |
 | Manifest | `zen_identity_manifest.value` is rebuilt after membership changes |
 
 Minimal household profile:
@@ -397,7 +396,7 @@ Minimal household profile:
 | VolumeInfo | Stable GUID, validation string, AI user flag where present |
 | Essence drawer | `zenai_essence.value` in three-layer `core / jacket / companion` shape |
 | Persona name | `zenai_essence.value.jacket.name` non-empty and not the placeholder |
-| Prime/partner links | `AI_Cabinet_VolumeInfo.value.acls.partner[]` for delegation links |
+| Prime/partner links | `AI_Cabinet_VolumeInfo.value.acls.partners` (GUIDs) for delegation links |
 
 See [Profile Editor](../scripts/zen_dojotools_profile_readme.md) for the canonical writer and [Identity](../scripts/zen_dojotools_identity_readme.md) for membership rules.
 

@@ -74,8 +74,8 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 | `analyze` | Post-dock map analysis — updates room last_cleaned, broadcasts completion event |
 | `briefing` | Pre-run announcement ~30 min before a schedule fires. Checks `autovac_calendar` label — "AUTOVAC HOLD" events in the 4-hour run window block the run; other events appended as soft warnings in the message. |
 | `handle_ack` | Process Postman push notification ack — go now, skip this run, or pause all day |
-| `maintenance_set` | Mark the robot out of service. `input_json`: `{reason, ordered_part, eta, note}`. Opens a Radar ticket, or amends the open one. Requires `autovac_operate`. See [Maintenance status](#maintenance-status). |
-| `maintenance_clear` | Return the robot to service by closing its open maintenance ticket. Requires `autovac_operate`. |
+| `maintenance_set` | Mark the robot out of service. `input_json`: `{reason, ordered_part, eta, note}`. Opens a Radar ticket, or amends the open one. Requires `zenos.autovac.operate`. See [Maintenance status](#maintenance-status). |
+| `maintenance_clear` | Return the robot to service by closing its open maintenance ticket. Requires `zenos.autovac.operate`. |
 | `maintenance_get` | Current maintenance status: whether an open maintenance ticket exists, and its reason, ordered part, and ETA. |
 | `nightly_reset` | Reset daily run flags and pause state (call at midnight) |
 | `morning_reset` | Clear `is_ready` flags after morning run starts |

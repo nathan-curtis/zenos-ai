@@ -1,6 +1,6 @@
 # Understanding the Dojo, Kung Fu, and the Action Pipeline
 
-### A plain-language guide to ZenOS-AI KF4
+### A plain-language guide to ZenOS-AI KF6
 
 ---
 
@@ -8,7 +8,7 @@
 
 Your home has systems. The water softener. The security sensors. The hot tub. Energy usage. Each one generates a stream of state changes that — on their own — mean nothing to a language model.
 
-**KF4 is how ZenOS-AI turns that noise into signal.**
+**KF6 is how ZenOS-AI turns that noise into signal.**
 
 It does this with three things working together:
 
@@ -62,13 +62,14 @@ That's it. That drawer is the entire spec for how ZenOS-AI understands your wate
 |-------|--------------|
 | `friendly_name` | Human-readable name |
 | `label` | The HA label that defines which entities belong to this component |
-| `meta.enabled` | Whether this component is active (`true` / `false`). Replaces the deprecated `master_switch` field. |
+| `meta.enabled` | Whether this component is active (`true` / `false`). A disabled component stays out of the agent's prompt; its last kata is kept. Replaces the deprecated `master_switch` field. |
 | `trigger_subscriptions` | Which Scheduler events cause this component to summarize |
 | `delay_seconds` | How long to wait after trigger before dispatching (lower = higher priority) |
 | `pipeline_tier` | Dispatch priority: `keeper` (default), `ambient` (low-priority), `super` (reserved), `system` (infrastructure). See below. |
 | `staleness_minutes` | How old the kata can get before the drain router forces a re-run. Default: 1440 min (24 h). |
 | `kata_key` | Where to write the summary output |
 | `component_summary` | Instructions the AI reads when summarizing this component |
+| `meta.requires` | Optional cert and minimum level the household's agent needs, granted for the background (stage `s`), for this component to run. Unmet, the run is refused and the component stays out of the prompt. Leave it empty unless you need it. |
 
 The `component_summary` is the most important field. It's your chance to tell the AI what *normal* looks like, what *concerning* looks like, and what specific entities need special interpretation.
 
@@ -111,14 +112,18 @@ The **Ninja Summarizer** is the ZenOS-AI script that runs for each Kung Fu Compo
 Here's what it does, step by step:
 
 ```
-1. Reads the KFC drawer (the spec you wrote)
-2. Resolves the label → live entity list via HyperIndex
-3. Reads the last summary for this component (for continuity)
-4. Builds a prompt: spec + live data + prior summary + trigger context
-5. Sends to your language model
-6. Model writes a compact, structured Kata entry
-7. Kata is stored in the Kata Cabinet under kata_key
+1. Runs as the agent responsible for your household (it must be onboarded)
+2. Reads the KFC drawer (the spec you wrote)
+3. Resolves the label → live entity list via HyperIndex (or calls the seed, if the tool declares that mode)
+4. Reads the last summary for this component (for continuity)
+5. Builds a prompt: spec + live data + prior summary + trigger context
+6. Sends to your language model
+7. Model writes a compact, structured Kata entry
+8. Kata is stored in the Kata Cabinet under kata_key
+9. If the kata calls for action, acts only with a cert granted for the background
 ```
+
+**Since 2026.11.0 the pipeline runs as someone.** If the household's agent isn't onboarded, summaries pause and you get a notification saying why. A seed must be a mode its tool declares, or the run stops before the model is called. And an action at the end of a run (usually a Postman notification) needs a cert the agent holds for the background: one phone approval of `zenos_agent_autonomous` covers it. Without it the action doesn't happen, and the kata says what to grant. See [Building a KFC: the security contract](building_a_kfc.md#kf6-the-security-contract-2026110).
 
 A **Kata** is a compact, structured summary of one component at one moment in time. It captures:
 
@@ -170,7 +175,7 @@ No Scheduler changes. No code. Five steps.
 
 **Step 1 — Write the drawer**
 
-Use `zen_dojotools_scribe` to press a new drawer into the Dojo Cabinet. Run with `mode=schema` first — it returns the live `kfc_template` with all required fields.
+Use `zen_dojotools_scribe` to press a new drawer into the Dojo Cabinet. Run with `mode=schema` first — it returns the live `kfc_template` with all required fields. (If a tool owns the domain, the tool can declare the component itself instead: see [Building a KFC](building_a_kfc.md#kf6-two-ways-in-one-contract).)
 
 **Step 2 — Create the label**
 
@@ -198,11 +203,15 @@ Satisfied? Do nothing. The next Scheduler tick will find your component in the D
 
 ## Custom hardware triggers
 
-The Scheduler ships with a standard set of triggers (time patterns, home mode changes, door/lock/window state changes, etc.). Your component subscribes to any combination of those by listing their IDs in `trigger_subscriptions`.
+The Scheduler ships with a standard set of triggers (time patterns, home mode changes, door/lock/window state changes, etc.). Your component subscribes to any combination of those by listing their IDs in `trigger_subscriptions`. `zen_dojotools_scribe mode=list_triggers` lists every one that's registered.
 
-But what if you want your component to summarize when *your* specific hardware does something — a Withings sleep sensor, a specific flow sensor, a custom device?
+**Try a label first.** Since 2026.11.0, six triggers fire on a label instead of an entity: `zen_leak`, `zen_smoke`, `zen_door`, `zen_power`, `zen_appliance` and `alarm_panel`. Label a leak sensor `zen_leak`, subscribe your component to `zen_leak`, and it runs when the sensor gets wet. No YAML, no reload. See [Triggers](building_a_kfc.md#triggers).
 
-The recommended pattern is a dedicated trigger file per KFC. Keep it in your installer's custom packages directory (outside `packages/zenos_ai/` — it's personal, never commit it to the shared repo):
+**Shipping a component that owns its triggers?** Put them in the component's own package file as a trigger pack that registers itself, and make it label-driven so it works in any house. See [Triggers](building_a_kfc.md#triggers).
+
+But what if you want your component to summarize when *your* specific hardware does something: a sleep sensor, a specific flow sensor, a custom device?
+
+Wire it with a small trigger file per KFC. It names your entity IDs, so keep it in your installation's own packages directory (outside `packages/zenos_ai/`), never in the shared repo. A trigger that names a label can ship; a trigger that names an entity ID is personal.
 
 ```yaml
 # packages/your_family/kfc_trigger_<component>.yaml
@@ -251,13 +260,13 @@ Get the name right, then copy-paste it. Don't type both independently.
 
 ## The living spec
 
-The `kung_fu` drawer in the Dojo Cabinet is the canonical KF4 component contract — maintained by the system, readable by Friday, and always authoritative. If you're ever unsure about the schema, read it:
+The `kfc_template` drawer in the Dojo Cabinet is the canonical KF6 component contract — maintained by the system, readable by Friday, and always authoritative. If you're ever unsure about the schema, read it:
 
 ```
-zen_dojotools_index → key: kung_fu → Dojo Cabinet
+zen_dojotools_scribe mode=schema
 ```
 
 ---
 
-*ZenOS-AI KF4 1.4.0 — 2026-04-14*
+*ZenOS-AI KF6 — 2026.11.0 'This Is Spinal Tap'*
 *Source: Nyx (live system observation), Cayt (dev)*

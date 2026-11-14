@@ -43,17 +43,21 @@ The topology is a graph other tools walk.
 
 Here is the topology answering a question a floor plan would:
 
-<!-- screenshot: ch09_egress.png -->
-> **Screenshot to come.** Friday asked for the way out of a bedroom with smoke in the kitchen. The route comes from portals and adjacency, not from a generic answer. Real 2026.10.0 output; personal details redacted.
-<!-- /screenshot -->
+<p align="center">
+  <img src="images/ch09_egress.png" width="420" alt="Asked how to get out of the house from the master bedroom with smoke reported in the kitchen, Friday says to leave by the bedroom's casement window if it is safe to open, noting its recorded drop; to avoid the front hall and garage, which lead toward the kitchen; to meet at the front yard at the end of the driveway and call 911; and, if the way is blocked, to close the bedroom door, stay low, and call 911 with their exact location." />
+</p>
+
+*Friday asked for the way out of a bedroom with smoke in the kitchen. The answer is specific to this house: the bedroom's window is a recorded exit with its drop, the hall and garage are ruled out because they connect toward the kitchen, and the meeting place is the household rally point. That comes from portals, adjacency and the room's recorded exits, not from a generic fire-safety answer. Real 2026.11.0 output, November 2026; the window's direction and drop height blurred.*
 
 **Propagation.** ZenLux's bleed walks portals outward from a room and uses each portal's light transmission to decide whether and how strongly a scene carries into the next room (Chapter 25 covers REFLEX, which is separate). An archway propagates. A closed door does not.
 
 **Emergency.** `mode=emergency` combines topology with live state into a crisis snapshot: exits, safety equipment in each room, hazards, the household rally point, and scenario-specific guidance.
 
-**Context.** `mode=get` returns a room's topology together with live context slices, each requested explicitly with `context_slices`: `+light`, `+climate`, `+covers`, `+media`, `+topo` (open doors and windows), `+appliances`, `+inventory`, `+chores`, `+tasks`, `+calendar`, `+wiki`, `+tickets`. Each slice comes from the domain tool that owns it rather than from Room Manager re-deriving it. A room's `digest` (chores due, tickets open, notifications pending) is always included.
+**Context.** `mode=get` returns a room's topology together with live context slices, each requested explicitly with `context_slices`: `+light`, `+climate`, `+covers`, `+media`, `+topo` (open doors and windows), `+appliances`, `+inventory`, `+chores`, `+tasks`, `+calendar`, `+wiki`, `+tickets`. Each slice comes from the domain tool that owns it rather than from Room Manager re-deriving it, and the slices that live outside the house (wiki pages, tickets, the catalog) are Lens Bus queries anchored on the room. Chapter 17 covers how slices and the Lens Bus make up the half of the twin Friday reaches for. A room's `digest` (chores due, tickets open, notifications pending) is always included.
 
 `mode=home_overview` rolls every room up into one whole-house snapshot, which is what the prompt uses for Friday's sense of the house as a whole (Chapter 17).
+
+These modes are also how Friday finds her way in. Room Manager is the root for "where" (Chapter 12), and a bare call answers with its own question words: `where` is `home_overview`, `where_room` is `get`, `route` is `pathfind`, and `emergency` is the crisis snapshot. When the question is about a geofenced zone instead of a room, the root points on to Zones.
 
 ## 9.3 Rooms find their things by shared labels
 
@@ -61,7 +65,7 @@ Room Manager does not require every to-do list or calendar to be assigned to a r
 
 ## 9.4 Structure edits are certified
 
-Changing the shape of the house is gated. Structural modes (`set`, `setup`, `area_create`, `area_update`, `link`, `unlink`, `boundary_link`, `boundary_unlink`, zone and landmark edits) require the `room_topology_edit` certification at level 1, and `area_delete` requires level 2. Reading the topology is open.
+Changing the shape of the house is gated. Structural modes (`set`, `setup`, `area_create`, `area_update`, `link`, `unlink`, `boundary_link`, `boundary_unlink`, zone and landmark edits) require the `zenos.spatial.room_topology_edit` certification at level 1, and `area_delete` requires level 2. Reading the topology is open.
 
 That completes the graph: what exists, what the system remembers, and how the space fits together. The next question is how much of it the agent should be shown directly.
 

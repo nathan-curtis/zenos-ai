@@ -79,7 +79,7 @@ Taskmaster demonstrates the intended shape. It exposes task-oriented modes, choo
 #### DojoTool best practices
 
 1. Design modes around user or system intent, not HTTP verbs or implementation details.
-2. Use `mode` as the canonical selector. Retain `action_type` only where compatibility requires it.
+2. Use `mode` as the canonical selector. Retain `action_type` only where compatibility requires it. Call FileCabinet the same way: `mode` for the action and `write_mode` (`merge` or `replace`) for how a write lands. When you touch a file, convert its FileCabinet calls.
 3. Provide `tool_manifest`; provide `kfc_manifest` when the tool owns KFC definitions.
 4. Return structured responses with stable `status`, `mode`, result/evidence, warnings, and trace information where appropriate.
 5. Fail soft on optional integrations. Report unavailable enhancements without breaking the baseline capability.
@@ -354,7 +354,7 @@ The current pattern is RBAC-like, but it is not full role-based access control. 
 | Policy dimension | Portainer implementation |
 |---|---|
 | Principal | `resolve_caller_identity` resolves the acting identity |
-| Capability | The resolved identity carries the named `infra_container_control` certification |
+| Capability | The resolved identity carries the named `zenos.infra.container_control` certification |
 | Capability strength | The certification has a numeric level compared with the action's configured minimum |
 | Action class | `rwxda`; current container writes use `x` or `d` |
 | Resource scope | Target container must match the admin-managed `controllable_containers` allow-list |
@@ -446,6 +446,13 @@ Taskmaster demonstrates both. Its `briefing` seed produces scored task context. 
 6. Use cooldown, drift threshold, and delay to prevent noisy or synchronized dispatch.
 7. State safety and interpretation rules in both executable controls and KFC instructions when defense in depth is appropriate.
 8. Do not create a standalone KFC file when its owning tool can return the contract from the same package file.
+9. **Seeds are declared by the tool (KF6).** A seed must be a mode the tool lists in its `tool_manifest` `seed_modes`. A seed mode that reads private data (finance, health, presence) names its read cert: `'mode@zenos.<domain>.read:1'`.
+10. **A minimum level is a requirement, not a hint.** `meta.requires: {cert, level}` is enforced: the agent the pipeline acts as must hold it for the Ninja seed stage, or the component doesn't run and leaves the prompt. Ship without one unless the component really needs it.
+11. **Acts and chains are declared.** A component acts only through the act its tool declares, behind that tool's emit cert. A component that starts other summaries lists them in `chain_to`.
+12. **Subscribe to triggers that exist.** Every entry in `trigger_subscriptions` should be in the trigger registry; Scribe flags a component nothing can fire as `never_fires`. Prefer a label trigger (`zen_leak`, `zen_door`, and the rest) over a group trigger. A pack that adds triggers registers them with `zen_event` kind `trigger_pack_register` from an automation.
+13. **A slot a pack writes is `role: cache`,** with no triggers, so a summarizer run can never overwrite it.
+
+See [Building a KFC](kung_fu/building_a_kfc.md) for the full contract.
 
 ### 3.9 Boot Orchestration (the Flynn/Stepgate pattern)
 
@@ -538,6 +545,10 @@ A ZenOS health sensor (`zen_label_health`, `zen_cabinet_health`, `zen_monastery_
 5. **Never gate a destructive or write-triggering decision on a live `states(entity_id)` read at boot.** Recorder-restored state is untrustworthy in the first moments after HA starts, and is not the same guarantee as an authoritative identity/content field actually being present in the underlying data. This is a hard rule, not a style preference; violating it is how cabinet data gets destroyed. See the boot-orchestration GUID-gate pattern in §3.9.
 6. **A diagnostic check that itself depends on a network or transport call must distinguish "checked, and it's genuinely absent" from "the check itself failed to complete."** Trusting a response body's shape alone (e.g. "it parsed as JSON, so it must be a valid result") without first confirming the transport call actually succeeded (HTTP status, timeout, auth failure) produces a confident false negative indistinguishable from the real thing being absent. Surface the check's own success/failure as an explicit field separate from the check's answer.
 
+### 5.3 Queued automations and long waits
+
+A queued automation runs one pass at a time, so a long wait inside it holds every later trigger, including anything routed through it (deferred reloads, other events). Keep long waits out of a queued dispatcher: hand them to their own automation, as Room Manager's fan worker does. When a pass must wait on several items by offset, sleep the gap since the previous item, not each item's whole offset; the offsets are from the trigger, and sleeping each in turn adds them up. [HALMark FG-51](https://github.com/nathan-curtis/HALMark) covers the general Home Assistant half.
+
 ## 6. Packaging and Co-location Standard
 
 ZenOS-AI prefers **one coherent component package per file**.
@@ -578,7 +589,8 @@ script:
     ...
 
 automation:
-  ...                  # only component-specific triggers not owned by shared Scheduler
+  ...                  # only the component's own triggers: a trigger pack that
+                       # registers itself, label-driven, never naming an entity ID
 ```
 
 The owning DojoTool should normally emit its KFC definition through `mode=kfc_manifest`. Avoid separate static KFC manifests when self-registration is possible.
@@ -627,6 +639,22 @@ Folder rules:
 | Shared OS primitive used by unrelated components | Core file in the appropriate ZenOS system package |
 | One-time migration or historic repair | `maint/`, never bundled into the public capability surface |
 
+### A complete tool and component: the reference pattern
+
+Print Shop (`dojotools_print.yaml`, 0.6.x) is the worked example of a new tool that hosts its own component. A new tool and KFC is done when it has all of these:
+
+1. **Adapters driven by capability.** It finds devices by integration, device, and entity name or feature, never by a hardcoded entity ID, so a second device works like the first.
+2. **One tool, modes by kind.** Different hardware (a paper printer, a 3D printer) is a `kind` inside one tool, not a tool each.
+3. **A cert declared with its stages, and the seed tagged.** `certs_required` names the cert, its `level`, the `modes` it covers and `st_ok`. The seed mode is tagged in `seed_modes` (`'summary@zenos.media.print_status:1'`).
+4. **The component requires the same cert.** `meta.requires` names it, so the component runs and appears in the prompt only for an agent that holds it.
+5. **A scored seed.** Each item carries `urgency`, `action_required` and real entity IDs, and the instructions are short and exact. A seed without real IDs invites the model to invent them.
+6. **Every costly or noisy step is optional and off.** A vision call, a second summary or a push is a setting in the tool's own drawer, off by default, and not a new helper entity. Read modes never run an inference step.
+7. **Triggers go through the Scheduler.** A trigger fires `zen_event` `summary_force` with `component: <kata_key>`, or is a registered trigger the component subscribes to. Nothing calls the Ninja directly.
+8. **Help is the default.** A bare call returns help.
+9. **Proven before anything is written.** Built on the test box first and byte-identical to production, with a forced Ninja run using `post_to_kata_cabinet=false` before it writes a Kata.
+
+A device that can be controlled stays read-only until the user enables control, and the tool reports control from the device's own state and fails closed. ZenOS works with whatever mode the user has set and never asks them to change a device's setup.
+
 ## 7. Exposure and Security Rules
 
 ### Default exposure matrix
@@ -658,6 +686,17 @@ For writes with meaningful impact:
 - return a useful audit trace;
 - provide fallback or recovery guidance.
 
+### Security rules (2026.11.0)
+
+Each of these was a real hole, found and fixed.
+
+- **New autonomy ships off.** Anything that acts on its own (a background act, an auto-arm, a room engine) ships disabled, and turning it on is a person's action. Nothing enables it for them. Make the off state loud and document how to opt in.
+- **An internal-only mode checks who called, not just its name.** A mode meant only for automations refuses any call with a user in its context (`context.user_id` is set for a person's or an agent's session, and empty for an automation). Leaving it undocumented is not a gate: an agent-callable `auto_arm_check` could name an unlocked lock and disarm a panel with no cert or acknowledgement.
+- **A generic emitter refuses the kinds your listeners act on.** If your automation acts on a `zen_event` kind, add that kind to the event emitter's reserved list in `dojotools_systemtools.yaml`. Otherwise an agent can fire it and skip every cert the proper tool would check.
+- **Data carries its rules.** Copying, moving or composing data (copy, move, weave, a summary) checks read access on every source and writes the result with the same access rules and expiry. A derived copy never declassifies.
+- **Resolve the target once, then check and run that.** A dispatch that takes a tool name resolves it to one name, checks certs against that name, and runs that name. Input that names two different targets is refused, or it can pass the check as one and run as the other.
+- **Admin tools never reach the agent.** Flynn unexposes every `zen_admintools_*` script every hour. A tool that must never be exposed returns `never_expose: true` (with `never_expose_reason`) from its manifest and carries the `zen_never_expose` label. Flynn always unexposes the label, Ectoplasm's `entity_expose` refuses it, and anything else that exposes entities must refuse it too.
+
 ## 8. Manifest Standard
 
 Every Stripe 1 or higher component should implement `tool_manifest` using the shared `MF.tool_manifest()` macro.
@@ -666,6 +705,7 @@ At minimum, declare:
 
 - canonical tool name;
 - display name;
+- a `summary`: one line, plain ASCII, at most 64 characters (see [Summaries and descriptions](#summaries-and-descriptions));
 - tier/class;
 - version;
 - health;
@@ -684,6 +724,12 @@ The implementation currently contains both singular and plural tier values in ol
 
 A script's own `tool_manifest` version is its canonical version. Every other version mention for that script (file header, changelog line, readme row) follows the manifest, not the other way round. A file that holds several scripts carries one version per script. There is no bundle number that overrides them. An automation without a manifest takes its version from its file header.
 
+### Summaries and descriptions
+
+Every tool sets `summary=` on its `tool_manifest`: what the tool is for, in plain ASCII, at most 64 characters. `help mode=directory` lists it next to each tool, so it is often the first thing an agent reads about the tool. A template cannot read a script's YAML `description:`, so the summary is a hand-written short form of it. When you change one, check the other.
+
+A script's `description:` and every field `description:` are plain ASCII (2026.11.0). No special characters: use a colon or a spaced hyphen for an em-dash ("`: `" breaks an unquoted YAML value, so use the hyphen there), "to" for an arrow, a hyphen for an en-dash, straight quotes, `x` for a multiplication sign, and `deg` for a degree sign.
+
 ### Declared dependencies and inference
 
 `tool_manifest()` always reports `dependencies` and `inference`, defaulting both to empty, so a tool with neither complies without extra work. A tool that calls other tools declares them in `dependencies`. A tool that calls a model itself declares `inference` with `calls_inference: true` and its `ai_task_type`. `zen_dojotools_manifest mode=audit` checks declarations against what the tool actually does.
@@ -692,7 +738,7 @@ A script's own `tool_manifest` version is its canonical version. Every other ver
 
 A tool that gates on certification publishes the certificates it needs as `certs_required` on its manifest output: the cert name, display name, description, `max_level`, which modes each gate covers, and which calls need a live acknowledgement regardless of level. `zen_dojotools_manifest mode=cert_audit` builds the cert catalog from these declarations live. There is no hand-maintained catalog to drift.
 
-## 9. Tool Contract Standard (2026.10.0)
+## 9. Tool Contract Standard (2026.10.0, extended in 2026.11.0)
 
 These rules apply to every new or revised DojoTool, SystemTool, and AdminTool. Chapter 12 (Contracts) explains why they exist.
 
@@ -704,17 +750,57 @@ Return through the shared `envelope()` macro in `zen_os_1.jinja`: `{status, mode
 
 Build the response in one variable and return it once, at the end. A denial is set early and every later branch checks for it before overwriting. A tool with several `stop` points can leave along a path that skipped its checks. A tool with one exit cannot.
 
+Every top-level `if:` waits on the result variable (`result is not defined and ...`), and a `choose:` dispatch opens with a branch that matches when a result is already set and keeps it. One exit does not mean nothing runs after the answer: a branch that tests only `mode` still runs after a refusal, overwrites it, and does its side effect. The 2026.11.0 rollout of the onboarding gate found more than 20 such branches, one of them a real cert bypass. Prove a guard by forcing it to refuse and checking that nothing downstream ran, not only that the answer says error.
+
+The same rule covers a fallback. A step placed after a `choose:` runs after every branch, a successful one included; a fallback belongs in the `choose:`'s `default:`. A generic calendar create placed after the Microsoft 365 branch ran after a successful Microsoft 365 create too, and wrote the event twice.
+
+### The onboarding gate
+
+Every agent-facing script calls `OS.entry_gate(user_id, tool, mode)` from `zen_os_1.jinja` as its first real step, after its mode is resolved:
+
+```yaml
+- variables:
+    _gate: >-
+      {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+      {{ OS.entry_gate((context.user_id if context is defined else '') or '', 'zen_dojotools_example', _mode) | from_json({'pass': false, 'reason': 'guarded: the onboarding gate could not be read'}) }}
+```
+
+- **What it does.** An agent without `zenos.agent.basic` (the backstage pass) gets `help`, `tool_manifest` and `kfc_manifest`. Anything else is refused with the gate's `reason` and `next_step`, and the script writes the gate's `log` line to `system_log` (logger `zen_entry_gate`). A call no user started passes.
+- **The open set lives in the macro,** in one place: onboarding, discovery, and each hop a cert request's live ack travels. A tool never opens a mode on its own.
+- **Single-exit script:** the gate sets the result variable, and every later step waits on it (above).
+- **Early-exit script:** the gate is the first step and has its own `stop`.
+- **Internal scripts stay ungated and are never MCP-exposed:** `zen_stack_*`, `zen_sutra_*`, `zen_codex_*`, GC. Every path into them goes through a gated tool. A script that becomes agent-facing gates as its first step.
+- **Editing a file with several scripts:** place inserts by line number, inside the target script's range (its key line to the next script's), and check the inserted line landed there. Repeated preambles make text anchors land in the wrong script.
+
 ### Help
 
-`mode=help` returns `{status: help, message}`, with `mode` accepted as an alias. The message states the tool's modes and required fields. `zen_dojotools_manifest mode=audit_help` checks every tool for a conforming help response and a complete manifest. Sutras, Stacks, and Codices are exempt.
+`mode=help` returns `{status: help, message}`, with `mode` accepted as an alias. Help is the default: a missing or unknown mode answers help, and a bare call (no mode and no input) never acts, crashes or errors. The message states the tool's modes and required fields. `zen_dojotools_manifest mode=audit_help` checks every tool for a conforming help response and a complete manifest. Sutras, Stacks, and Codices are exempt.
 
 ### Certification
 
 - Resolve the caller through `resolve_caller_identity` and read its answer with `resolve_identity_fields()`. Do not re-implement identity or scope logic in the tool.
-- Pass `required_cert` and the required level. Name certs in the dotted `zenos.*` form where a hierarchy applies; a grant on a parent covers its children, and the longest match wins.
+- Pass `required_cert` and the required level. Every cert is named `zenos.<domain>.<capability>`; a grant on a parent covers its children, and the longest match wins.
+- Declare each cert with a short plain `description` (one line, phone-sized: it is what the approval prompt shows), a `detail` for the long form, and the real `max_level` (the highest level the tool actually checks). Every tool that declares a shared cert carries the same values.
 - Treat `scope_decision` as authoritative: `deny` blocks the call outright, `allow` exempts the target from the per-call acknowledgement, `default` means the tool's own rule applies.
 - Build every refusal with `cert_denial()`, so every denial carries the same `status`, `error`, `message`, `can_request`, and `request_via` fields.
 - An action that needs a human in the loop calls `request_live_ack` and proceeds only on `approved`. `declined`, `timeout`, and `dispatch_failed` are all refusals.
+- Declare where each cert may be used with `st_ok`: stage letters for interactive (`i`), the Ninja seed (`s`), the Ninja emit (`e`) and live drawers (`l`). Without it a cert is interactive only. Allow a stage only if your tool is meant to be used there; a grant can never name a stage the tool doesn't allow.
+- A tool the summarizer may act through declares the act next to its emit cert: `act: {mode, args, description}`. The Ninja tells the model exactly that act and refuses anything else (`no_act_declared`, `act_args_invalid`).
+- A live drawer that runs a gated mode needs that cert with stage `l`. A tool with write modes is whitelisted for live drawers as `tool:mode`, never as the bare tool.
+
+See [The Pipeline Gets a Pass](releases/spinal_tap.md#the-pipeline-gets-a-pass) and the [Security & Certification manual](getting_started/security_certification_manual.md).
+
+### Cabinet data (2026.11.0)
+
+FileCabinet enforces access rules, so a tool that keeps state in a cabinet works with the gate, not around it.
+
+- Read and write through FileCabinet (`zen_sutra_filecabinet`), never with raw cabinet events. Pass `mode`, and `write_mode: replace` for a read-modify-write; under a merge, a key you removed comes back.
+- Name your tool with `caller_tool` as a constant in its own call, never from input, so a rule can say `@tool:<script>`. A tool that passes an agent-chosen cabinet and key straight to the engine stamps `caller_origin: agent`.
+- Treat `write_unverified` and every error as a failure. Never report success the cabinet didn't confirm.
+- Structural keys (VolumeInfo, `meta`, `_label_index`, the system cabinet and the vault) are written only through `zen_admintools_cabinet_writer`.
+- Expect a refusal. On an enforcing install a drawer the caller can't read answers `guarded:`; a tool passes that on, and doesn't retry around it.
+
+See the [FileCabinet readme](scripts/zen_dojotools_filecabinet_readme.md#access-control-acl-v2).
 
 ## 10. Decision Guide
 
@@ -850,6 +936,11 @@ Use Firefly III as the reference when one-file packaging would make the componen
 - Gating a boot-time write decision on a live `states(entity_id)` read instead of an authoritative identity/content field.
 - Adding a write path to a component with a trigger-based health sensor without auditing whether that path fires the sensor's refresh event.
 - Reaching for a new `input_text`/`input_boolean` helper, or trusting a domain's own state machine, for small durable state that a cabinet drawer would serve more reliably.
+- Shipping new autonomous behavior switched on, or turning it on for the household.
+- Treating an undocumented mode as internal. Gate it on who called.
+- A sibling branch or a fallback step that runs after the answer was set.
+- Copying or composing data without carrying its access rules.
+- Long waits inside a queued automation that other work goes through.
 
 ## 13. Review Checklist
 
@@ -872,10 +963,19 @@ Before accepting a new component, reviewers should confirm:
 - [ ] Writes validate targets and enforce appropriate confirmation and authority.
 - [ ] Responses are structured, bounded, and free of secrets.
 - [ ] Manifest metadata accurately describes health, exposure, dependencies, risk, and evidence.
+- [ ] The manifest sets a plain-ASCII `summary` that matches the script's `description:`, and every description is plain ASCII.
 - [ ] The manifest version is the script's canonical version, and every other mention of it matches.
 - [ ] The tool returns through `envelope()` with a single exit, and any caller of another tool unwraps `.result`.
 - [ ] `mode=help` returns `{status: help, message}` and passes `audit_help`.
 - [ ] A cert-gated tool declares `certs_required`, honors a scope `deny`, and refuses through `cert_denial()`.
+- [ ] Each cert declares `st_ok` for exactly the stages the tool is meant for; a background act is declared as `act` next to its emit cert.
+- [ ] Forcing each guard to refuse leaves nothing downstream running.
+- [ ] Modes meant only for automations refuse a call with a user in its context.
+- [ ] Any event kind this component acts on is reserved in the event emitter.
+- [ ] Copies, moves and derived reads check every source and keep its access rules.
+- [ ] Cabinet writes go through FileCabinet with `caller_tool`, check the answer, and leave structural keys to the cabinet writer.
+- [ ] New autonomous behavior ships off.
+- [ ] Seed modes are declared, and seeds that read private data name their read cert.
 - [ ] If this touches boot orchestration: every write-completion path fires the relevant health-sensor refresh event; no boot-time write decision trusts a live `states(entity_id)` read alone; any early-exit optimization accounts for every gate's re-entry conditions, not just health-sensor rollups.
 - [ ] If this adds or changes a health sensor: it is event-triggered rather than clock-polled if it gates any consequential decision; a rolled-up enum value exposes enough underlying detail for a real consumer to disambiguate safe-vs-broken; a diagnostic check distinguishes "checked, absent" from "check itself failed."
 

@@ -43,14 +43,14 @@ Start with the [Preface](00_preface.md). It states the thesis the rest of the bo
 22. [The Abbot](22_the_abbot.md)
 23. [Resilience](23_resilience.md)
 24. [Developer Standards](24_developer_standards.md)
-25. [Room Manager v3 Reference](25_room_manager_v3.md)
 
 ## Closing
 
 26. [Findings](26_findings.md)
 
-## Appendices
+## Reference
 
+25. [Room Manager v3 Reference](25_room_manager_v3.md): the full operational reference for Room Manager v3. Optional reading; the story continues in Findings.
 27. [Appendices](27_appendices.md): glossary, event kinds, certification catalog, labels, the Not yet built register, the reference household, the Friday's Party index, and the research cited.
 
 ## Beyond the book

@@ -1,6 +1,33 @@
 #####################################################################
 # zen_dojotools_provisioner — ZenOS-AI cabinet provisioner
-# Version: 5.1.0
+# Version: 5.3.3
+# v5.3.3: HA naming (2026.11): name outputs carry entity_name and device_name
+#   next to the legacy friendly_name (kept while HA still sets it), and
+#   composed names are built from those parts, so they survive HA dropping
+#   friendly_name. entity_name() is used only where HA has it (2026.4+).
+# v5.3.2: deprovision removes every type label the cabinet carries, as a
+#   list. A slot carrying two (a stale one from an earlier provision) had them
+#   written out back to back into one name that does not exist, and
+#   deprovision failed ("Label zen_user_cabinetzen_family_cabinet not found").
+#   Deprovision also keeps the zen_cabinet parent label: a free slot carries
+#   it, and stripping it left the slot looking unlike every other free slot.
+# v5.3.1: each cert this tool declares gets a short plain description for
+#   the approval prompt (the old text moves to detail) and its real max_level.
+# v5.3.0: cert names moved to the zenos.* namespace (2026.11). An old flat
+#   grant still satisfies the new name for one release (reissue pending).
+# v5.2.0: onboarding gate (zen_os_1 entry_gate), tool 1.2.0. An agent without
+#   zenos.agent.basic gets help and tool_manifest; provision, deprovision and
+#   replace answer onboarding_required with next_step zen_flynn_oobe.
+# v5.1.4: every FileCabinet call names caller_tool zen_dojotools_provisioner,
+#   a lifecycle principal in the cabinet ACL defaults (#10626).
+# v5.1.3: deprovision reports error (with the dismount answer) when the cabinet
+#   is not online_unmounted afterwards -- it said success regardless; the mount
+#   check reads FileCabinet's flat answer (the old result-envelope unwrap is gone).
+# v5.1.2 (#10636): mount/dismount go through FileCabinet mount_cabinet /
+#   dismount_cabinet instead of raw set_variable_legacy meta writes. FC's own
+#   wait + verification replaces provisioner's duplicate waits; the mount
+#   rollback keys off FC's verified result.
+# v5.1.1: bare call (no mode, no cabinet/person input) returns help instead of provisioning.
 #
 # v1.1.0 (ZenOS-AI 4.5.5)
 #
@@ -29,7 +56,7 @@ script:
   zen_dojotools_provisioner:
     alias: Zen DojoTools Provisioner
     description: >-
-      Ready Player 2 — provision, deprovision, or replace a cabinet-backed
+      Ready Player 2: provision, deprovision, or replace a cabinet-backed
       identity (ai_user/user/family/household), activating or retiring a
       stacks-backed identity slot. mode=help for the full gate/field/example
       reference, mode=tool_manifest for self-description.
@@ -129,9 +156,10 @@ script:
             {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
             {{ MF.tool_manifest(
                 tool='zen_dojotools_provisioner',
+                summary='Create, retire, or replace an identity and its cabinet',
                 display_name='Provisioner',
                 tier='dojotools',
-                version='1.1.0',
+                version='1.3.2',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=[],
@@ -144,10 +172,14 @@ script:
                 mcp_exposed=true,
                 caller_token=caller_token | default('')
             ) | from_json | combine({'certs_required': [
-                {'cert': 'cabinet_lifecycle_control', 'level': 1, 'modes': ['provision', 'deprovision', 'replace']}
+                {'cert': 'zenos.system.cabinet_lifecycle_control', 'max_level': 1, 'description': "Set up and repair the assistant's storage", 'level': 1, 'modes': ['provision', 'deprovision', 'replace']}
             ]}) }}
 
-    - if: "{{ result is not defined and (mode | default('') | lower) == 'help' }}"
+    # Bare call (no mode, no cabinet/person input) = help, never a provision.
+    - if: >-
+        {{ result is not defined and ((mode | default('') | lower) == 'help'
+           or ((mode | default('', true) | string | trim) == '' and (cab_type | default('', true) | string | trim) == ''
+               and (target_cabinet | default('', true) | string | trim) == '' and (person_entity | default('', true) | string | trim) == '')) }}
       then:
       - variables:
           _pv_modes:
@@ -158,7 +190,7 @@ script:
             tool_manifest: "UMP self-description, no side effects."
       - variables:
           _pv_help_message: >-
-            {%- set ns = namespace(out='Provision, deprovision, or replace a cabinet-backed identity (ai_user/user/family/household). All write modes require cabinet_lifecycle_control cert level 1. ') -%}
+            {%- set ns = namespace(out='Provision, deprovision, or replace a cabinet-backed identity (ai_user/user/family/household). All write modes require zenos.system.cabinet_lifecycle_control cert level 1. ') -%}
             {%- for k, v in _pv_modes.items() -%}
               {%- set ns.out = ns.out ~ 'mode=' ~ k ~ ' -- ' ~ v ~ ' ' -%}
             {%- endfor -%}
@@ -172,7 +204,7 @@ script:
             summary: >-
               Ready Player 2 -- provision, deprovision, or replace a
               cabinet-backed identity (ai_user/user/family/household). All
-              write modes require the cabinet_lifecycle_control cert (level 1).
+              write modes require the zenos.system.cabinet_lifecycle_control cert (level 1).
             modes: "{{ _pv_modes }}"
             modes_full:
               provision: >-
@@ -194,7 +226,8 @@ script:
                 Requires target_cabinet in online_mounted state. Blocked if
                 the cabinet holds any zen_default_* label -- transfer the
                 default label to another cabinet first. Strips the cab_type
-                label + zen_cabinet parent label, dismounts (waits up to 10s
+                label (the zen_cabinet parent label stays, as on every free
+                slot), dismounts (waits up to 10s
                 for online_unmounted), fires cabinet_deprovisioned +
                 identity_manifest_rebuild events.
               replace: >-
@@ -229,6 +262,30 @@ script:
               - "GUID uniqueness check only looks at currently online_mounted cabinets -- a GUID reused after full deprovision + cabinet deletion elsewhere would not be caught here."
               - "deprovision cannot be used to remove a zen_default_* cabinet -- transfer the default label first via the appropriate admin tool."
             caller_token: "{{ caller_token | default('') }}"
+
+    # Onboarding gate (zen_os_1 entry_gate): an agent without
+    # zenos.agent.basic gets help and tool_manifest only (both answered
+    # above). Calls no user started pass.
+    - if: "{{ result is not defined }}"
+      then:
+        - variables:
+            _pv_gate: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+              {{ OS.entry_gate((context.user_id if context is defined else '') or '', 'zen_dojotools_provisioner', mode | default('provision', true) | string | lower | trim) | from_json({'pass': false, 'reason': 'guarded: the onboarding gate could not be read'}) }}
+        - if: "{{ not _pv_gate.get('pass', false) }}"
+          then:
+            - variables:
+                result:
+                  status: error
+                  mode: "{{ mode | default('provision', true) }}"
+                  reason: "{{ _pv_gate.reason }}"
+                  next_step: "{{ _pv_gate.next_step }}"
+                  caller_token: "{{ caller_token | default('') }}"
+            - action: system_log.write
+              data:
+                level: warning
+                logger: zen_entry_gate
+                message: "{{ _pv_gate.get('log') or 'onboarding gate refused a call (gate result unreadable)' }}"
 
     # ── Normalize inputs ───────────────────────────────────────────────────
     - variables:
@@ -312,7 +369,7 @@ script:
         continue_on_error: true
         data:
           mode: resolve_caller_identity
-          required_cert: cabinet_lifecycle_control
+          required_cert: zenos.system.cabinet_lifecycle_control
           required_cert_level: 1
           target_entity: "{{ _target }}"
           caller_token: "{{ caller_token }}"
@@ -330,7 +387,7 @@ script:
           - variables:
               _prov_cd_raw: >-
                 {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
-                {{ OS.cert_denial(_prov_cert_policy, _prov_cert_authorized, _prov_cert_level, 'cabinet_lifecycle_control', 1, _op, _prov_cert_block_reason) -}}
+                {{ OS.cert_denial(_prov_cert_policy, _prov_cert_authorized, _prov_cert_level, 'zenos.system.cabinet_lifecycle_control', 1, _op, _prov_cert_block_reason) -}}
           - variables:
               result: >-
                 {{ ((_prov_cd_raw | from_json) if _prov_cd_raw is string else _prov_cd_raw) | combine({'tool': 'zen_dojotools_provisioner', 'caller_token': caller_token}) }}
@@ -476,22 +533,22 @@ script:
             label_id: zen_cabinet
             entity_id: "{{ _target }}"
 
-        # ── Mount ────────────────────────────────────────────────────────────
-        - event: set_variable_legacy
-          event_data:
-            key: meta
-            value: "{{ {'mounted': true} }}"
-            volume_entity: "{{ _target }}"
-            set_timestamp: true
-
-        # ── Health gate — wait for online_mounted ────────────────────────────
-        - wait_template: "{{ states(_target) == 'online_mounted' }}"
-          timeout: '00:00:10'
-          continue_on_timeout: true
+        # ── Mount (one door, #10636): FileCabinet mount_cabinet writes
+        # meta.mounted with its init/health/idempotent guards, waits for
+        # online_mounted and verifies it. Its verified result is the health gate.
+        - action: script.zen_sutra_filecabinet
+          continue_on_error: true
+          response_variable: _mount_fc
+          data:
+            caller_tool: zen_dojotools_provisioner
+            action_type: mount_cabinet
+            volume_entity_id: "{{ _target }}"
         - variables:
-            _mount_ok: "{{ states(_target) == 'online_mounted' }}"
+            _mount_ok: >-
+              {%- set r = _mount_fc if _mount_fc is mapping else {} -%}
+              {{ r.get('status') == 'success' and r.get('state') == 'online_mounted' }}
 
-        # ── Rollback on health gate timeout ──────────────────────────────────
+        # ── Rollback when FileCabinet could not verify the mount ─────────────
         - if:
           - condition: template
             value_template: "{{ not _mount_ok }}"
@@ -504,8 +561,8 @@ script:
               result:
                 status: error
                 message: >-
-                  provision failed: '{{ _target }}' did not reach online_mounted
-                  within 10s. Type label stripped. Cabinet returned to stacks.
+                  provision failed: FileCabinet mount_cabinet did not verify
+                  '{{ _target }}' online_mounted. Type label stripped. Cabinet returned to stacks.
                 rollback: label_stripped
                 caller_token: "{{ caller_token }}"
 
@@ -516,7 +573,7 @@ script:
               _person_data: >-
                 {%- if _person != '' -%}
                   {{- {
-                    'name': state_attr(_person, 'friendly_name') | default('', true),
+                    'name': state_attr(_person, 'friendly_name') | default('', true), 'entity_name': (entity_name(_person) if entity_name is defined else none), 'device_name': (device_name(_person) if device_id(_person) else none),
                     'person_entity': _person
                   } -}}
                 {%- else -%}
@@ -536,8 +593,9 @@ script:
             - condition: template
               value_template: "{{ _profile | length > 0 }}"
             then:
-            - action: script.zen_dojotools_filecabinet
+            - action: script.zen_sutra_filecabinet
               data:
+                caller_tool: zen_dojotools_provisioner
                 action_type: create
                 force_action: true
                 set_timestamp: true
@@ -557,8 +615,9 @@ script:
             - condition: template
               value_template: "{{ _cab_type == 'ai_user' }}"
             then:
-            - action: script.zen_dojotools_filecabinet
+            - action: script.zen_sutra_filecabinet
               data:
+                caller_tool: zen_dojotools_provisioner
                 action_type: create
                 force_action: true
                 set_timestamp: true
@@ -598,8 +657,9 @@ script:
             - condition: template
               value_template: "{{ _cab_type == 'user' }}"
             then:
-            - action: script.zen_dojotools_filecabinet
+            - action: script.zen_sutra_filecabinet
               data:
+                caller_tool: zen_dojotools_provisioner
                 action_type: create
                 force_action: true
                 set_timestamp: true
@@ -689,42 +749,36 @@ script:
                 Transfer the default label to another cabinet before deprovisioning.
               caller_token: "{{ caller_token }}"
 
-      # ── Strip type label + Zen Cabinet parent — only once gates pass ─────
+      # ── Strip the type label(s) — only once gates pass; zen_cabinet stays ─
       - if:
         - condition: template
           value_template: "{{ result is not defined }}"
         then:
+        # Every type label the cabinet carries, as a list: a slot can carry
+        # more than one (a stale label from an earlier provision), and
+        # writing them out back to back made one name that does not exist.
         - variables:
-            _deprov_type_label: >-
+            _deprov_type_labels: >-
               {%- set ent_labels = labels(_deprov_target) -%}
-              {%- for l in _type_label_map.values() -%}
-                {%- if l in ent_labels -%}{{ l }}{%- endif -%}
-              {%- endfor -%}
+              {{ _type_label_map.values() | select('in', ent_labels) | unique | list }}
 
         - if:
           - condition: template
-            value_template: "{{ _deprov_type_label != '' }}"
+            value_template: "{{ _deprov_type_labels | count > 0 }}"
           then:
           - action: homeassistant.remove_label_from_entity
             data:
-              label_id: "{{ _deprov_type_label }}"
+              label_id: "{{ _deprov_type_labels }}"
               entity_id: "{{ _deprov_target }}"
-        - action: homeassistant.remove_label_from_entity
+
+        # ── Dismount (one door, #10636): FileCabinet dismount_cabinet ─────────
+        - action: script.zen_sutra_filecabinet
+          continue_on_error: true
+          response_variable: _dismount_fc
           data:
-            label_id: zen_cabinet
-            entity_id: "{{ _deprov_target }}"
-
-        # ── Dismount ──────────────────────────────────────────────────────────
-        - event: set_variable_legacy
-          event_data:
-            key: meta
-            value: "{{ {'mounted': false} }}"
-            volume_entity: "{{ _deprov_target }}"
-            set_timestamp: true
-
-        - wait_template: "{{ states(_deprov_target) == 'online_unmounted' }}"
-          timeout: '00:00:10'
-          continue_on_timeout: true
+            caller_tool: zen_dojotools_provisioner
+            action_type: dismount_cabinet
+            volume_entity_id: "{{ _deprov_target }}"
 
         # ── Fire completion events ────────────────────────────────────────────
         - event: zen_event
@@ -744,10 +798,13 @@ script:
 
         - variables:
             deprov_result:
-              status: success
-              message: "Cabinet '{{ _deprov_target }}' deprovisioned ({{ states(_deprov_target) }})."
+              status: "{{ 'success' if states(_deprov_target) == 'online_unmounted' else 'error' }}"
+              message: >-
+                {{ "Cabinet '" ~ _deprov_target ~ "' deprovisioned (" ~ states(_deprov_target) ~ ")." if states(_deprov_target) == 'online_unmounted'
+                   else "Cabinet '" ~ _deprov_target ~ "' labels removed, but it is " ~ states(_deprov_target) ~ ", not online_unmounted (dismount: " ~ ((_dismount_fc.get('message') or _dismount_fc.get('status')) if _dismount_fc is mapping else 'no answer') ~ ")." }}
               cabinet: "{{ _deprov_target }}"
               verified: "{{ states(_deprov_target) == 'online_unmounted' }}"
+              dismount_status: "{{ _dismount_fc.get('status', '') if _dismount_fc is mapping else '' }}"
               caller_token: "{{ caller_token }}"
 
     ###########################################################################

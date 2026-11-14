@@ -46,7 +46,7 @@ When identity or boot checks fail, the agent is handed Flynn instead of a broken
 Here is Flynn answering on a deliberately broken test install:
 
 <!-- screenshot: ch23_flynn_fallback.png -->
-> **Screenshot to come.** A persona that cannot boot. Flynn answers instead, names the failed gate, and says what to do. Real 2026.10.0 output; personal details redacted.
+> **Screenshot to come.** A persona that cannot boot. Flynn answers instead, names the failed gate, and says what to do. Real 2026.11.0 output; personal details redacted.
 <!-- /screenshot -->
 
 ## 23.6 Make failure visible

@@ -1,4 +1,6 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.1.2
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.4.0
+
+> **2026.11.0:** Flynn 5.4.0 adds the automation "Flynn: Admin plane guard": at start, hourly at :07, and on `zen_admin_plane_guard` (or a `zen_event` of kind `admin_plane_guard`) it unexposes the admin plane from Assist, Alexa and Google through Spook. Mode `all` (no drawer, the default) covers every `script.zen_admintools_*`; `listed` (a test server, set in the system cabinet's `admin_plane_guard` drawer) covers only its `entities`. `prompt_loader` and anything labeled `zen_never_expose` are always covered. OOBE 5.4.1: a first-time `complete` writes `seed_cert_mode` enforce, so a fresh install starts locked, and asks for whatever `zenos_agent_parity` is missing (stages `ise`). See [The admin plane](../getting_started/security_certification_manual.md#67-the-admin-plane).
 
 *ZenOS-AI's boot guard, initializer, and onboarding driver*
 
@@ -142,6 +144,12 @@ default_user, default_ai_user, history, index
 
 Detects cabinets that are present but genuinely uninitialized — `state=init` with no VolumeInfo. These are virgin cabinets: the sensor has evaluated at least once and found nothing. Flynn calls `script.flynn_initialize_cabinets` to bootstrap them.
 
+**Through the factory (5.3.4).** `flynn_initialize_cabinets` stamps each cabinet with `zen_admintools_cabinetadmin_factory` directly, after the same virgin test cabinet admin's `init` uses; a cabinet with leftover data still raises the manual-init notice. Flynn never calls a gated tool: `init` is gated through identity, and on a fresh install the identity policy it reads isn't written yet, so before 5.3.4 every init was refused. Each cabinet's answer is logged.
+
+**The FileCabinet lock (5.3.3).** When Flynn stamps the system cabinet, which happens only on a fresh install or after `reset_all`, it writes `fc_acl_mode` as `{mode: audit, arm_on_acl_v2: true}`. Identity's `acl_migrate` turns it to enforce once ACL v2 is applied. An upgraded install never gets an armed drawer and stays in audit.
+
+**The vault.** The vault is a required system cabinet. Flynn's label gate labels it, and Gate 2.1 initializes it as "Vault Cabinet" on the first pass after warmup (not on the `ha_start` pass). Gate 2.1 also initializes a vault that was never written (state `unknown`, no `variables`): before 2026.11.0 every vault write was dropped, so an existing install's vault never left `unknown`.
+
 **Why this gate exists:** `zen_cabinet_health` rolls up optional slots as healthy even when their underlying entity is still in `init`. New installs were deadlocking — present-but-uninitialized cabinets never appeared in `missing_cabinets`, so Gate 2 never saw them, and nothing ever called cabinetadmin. Gate 2.1 catches them by reading `slot_to_default_entity` directly and checking entity state.
 
 **Safety guards:**
@@ -153,6 +161,12 @@ Detects cabinets that are present but genuinely uninitialized — `state=init` w
 **Event fired:** Handled internally by `script.flynn_initialize_cabinets`.
 
 **History cabinet mount lifecycle (2026.7.1):** Gate 2.1's re-init trigger now also fires when any of the 4 history cabinets (`default_household_history`, `default_family_history`, `default_user_history`, `default_ai_user_history`) is `online_unmounted` — mounted but not yet wired to its parent cabinet's `history` mount point. When that happens, Flynn: waits for the cabinet's state to stabilize (bounded `wait_template`s, each with `continue_on_timeout: true`), calls `mount_cabinet`, extracts the mounted cabinet's GUID from its `VolumeInfo` (guarded against the value being a JSON string vs. an already-parsed mapping), then calls `set_mount` to wire that GUID into the parent's `history` mount point — skipping if already wired. If a cabinet has residue data that blocks auto-init (`reason: rearm_required`), Flynn posts a persistent notification asking a human to run `repair_volumeinfo` or `hammer` manually rather than guessing. This whole path degrades gracefully (`continue_on_error: true` throughout) rather than blocking boot — a stuck history cabinet delays its own mount wiring, not the rest of the system, and Gate 2.1 re-evaluates it on the same 5-minute Stepgate Sentinel cadence as everything else (see [Troubleshooting](#troubleshooting) below), not a tight retry loop.
+
+---
+
+### Gate 2.2 — Cert Catalog Cache
+
+After warmup, each pass asks Identity (`cert_cache_refresh`) to rebuild the cert catalog cache in the vault. Fire and forget: Identity skips a fresh copy, and skips it entirely with no vault. It runs ahead of the all-green early exit, so a healthy system keeps its cache fresh.
 
 ---
 
@@ -178,7 +192,7 @@ Regardless of monastery health state, Flynn checks whether:
 - Dojo cabinet has a `kfc_template` drawer
 - Kata cabinet has a `zen_template` drawer
 
-If either is missing, Flynn calls `zen_admintools_reset_template` to press both templates. This is infrastructure — it runs on every boot if needed and is fully idempotent.
+If either is missing, Flynn calls `zen_admintools_reset_template` with `mode: reset` to press the templates. This is infrastructure — it runs on every boot if needed and is fully idempotent. (Before 5.3.2 Flynn called it with no mode, and a bare call to any `zen_*` script answers help, so a fresh install never got its templates and Flynn retried every pass.)
 
 #### 3c — Content Bootstrap (critical or disabled)
 
@@ -206,10 +220,11 @@ If `zen_monastery_health` is `critical` **or** `disabled`, **or `flynn_bootstrap
 5. **Seeds AI persona essence** — writes default legacy-schema essence with `identity.name = 'your AI'` as placeholder (non-destructive — skips if drawer already exists). Three-layer cabinets already have a real name stamped at mint; this step is a no-op for them.
 6. **Seeds schema templates** — calls `reset_template` if either template drawer is missing.
 7. **Loads prompt substrate** — calls `zen_admintools_zenos_prompt_loader` (Cortex, Directives, Purpose).
-8. **Wires default family graph** *(4.5.6)* — calls `household_add_family` for the default family cabinet, then `family_add_member` for the default user and AI user. All three calls are guarded (skips if cabinet unavailable) and idempotent (no-op if already wired). Closes a gap where cold builds left the default family as an orphan in the identity graph.
-9. **Seeds home mode timers** *(4.5.6)* — each `input_datetime` schedule anchor and quiet/work bounds helper is individually checked and seeded to its default time if still bare (`''`, `unknown`, or `unavailable`). Each timer has its own guard — partially-configured installs are safe.
-10. **Flags completion** — calls `flynn_unified_engine` with `action_type: flag_complete`.
-11. **Stamps `flynn_bootstrap_state`** — only after a fresh read-back confirms `_household_name` and the AI essence identity name are both real (not `''`/`unknown`/`unavailable`/the `'your AI'` placeholder). A backfill on any install that predates this drawer: every system re-enters Gate 3 once on the next Stepgate tick, runs through idempotently (no-op on an already-good install), and gets tagged retroactively.
+8. **Wires default family graph** *(4.5.6)* — calls `household_add_family` for the default family cabinet, then `family_add_member` for the default user and AI user. All three calls are guarded (skips if cabinet unavailable) and idempotent (no-op if already wired). Closes a gap where cold builds left the default family as an orphan in the identity graph. Every identity setup call passes `force_action`, so a household or family still on the old ACL schema is upgraded first instead of refused.
+9. **Migrates ACLs** — runs identity `acl_migrate` with `dry_run: false` after the VolumeInfo stamps: every cabinet's VolumeInfo to the ACL v2 record and its class, with bad identity data fixed. Skipped while the system cabinet's `acl_schema` stamp is current, so script reloads don't re-run it. The migration is mandatory (identity setup needs ACL v2), so an existing install migrates the next time this bootstrap runs.
+10. **Seeds home mode timers** *(4.5.6)* — each `input_datetime` schedule anchor and quiet/work bounds helper is individually checked and seeded to its default time if still bare (`''`, `unknown`, or `unavailable`). Each timer has its own guard — partially-configured installs are safe.
+11. **Flags completion** — calls `flynn_unified_engine` with `action_type: flag_complete`.
+12. **Stamps `flynn_bootstrap_state`** — only after a fresh read-back confirms `_household_name` and the AI essence identity name are both real (not `''`/`unknown`/`unavailable`/the `'your AI'` placeholder). A backfill on any install that predates this drawer: every system re-enters Gate 3 once on the next Stepgate tick, runs through idempotently (no-op on an already-good install), and gets tagged retroactively.
 
 **Event fired:** `flynn_stepgate_event` (gate: 3, action: bootstrap_complete)
 
@@ -237,13 +252,17 @@ The fastest path through OOBE: set `input_text.zenos_persona_name` in Settings �
 
 The conversational path: start chatting with your AI agent — Flynn's Agent Builder (mode: oobe) walks through the Q&A setup interactively.
 
+**Onboarded is not approved.** An agent that finished onboarding but doesn't hold `zenos.agent.basic` (its backstage pass) gets one "waiting for approval" notification. It is recorded in `flynn_active_notification`, so a 5-minute pass doesn't raise it again, and it clears once the pass is granted. Flynn never asks for the approval itself: the agent keeps answering as itself, and its gated tools point it at `zen_flynn_oobe mode=run`, which asks you.
+
+**One notice per gate.** `flynn_active_notification` is cleared only by the gate whose notice it holds. The labels gate and the content bootstrap used to wipe it every pass, so Gate 3.5 raised its notice again every pass and Gate 4's note lasted one pass.
+
 ---
 
 ### Gate 4 — System Ready
 
 **Trigger:** All health sensors green + OOBE complete + monastery and agent health confirmed
 
-Fires **once on transition** (not on subsequent green re-runs). Before creating the notification, Flynn verifies that `zen_monastery_health` is `ok` or `warn` and `zen_agent_health` is `ok` or `warn`, and that no init-state cabinets remain. Reaching Gate 4 is necessary but not sufficient — all three conditions must hold.
+Fires **once on transition** (not on subsequent green re-runs). Before creating the notification, Flynn verifies that `zen_monastery_health` is `ok` or `warn` and `zen_agent_health` is `ok`, `warn` or `restricted` (onboarded, with something held back by a cert; Flynn 5.4.1), and that no init-state cabinets remain. Reaching Gate 4 is necessary but not sufficient — all three conditions must hold.
 
 Creates a persistent notification:
 
@@ -277,7 +296,7 @@ Four `template: select` entities provide UI-level dropdowns for the critical inp
 | `select.zenos_conversation_agent` | `input_text.zenos_conversation_agent` | All `conversation.*` domain entities |
 | `select.zenos_ai_task` | `input_text.zenos_ai_task_entity` | All `ai_task.*` domain entities |
 
-Options resolve dynamically at render time. The persona select only shows personas with a valid name in their essence — `unknown`, `your AI`, and empty strings are excluded. `select.zenos_primary_user` additionally excludes any person already assigned as head-of-household elsewhere — gathered across every household cabinet's `AI_Cabinet_VolumeInfo.acls.owner` — so the dropdown never offers a person who'd need a `set_principal` takeover to become someone's HoH twice.
+Options resolve dynamically at render time. The persona select only shows personas with a valid name in their essence — `unknown`, `your AI`, and empty strings are excluded. `select.zenos_primary_user` additionally excludes any person already assigned as head-of-household elsewhere — matched by person entity through Identity's `member_index`, which reads each household's ACL owner — so the dropdown never offers a person who'd need a `set_principal` takeover to become someone's HoH twice.
 
 **Fastest setup path:** Use these selects from Settings → Helpers instead of typing entity IDs manually.
 
@@ -420,7 +439,7 @@ All four Flynn persistent notification messages are written in Flynn's voice and
 | Event | When | Payload |
 |---|---|---|
 | `flynn_stepgate_event` | After each gate action | `gate`, `action`, `timestamp` + gate-specific fields |
-| `flynn_onboarding_updated` | Unified engine state changes | `type`, `drawer`, `key`, `timestamp` |
+| `flynn_onboarding_updated` | Unified engine state changes (onboarding state is written through the FileCabinet engine as `flynn_unified_engine`, so it lands even when the agent can't write the default user cabinet; `answer_clear` empties the drawer) | `type`, `drawer`, `key`, `timestamp` |
 
 ---
 

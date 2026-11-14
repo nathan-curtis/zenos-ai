@@ -85,6 +85,7 @@ Import once at the top of the script's variables step. Do not import inside loop
 |-----------|------|---------|-------------|
 | `health` | mapping | `{'configured': false, 'status': 'unknown', 'notes': ['health not reported']}` | Health block. Must be a mapping with at minimum `configured` (bool) and `status` (string). `notes` is an optional list of strings. |
 | `schema_version` | string | `'1.0.0'` | Manifest schema version. Do not change unless the schema itself is versioned. |
+| `summary` | string | `None` | What the tool is for, in one line (2026.11.0). Plain ASCII, at most 64 characters; anything longer is cut at a word with `...`. [`help mode=directory`](../scripts/zen_dojotools_utilities_readme.md#paging-the-directory) lists it next to each tool, falling back to `display_name`. A template can't read a script's YAML `description:`, so `summary` is the short form of it: change one, check the other. Reported only when set. Every tool the directory lists sets one. |
 
 ### Optional parameters — label contract (lens fields)
 
@@ -160,6 +161,14 @@ Real `ai_task.*` callers were swept 2026-08-18 and now correctly declare `infere
 |-----------|------|---------|-------------|
 | `caller_token` | string | `''` | Passed through from the calling script's `caller_token` variable. Used for tracing. |
 
+### Optional parameters — summarizer seeds (2026.11.0)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `seed_modes` | list | `None` | The read modes the Ninja summarizer may seed a run with, each `'mode'` or `'mode:case'` (Finance declares `run:budget_summary` rather than every `run` case). Reported only when declared. A tool that declares none can't be a seed, except through the old seed whitelist until 2026.12. |
+
+A cert in `certs_required` may also carry `st_ok`: the pipeline stage letters it allows (default `i`, interactive only). `cert_audit` merges them across declarers into the catalog. See [Stages](../getting_started/security_certification_manual.md#64-stages).
+
 ---
 
 ## Missing-Label Detection (always computed, 2026.9.0)
@@ -170,15 +179,15 @@ Unlike every other field above, `missing_required_labels` and `missing_optional_
 
 ## OS Version Fields (auto-injected)
 
-The macro reads the `os_release` drawer from `sensor.zen_system_cabinet_resolved` at render time and injects the following fields automatically. Callers do not set these.
+The macro injects the following fields automatically at render time. Callers do not set these. The OS version comes from `os_version()` in `zen_os_1.jinja`, never from the cabinet. The cortex fields come from the `os_release` drawer in `sensor.zen_system_cabinet_resolved`, which records the cortex text that was actually loaded.
 
 | Field | Source |
 |-------|--------|
-| `os_version` | `os_release.os_version` |
-| `os_tag` | `os_release.os_tag` |
+| `os_version` | `os_version().version` |
+| `os_tag` | `os_version().tag` + `tag_number` |
 | `cortex` | `os_release.cortex` |
 | `cortex_codename` | `os_release.cortex_codename` |
-| `os_release` | Full `os_release` block |
+| `os_release` | `cortex`, `cortex_codename` and `pressed_at` from the drawer, nothing else. A drawer pressed by cortex 45 or earlier also holds a stale list of component versions, which is dropped. |
 
 If the system cabinet is unavailable, these fields default to `'unknown'` or `{}` — the manifest still renders.
 

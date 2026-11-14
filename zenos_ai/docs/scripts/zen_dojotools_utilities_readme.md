@@ -1,12 +1,14 @@
 # Zen DojoTools Utilities
 
-**Script versions** (per-script `tool_manifest`, canonical): `help` 3.1.2 · `calculator` 1.3.0 · `dice_roller` 1.0.0 · `wait` 1.0.0 · `select_control` 1.1.1 · `boolean` 1.1.1 · `number` 1.1.1 · `text` 1.1.1 · `timekeeper` 1.3.0 · `climate` 2.0.1 · `water_heater` 1.1.1 · `datetime` 1.1.1 · `zones` 1.1.0.
+**Script versions** (per-script `tool_manifest`, canonical): `help` 3.2.2 · `calculator` 1.4.0 · `dice_roller` 1.1.0 · `wait` 1.1.0 · `select_control` 1.3.1 · `boolean` 1.3.1 · `number` 1.3.1 · `text` 1.3.1 · `timekeeper` 1.5.1 · `climate` 2.2.1 · `water_heater` 1.3.1 · `datetime` 1.3.1 · `zones` 1.3.1.
 
 *Calculator, dice, announcements, music search, system help, wait, cabinet audit, and canonical HA domain control tools*
 
 ---
 
 > **Response envelope (2026.10.0):** Every script in this bundle returns the standard OS envelope — `{status, mode, tool, result, system_message, caller_token}` (see [`envelope()`](../custom_templates/zen_os1_jinja.md#envelopestatus-mode-result-tool-caller_token--canonical-response-shape)). The response fields documented on this page live under `result`; top-level `status` is the generic `success`/`error` execution status. Read `.result` when consuming a response via `response_variable`.
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 
 ## Overview
 
@@ -24,7 +26,7 @@ The canonical domain tools (`select_control`, `number`, `text`, `climate`, `wate
 | `zen_dojotools_dice_roller` | D&D dice, coin flip, random numbers |
 | `zen_dojotools_announce` | TTS announcement router with urgency + dedup gates |
 | `zen_sutra_music_search` | Music Assistant search — **internal sutra, not MCP-exposed**. Use `zen_dojotools_media_manager` mode=search or mode=stacks_by_anchor. |
-| `zen_dojotools_help` | Global help front door — system overview, help-proxy to any tool, tool-directory auto-discovery |
+| `zen_dojotools_help` | Global help front door — system overview, help-proxy to any tool, a paged tool directory with one-line summaries |
 | `zen_dojotools_wait` | Timed delay (1–120 seconds) |
 | `dojotools_volume_auditor` | Cabinet volume accessibility scanner |
 | `zen_dojotools_notification_router` | **Deprecated** — legacy push notification router |
@@ -33,7 +35,7 @@ The canonical domain tools (`select_control`, `number`, `text`, `climate`, `wate
 | `zen_dojotools_number` | CANONICAL: `number` / `input_number` GET+SET+arithmetic |
 | `zen_dojotools_timekeeper` | CANONICAL: `timer` GET+SET, plus dashboard/worldclock/alarms read-only modes |
 | `zen_dojotools_text` | CANONICAL: `text` / `input_text` GET+SET+string ops |
-| `zen_dojotools_climate` | CANONICAL: `climate` **and `fan`** GET+SET with topology context, `climate_control` identity gate |
+| `zen_dojotools_climate` | CANONICAL: `climate` **and `fan`** GET+SET with topology context, `zenos.actuation.climate_control` identity gate |
 | `zen_dojotools_water_heater` | CANONICAL: `water_heater` GET+SET |
 | `zen_dojotools_datetime` | CANONICAL: `input_datetime` GET+SET |
 | `zen_dojotools_zones` | CANONICAL: zone CRUD + haversine bearing |
@@ -140,7 +142,7 @@ Direct MA service wrapper. Fields: `query`, `artist`, `album`, `media_type`, `nu
 
 ---
 
-## zen_dojotools_help — Global Help Front Door (v3.0.0)
+## zen_dojotools_help — Global Help Front Door (v3.2.2)
 
 `zen_dojotools_help` is now more than the system-overview tool — it's the front door for discovering and proxying to any tool's own help. Five modes:
 
@@ -148,7 +150,7 @@ Direct MA service wrapper. Fields: `query`, `artist`, `album`, `media_type`, `nu
 |------|------|
 | `about` (default) | System overview including architecture, design principles, safety notes, the Pantheon roster, module list, escalation contacts, and a real-time inventory of all `zen`-labeled scripts currently loaded in HA. |
 | `help` | Proxy to a specific tool's own `mode=help` — pass `tool=<script_name>`. Returns that tool's canonical help schema directly. If the target's response doesn't look like real help (e.g. a tool with no help handler falling through to a live read), returns `status: unsupported` instead of passing live data through. Requires `tool`; without it, returns an error naming `mode=directory` as the discovery path. Only existing `zen_dojotools_`, `zen_stack_`, `zen_sutra_` and `zen_codex_` tools can be proxied; any other script name is refused with a `guarded:` error. |
-| `directory` | Auto-discover every `zen_dojotools_*`/`zen_stack_*`/`zen_sutra_*`/`zen_codex_*` script currently loaded (`on`/`off` state) and check each one's `tool_manifest` for `help` in its supported modes — no static list to maintain, new tools appear automatically as long as they implement `mode=help`. |
+| `directory` | Lists every `zen_dojotools_*`/`zen_stack_*`/`zen_sutra_*`/`zen_codex_*` script currently loaded (`on`/`off` state) whose `tool_manifest` answers (read out of its envelope), a page at a time. No static list to maintain: a new tool appears as soon as its manifest answers. Help is the default mode of every `zen_*` script, so a tool is listed whether or not its manifest names `help` (since 3.2.1; most stacks list only their verbs). Each entry is `script, display_name, summary, tier, returns, version`; `summary` is the tool's [`tool_manifest` summary](../custom_templates/zenos_manifest_jinja.md), falling back to `display_name`. See [Paging the directory](#paging-the-directory). |
 | `troubleshooting` | **Static** — zero live calls, zero fan-out (deliberately: a fan-out-based troubleshooting mode would hit the exact failure class it documents). System-level known platform quirks — currently the `script:` platform's entity_id/unique_id drift class (symptom `ServiceNotFound` from a dynamically-templated action even though the entity looks healthy in `states.script`; cause, fix, and diagnostic path all included) — plus pointers to every other diagnostic surface (`zen_dojotools_systemtools` health report, `zen_dojotools_manifest` audit modes, this tool's own `mode=about`/`mode=directory`, the entity registry, repo/community links). Wired bidirectionally with this tool's own `mode=about` Diagnostics section. Start-here reference for an agent in a vacuum with an unexplained error and no other context. |
 | `tool_manifest` | Self-description (UMP contract). |
 
@@ -162,9 +164,15 @@ zen_dojotools_help:
   mode: help
   tool: zen_dojotools_finance
 
-# Discover every help-capable tool currently loaded
+# The tool directory, first page (20 tools)
 zen_dojotools_help:
   mode: directory
+
+# Page 2 of the stacks only
+zen_dojotools_help:
+  mode: directory
+  tier: stacks
+  page: 2
 
 # Static system-level gotchas + where else to look (no live calls)
 zen_dojotools_help:
@@ -174,6 +182,18 @@ zen_dojotools_help:
 `action=` remains as a backward-compatible alias for `about`/`tool_manifest` only — use `mode=` for the full mode set, including `help` and `directory`.
 
 Useful for giving the AI a fresh picture of what's available when its context is stale, or for routing a "how do I use X" question straight to X's own documentation instead of guessing.
+
+### Paging the directory
+
+Since 3.2.0, `mode=directory` answers a page at a time. It sorts the matching scripts and cuts out the page **before** it calls any manifest, so a page costs `page_size` manifest calls, not one per tool in the house. (A full pass over every tool used to take well over a minute.)
+
+| Field | Default | Does |
+|---|---|---|
+| `page` | 1 | Page number, from 1. A page past the end returns the last page. |
+| `page_size` | 20 | Tools per page, 1 to 50. |
+| `tier` | all | One tier only: `dojotools`, `stacks`, `sutras` or `codex`. |
+
+The response adds `page`, `page_size`, `pages`, `total`, `tier` and `next`. `next` is the call for the following page (for example `mode=directory page=2 tier=stacks`), or null on the last page. `total` counts every script in scope, so a page can list fewer than `page_size` tools when a script on it does not answer. The summaries are short on purpose: for a tool's details, call the tool with `mode=help` (or `mode=tool_manifest`), or call this tool with `mode=help tool=<script>`.
 
 ---
 
@@ -343,7 +363,7 @@ GET response includes a `topology_context` block: open doors/windows, area tempe
 | `get` | Any truthy value forces read-only |
 | `mode` | `read` forces a read-only reply. `set` requires at least one real setter field — returns `missing_setter` if none given. `tool_manifest` for self-description. Omitting `mode` still works identically. |
 
-**Identity gate (2026-08-16):** GET stays open. Any real setter requires the `climate_control` certification — cert-only, no live-ack tier (same shape as ZenLux's `lighting_control`; nothing on a thermostat or fan is exterior-security-grade). `cert_scope` deny is enforced as a hard block via the shared `cert_scope_check` macro. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
+**Identity gate (2026-08-16):** GET stays open. Any real setter requires the `zenos.actuation.climate_control` certification — cert-only, no live-ack tier (same shape as ZenLux's `zenos.actuation.lighting_control`; nothing on a thermostat or fan is exterior-security-grade). `cert_scope` deny is enforced as a hard block via the shared `cert_scope_check` macro. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
 
 **SESE conversion note:** this tool doesn't fit the mode-dispatch `choose:` shape the other gated tools use — multiple setters can combine in one call, always could. Uses a flat-guard restructure instead: every stop point sets `result` and falls through, every later block gains `result is not defined and` on its own condition. GET keeps its own terminal exit, same read/write split every tool in this file uses.
 

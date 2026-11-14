@@ -14,23 +14,24 @@ The tiers resolve as a cascade. The highest tier with an active source wins:
 
 ```mermaid
 flowchart TD
-  A["emergency"] --> B["manual override<br/>(room_control_manager)"]
+  A["emergency"] --> P["child paused"]
+  P --> B["manual override<br/>(room_control_manager)"]
   B --> C["asleep"]
-  C --> D["engaged"]
-  D --> E["child engaged"]
-  E --> F["hold<br/>(wasp, entertaining, guest)"]
-  F --> G["occupied"]
+  C --> F["hold<br/>(wasp, entertaining, guest,<br/>presence, hold entity)"]
+  F --> D["engaged"]
+  D --> G["occupied<br/>(including any active child)"]
   G --> H["vacant"]
 ```
 
 | Tier | Means |
 |---|---|
-| `emergency` | A smoke, carbon monoxide, moisture, or siren signal latched. Wins even over a paused room: life safety is never silenced. Cleared only by a human or agent acknowledgement. |
+| `emergency` | A smoke, carbon monoxide, moisture, or siren signal latched, here or in a child room. Wins even over a paused room: life safety is never silenced. Cleared only by a human or agent acknowledgement. |
+| child paused | A child room is paused, so the parent reports paused too. |
 | manual override | Someone deliberately set the room (paused, automation, cleaning, or a specific state) through `room_control_manager`. |
 | `asleep` | Someone is asleep here. A device staying active nearby never overrides a real asleep signal. |
 | `engaged` | Someone is actively doing something: media playing, a desk in use. |
-| `hold` | Presence that cannot be resolved yet, or a deliberate conservative hold. |
-| `occupied` | Presence with no specific activity, or a child room that is not vacant. |
+| `hold` | Presence that must not decay: the wasp flag (presence behind closed doors, kept until a door opens), entertaining or guest mode, a continuous-presence sensor, or a hold entity such as a fridge door. Hold ranks above engaged, because hold is a superset of engaged. |
+| `occupied` | Presence with no specific activity, or an active child room. |
 | `vacant` | Nothing is true. |
 
 A room's state is what an agent means when it asks whether a room is occupied. It is also what REFLEX acts on (16.4).
@@ -45,7 +46,7 @@ This is the hypergraph again (Chapter 7). A motion sensor carries `motion` and i
 
 **One timer per room.** Presence decays: a room stays occupied for a while after the last motion. Each room that opts in has one `room_timer` and records which tier currently owns it (occupied, engaged, or asleep). A room is never decaying two tiers at once, so one timer is enough. A room without a timer uses live signals only, which is a simpler mode, not a broken one.
 
-**Child rooms cascade up.** An ensuite or sub-room contributes to its parent. A child that is engaged makes the parent engaged. A child in any other active state holds the parent at occupied for as long as it stays active. The one exception: a parent's own direct asleep signal always wins.
+**Child rooms cascade up.** An ensuite or sub-room contributes to its parent. A child in any real state other than vacant or paused (engaged, asleep and hold included) holds the parent at occupied, never higher, for as long as it stays active: a busy ensuite means the suite is occupied, not that the bedroom is in use. A paused or emergency child cascades as itself. A child that is unknown, unavailable or missing counts for nothing, and a releasing child keeps its parent occupied for an 8 second bridge so the parent doesn't flash dark. The one exception: a parent's own direct asleep signal always wins.
 
 **Every state explains itself.** Each tier that can be true carries a `*_last_trigger` attribute naming the entity that most recently caused it, or the timer keeping it alive. `last_trigger` does the same for whichever tier won. "Why does the office say engaged?" has an inspectable answer.
 

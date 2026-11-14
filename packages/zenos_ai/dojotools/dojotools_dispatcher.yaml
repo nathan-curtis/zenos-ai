@@ -1,6 +1,36 @@
 #####################################################################
 # zen_dojotool_dispatcher — Event-driven dojotool dispatch layer
-# Version: 5.4.5
+# Version: 5.5.1
+#
+# v5.5.1 (#10681)
+#   + lens dispatch 1.2.1 records each provider's reply status; a provider that
+#     answers not_configured and returns nothing reads unavailable
+#     (provider_not_configured), not success with 0.
+#   + urgency handler also tags the ticket with the component slug, an anchor
+#     the Radar lens can find (the dedup tag lands now that Taskmaster 0.9.2
+#     returns the ticket number).
+#
+# v5.5.0
+#   + declared-act route: a tool with no hand route is called if its own
+#   tool_manifest declares an act {mode, args}. The dispatcher reads the
+#   declaration itself, calls only that mode with only the declared args (enum
+#   values checked) plus kata_input, and never lets the payload pick the mode.
+#   Hand routes win. No declaration: unknown_tool, as before.
+#
+# v5.4.8
+#   + lens_dispatch 1.2.0: onboarding gate (zen_os_1 entry_gate): an agent
+#   without zenos.agent.basic gets help and tool_manifest only; a dispatch
+#   answers onboarding_required and writes one zen_entry_gate warning.
+#   Consumers called with no user pass. The FileCabinet call uses mode.
+#
+# v5.4.7
+#   + lens_dispatch 1.1.2: an item a provider returns through two anchors is
+#     one entry with both anchor_contexts (it kept the first and dropped the
+#     other anchor), #10646.
+#
+# v5.4.6: the climate, announce and cabinets calls name their mode explicitly.
+#   Climate derives it from the payload (an explicit mode wins; get or no
+#   setter field reads; otherwise sets).
 #
 # v5.4.5
 #   + lens_dispatch 1.1.1: provider= narrows the fan-out to the named registry
@@ -122,7 +152,7 @@ automation:
       inter-tool communication. Listens for zen_event(kind: dojotool_call),
       routes to registered scripts, fires correlated dojotool_return events.
 
-      Fault isolation: unknown tools return structured error — no hard fault.
+      Fault isolation: unknown tools return structured error: no hard fault.
       Version routing: tool + version resolves to specific script entity.
       Observability: all inter-tool calls visible on the event bus.
       Non-breaking: direct script calls unaffected. Migrate opportunistically.
@@ -500,6 +530,17 @@ automation:
                         mode: ticket_tag
                         input_json: >-
                           {{ {'ticket_id': _result.get('ticket_number', ''), 'tag': _uh_dedup_tag} | tojson }}
+                    # #10681: also tag the component slug, an anchor the Radar lens
+                    # can find (most component slugs are also HA labels:
+                    # alert_manager, water_manager, camera_manager, taskmaster).
+                    - if: "{{ _uh_component != '' }}"
+                      then:
+                      - action: script.zen_dojotools_servicedesk
+                        continue_on_error: true
+                        data:
+                          mode: ticket_tag
+                          input_json: >-
+                            {{ {'ticket_id': _result.get('ticket_number', ''), 'tag': _uh_component | lower | regex_replace('[^a-z0-9]+', '_')} | tojson }}
                     # continue_on_error above would otherwise hide a failed tag
                     # write; surface it on the event bus so it is debuggable.
                     - variables:
@@ -668,6 +709,7 @@ automation:
             sequence:
               - action: script.zen_dojotools_climate
                 data:
+                  mode: "{%- set ns = namespace(n=0) -%}{%- for _k in ['temperature', 'target_low', 'target_high', 'hvac_mode', 'fan_mode', 'swing_mode', 'preset', 'humidity', 'aux_heat', 'power'] -%}{%- if _payload.get(_k) not in [none, ''] -%}{%- set ns.n = ns.n + 1 -%}{%- endif -%}{%- endfor -%}{{ _payload.get('mode') or ('read' if (_payload.get('get') or ns.n == 0) else 'set') }}"
                   name:         "{{ _payload.get('name', '') }}"
                   room:         "{{ _payload.get('room', none) }}"
                   temperature:  "{{ _payload.get('temperature', none) }}"
@@ -743,6 +785,7 @@ automation:
             sequence:
               - action: script.zen_dojotools_announce
                 data:
+                  mode: announce
                   message:          "{{ _payload.get('message', '') }}"
                   urgency:          "{{ _payload.get('urgency', 1) }}"
                   target_area:      "{{ _payload.get('target_area', '') }}"
@@ -777,25 +820,69 @@ automation:
                   pm_tag:             "{{ _payload.get('pm_tag', '') }}"
                 response_variable: _result
 
-        # ── Unknown tool — structured fault, NOT a hard crash ─────────────
+        # ── Declared act (generic route), else unknown tool ───────────────
+        # A tool with no hand route above can still be called if its own
+        # tool_manifest declares an act {mode, args}. The dispatcher reads
+        # that declaration itself and calls only the declared mode, with only
+        # the declared args (enum values checked), plus kata_input. The
+        # payload never chooses the mode. Hand routes above always win.
         default:
           - variables:
-              _result:
-                status: error
-                error: unknown_tool
-                message: "Dispatcher: unknown tool '{{ _tool }}' v{{ _ver }}. Not in registry."
-                tool: "{{ _tool }}"
-                version: "{{ _ver }}"
-                correlation_id: "{{ _cid }}"
-          - event: zen_event
-            event_data:
-              event:
-                kind: dojotool_dispatch_error
-                tool: "{{ _tool }}"
-                version: "{{ _ver }}"
-                correlation_id: "{{ _cid }}"
-                error: unknown_tool
-                message: "Dispatcher: unknown tool '{{ _tool }}' v{{ _ver }}. Not in registry."
+              _gr_ok: >-
+                {{ (_tool | string) is match('^zen_dojotools_[a-z0-9_]+$')
+                   and states['script.' ~ _tool] is not none and _ver | string == '1' }}
+              _gr_act: {}
+          - if: "{{ _gr_ok }}"
+            then:
+              - action: "script.{{ _tool }}"
+                continue_on_error: true
+                data:
+                  mode: tool_manifest
+                response_variable: _gr_tm
+              - variables:
+                  _gr_act: >-
+                    {%- set ns = namespace(r=(_gr_tm if _gr_tm is mapping else {})) -%}
+                    {%- for _ in range(3) -%}
+                      {%- if 'act' not in ns.r and ns.r.get('result') is mapping -%}{%- set ns.r = ns.r.get('result') -%}{%- endif -%}
+                    {%- endfor -%}
+                    {%- set a = ns.r.get('act') -%}
+                    {{ a if (a is mapping and (a.get('mode') or '') | string is match('^[a-z0-9_]+$')) else {} }}
+          - if: "{{ _gr_act | count > 0 }}"
+            then:
+              - variables:
+                  _gr_data: >-
+                    {%- set spec = (_gr_act.get('args') if _gr_act.get('args') is mapping else {}) -%}
+                    {%- set given = _payload.get('act_args', {}) if _payload is mapping else {} -%}
+                    {%- set given = (given | from_json({})) if given is string else given -%}
+                    {%- set ns = namespace(d={}) -%}
+                    {%- for k, v in (given if given is mapping else {}).items() if k in spec and k not in ['mode', 'tool', 'kata_input', 'caller_token'] -%}
+                      {%- set sp = spec[k] if spec[k] is mapping else {} -%}
+                      {%- set en = sp.get('enum') -%}
+                      {%- if not (en is sequence and en is not string) or (v | string) in (en | map('string') | list) -%}{%- set ns.d = ns.d | combine({k: v}) -%}{%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.d | combine({'mode': _gr_act.mode, 'kata_input': _payload.get('kata_input', {}), 'caller_token': _payload.get('caller_token', '')}) }}
+              - action: "script.{{ _tool }}"
+                continue_on_error: true
+                data: "{{ _gr_data }}"
+                response_variable: _result
+            else:
+              - variables:
+                  _result:
+                    status: error
+                    error: unknown_tool
+                    message: "Dispatcher: unknown tool '{{ _tool }}' v{{ _ver }}. Not in registry, and it declares no act."
+                    tool: "{{ _tool }}"
+                    version: "{{ _ver }}"
+                    correlation_id: "{{ _cid }}"
+              - event: zen_event
+                event_data:
+                  event:
+                    kind: dojotool_dispatch_error
+                    tool: "{{ _tool }}"
+                    version: "{{ _ver }}"
+                    correlation_id: "{{ _cid }}"
+                    error: unknown_tool
+                    message: "Dispatcher: unknown tool '{{ _tool }}' v{{ _ver }}. Not in registry, and it declares no act."
 
       # ── Fire correlated return ────────────────────────────────────────────
       - event: zen_event
@@ -828,7 +915,7 @@ automation:
       Zen Identity Manifest Router 1.0.0. Listens for
       zen_event(kind: identity_manifest_rebuild) and calls
       zen_dojotools_manifest to rebuild zen_library_manifest.
-      Queued — provision/deprovision sequences serialize cleanly.
+      Queued: provision/deprovision sequences serialize cleanly.
     mode: queued
     max: 20
 
@@ -842,6 +929,7 @@ automation:
     actions:
       - action: script.zen_dojotools_manifest
         data:
+          mode: cabinets
           show_hidden: false
           show_stacks: false
           extended: false
@@ -923,7 +1011,7 @@ automation:
     description: >-
       Zen Scheduler Drain Router 1.0.0. When queue depth is sustained
       below drain_below for s_min_minutes, trickles shed components back
-      into the pipeline — keeper tier first, oldest kata first.
+      into the pipeline: keeper tier first, oldest kata first.
       Starvation guard fires at s_max_minutes regardless of depth.
       Config in zen_scheduler_config drawer of household root cabinet.
     mode: single
@@ -1190,9 +1278,10 @@ script:
                 {%- import 'zenos_ai/zenos_manifest.jinja' as MF -%}
                 {{ MF.tool_manifest(
                     tool='zen_dojotools_lens_dispatch',
+                    summary='Route a lens request to the registered providers',
                     display_name='Lens Dispatch',
                     tier='dojotools',
-                    version='1.1.1',
+                    version='1.2.1',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['sutra'],
                     optional_labels=[],
@@ -1205,6 +1294,25 @@ script:
                     mcp_exposed=false,
                     caller_token=caller_token | default('')
                 ) | from_json }}
+      # Onboarding gate (zen_os_1 entry_gate): an agent without
+      # zenos.agent.basic gets help and tool_manifest only. Consumers called
+      # with no user (automations, the scheduler) pass.
+      - variables:
+          _ld_gate: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{ OS.entry_gate((context.user_id if context is defined else '') or '', 'zen_dojotools_lens_dispatch', _tm_check or 'dispatch') | from_json({'pass': false, 'reason': 'guarded: the onboarding gate could not be read'}) }}
+      - if: "{{ _response is not defined and not _ld_gate.get('pass', false) }}"
+        then:
+          - variables:
+              _response:
+                status: error
+                reason: "{{ _ld_gate.reason }}"
+                next_step: "{{ _ld_gate.next_step }}"
+          - action: system_log.write
+            data:
+              level: warning
+              logger: zen_entry_gate
+              message: "{{ _ld_gate.get('log') or 'onboarding gate refused a call (gate result unreadable)' }}"
       - if: "{{ _response is not defined }}"
         then:
           - variables:
@@ -1322,11 +1430,11 @@ script:
                 - anchor_type: product
                   anchor_ids: "{{ _product_ids }}"
 
-          - action: script.zen_dojotools_filecabinet
+          - action: script.zen_sutra_filecabinet
             continue_on_error: true
             response_variable: _lens_registry_raw
             data:
-              action_type: read
+              mode: get
               show_hidden_volumes: false
               volume_entity_id:
                 - "{{ _lr_household }}"
@@ -1402,7 +1510,8 @@ script:
                                           'provider': _provider_key,
                                           'anchor_type': _group_type,
                                           'evidence': (_provider_raw.get('evidence', []) if _provider_raw is defined and _provider_raw is mapping else []),
-                                          'count': (_provider_raw.get('count', 0) if _provider_raw is defined and _provider_raw is mapping else 0)
+                                          'count': (_provider_raw.get('count', 0) if _provider_raw is defined and _provider_raw is mapping else 0),
+                                          'reply_status': ((_provider_raw.get('status', '') if _provider_raw is defined and _provider_raw is mapping else '') | string | lower | trim)
                                         }] }}
                             default: []
 
@@ -1410,9 +1519,10 @@ script:
               _providers_response: >-
                 {%- set ns = namespace(providers={}) -%}
                 {%- for pkey, pdecl in _registered_providers.items() if _registered_providers is mapping and pdecl is mapping -%}
-                  {%- set doc_ns = namespace(docs=[], seen=[], was_called=false, call_counts={'label': 0, 'person': 0, 'area_id': 0, 'zone': 0, 'company': 0, 'family': 0, 'household': 0}) -%}
+                  {%- set doc_ns = namespace(docs=[], seen=[], was_called=false, not_configured=false, call_counts={'label': 0, 'person': 0, 'area_id': 0, 'zone': 0, 'company': 0, 'family': 0, 'household': 0}) -%}
                   {%- for out in _provider_outputs if out is mapping and out.get('provider', '') == pkey -%}
                     {%- set doc_ns.was_called = true -%}
+                    {%- if (out.get('reply_status', '') | string) == 'not_configured' -%}{%- set doc_ns.not_configured = true -%}{%- endif -%}
                     {%- set atype = out.get('anchor_type', '') | string | trim -%}
                     {%- set cnt = out.get('count', 0) | int(0) if out is mapping else 0 -%}
                     {%- if atype in doc_ns.call_counts -%}
@@ -1421,9 +1531,18 @@ script:
                     {%- set docs = out.get('evidence', []) if out is mapping and out.get('evidence', []) is sequence and out.get('evidence', []) is not string else [] -%}
                     {%- for d in docs if d is mapping -%}
                       {%- set eid = d.get('evidence_id', pkey ~ ':evidence:' ~ loop.index | string) -%}
+                      {%- set ctx = d.get('anchor_contexts', []) if d.get('anchor_contexts', []) is sequence and d.get('anchor_contexts', []) is not string else [] -%}
                       {%- if eid not in doc_ns.seen -%}
                         {%- set doc_ns.seen = doc_ns.seen + [eid] -%}
                         {%- set doc_ns.docs = doc_ns.docs + [d] -%}
+                      {%- else -%}
+                        {#- Same item through another anchor: keep one entry, add
+                            the anchor_contexts it was reached by. -#}
+                        {%- set i = doc_ns.seen.index(eid) -%}
+                        {%- set old = doc_ns.docs[i] -%}
+                        {%- set cns = namespace(c=(old.get('anchor_contexts', []) or [])) -%}
+                        {%- for c in ctx if c not in cns.c -%}{%- set cns.c = cns.c + [c] -%}{%- endfor -%}
+                        {%- set doc_ns.docs = doc_ns.docs[:i] + [dict(old, anchor_contexts=cns.c)] + doc_ns.docs[i + 1:] -%}
                       {%- endif -%}
                     {%- endfor -%}
                   {%- endfor -%}
@@ -1431,7 +1550,9 @@ script:
                   {%- set _p_reg_status = pdecl.get('status', 'available') | string | lower | trim -%}
                   {%- set _p_has_tool = pdecl.get('tool', '') | string | trim != '' -%}
                   {%- set _prov_status = 'disabled' if not _p_enabled else ('unavailable' if (_p_reg_status != 'available' or not _p_has_tool) else ('success' if doc_ns.was_called else 'empty')) -%}
+                  {%- set _prov_status = 'unavailable' if (_prov_status == 'success' and doc_ns.not_configured and doc_ns.docs | length == 0) else _prov_status -%}
                   {%- set _miss_reason = 'provider_disabled' if not _p_enabled else ('provider_no_tool' if not _p_has_tool else ('provider_offline' if _p_reg_status != 'available' else ('' if doc_ns.was_called else 'anchor_type_unsupported'))) -%}
+                  {%- set _miss_reason = 'provider_not_configured' if (doc_ns.not_configured and doc_ns.docs | length == 0) else _miss_reason -%}
                   {%- set _prov_entry = {
                     'status': _prov_status,
                     'department': pdecl.get('department', pdecl.get('section', '')),

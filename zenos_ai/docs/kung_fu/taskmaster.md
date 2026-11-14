@@ -1,6 +1,8 @@
 # Taskmaster — KFC Guide
 
-> **dojotools 0.3.0** | ZenOS-AI 2026.8.1 (patch on 'Chef')
+> **dojotools 0.9.2** | ZenOS-AI 2026.11.0 'This Is Spinal Tap'
+
+> **Meds have their own summary (0.9.0).** `briefing` takes `case`: `household` (everything but medications), `medications` (only medications), or none (everything, as before). The `taskmaster` summary seeds `household`, and the new `taskmaster_meds` summary seeds `medications`, which carries the read cert `zenos.health.read`. Bare `briefing` is no longer a seed mode; a summary that still seeds it keeps working, mapped to `briefing:household` through Taskmaster's `seed_aliases` (0.9.1), with a one-time notice saying so. Under `seed_cert_mode` enforce, meds reach a background summary only while that cert is granted with stage `s`.
 
 Taskmaster is ZenOS-AI's cross-backend task orchestration layer: household chores, tickets, calendar, and medications, urgency-scored and surfaced through one briefing call. As of 2026.8.0 it's a full dojotools script (`zen_dojotools_taskmaster`) with real modes, self-registering via KF5 — not a label-driven Ninja Summarizer component like earlier KF4 versions. If you're looking for the old conductor-pattern / label-graph docs, that architecture no longer exists; this page describes the current tool.
 
@@ -29,11 +31,11 @@ Taskmaster self-registers with the Lens Bus (same pattern as `zen_dojotools_inve
 
 | Mode | Description |
 |------|-------------|
-| `briefing` | The scheduled seed — urgency-scored household briefing. Fires on `quarter_hour` + occupancy-change triggers via KF5 self-registration, 60-minute emission cooldown, 180s delay so it doesn't crowd every other component firing on the raw `quarter_hour` tick. Conductor items (Friday's own schedule-driven task list) surface first, then everything else from `task_list`, scored by shape (medication classification/PRN/date rules for todo+crm, chore due-status for inventory, priority passthrough for radar). Also returns a `context` block of real (not LLM-guessed) situational signals — see [Context Block](#context-block) below. |
+| `briefing` | The scheduled seed — urgency-scored household briefing. Fires on `quarter_hour` + occupancy-change triggers via KF6 self-registration, 60-minute emission cooldown, 180s delay so it doesn't crowd every other component firing on the raw `quarter_hour` tick. Conductor items (Friday's own schedule-driven task list) surface first, then everything else from `task_list`, scored by shape (medication classification/PRN/date rules for todo+crm, chore due-status for inventory, priority passthrough for radar). Also returns a `context` block of real (not LLM-guessed) situational signals — see [Context Block](#context-block) below. |
 | `almanac` | On-demand "what does today look like" — meal plan (`zen_dojotools_kitchen mode=run case=mealplan_today`), appointments (`zen_dojotools_rolodex mode=appointments_list`), plus a meal/appointment collision flag. Informational only, never blocking. |
 | `stale_review` | Filters `briefing`'s own scoring to urgency ≥ 2, sorted highest-first. Suppresses Radar tickets triaged `radar_rank_backlog` regardless of raw priority — those are intentionally deprioritized, not stale in the "forgotten" sense. |
 | `facilities_brief` | Building-super/housekeeping-lead view. Reads live kata cabinet entries for physical-plant components directly (`energy_manager`, `water_manager`, `hot_tub_manager`, `garage_freezer_thermal_model`, `dishwasher_manager`, `laundry_manager`) — no re-query — surfaces only urgency ≥ 2. Plus open Radar tickets tagged to a physical area and the house-wide chore backlog. |
-| `task_create` | Create a task. Routes to the best available backend per the priority chain above. Requires the `pii_disclosure_control` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
+| `task_create` | Create a task. Routes to the best available backend per the priority chain above. Requires the `zenos.comms.pii_disclosure` certification (level 1) as of 2026-09-10 (#10390) — see the [Security Certification Manual](../getting_started/security_certification_manual.md). |
 | `task_list` | List tasks across whichever backends are configured. The data `briefing` and `stale_review` build on. |
 | `task_complete` | Mark a task complete on whichever backend it lives on. |
 | `tier_status` | Reports which backends (Radar/Inventory/CRM) are actually configured right now, via each backend's own `tool_manifest`. |
@@ -41,7 +43,7 @@ Taskmaster self-registers with the Lens Bus (same pattern as `zen_dojotools_inve
 | `help` | Standard mode/field listing. |
 | `register` / `unregister` | Lens Bus provider registration lifecycle. |
 | `tool_manifest` | Standard manifest response. |
-| `kfc_manifest` | KF5 self-registration payload — the `component_instructions` prompt text that ships with the KFC (see [KF5 Pattern](../scripts/zen_kf5_pattern_readme.md)). |
+| `kfc_manifest` | KF6 self-registration payload — the `component_instructions` prompt text that ships with the KFC (see [KF6 Pattern](../scripts/zen_kf6_pattern_readme.md)). |
 
 ---
 
@@ -90,7 +92,7 @@ Any todo entity tagged with `taskmaster` + a domain label (`daily`, `weekly`, `t
 ## Related
 
 - [Kitchen / Mealie](../plugins/mealie.md) — `prep_brief` feeds Taskmaster's `context.prep_schedule`.
-- [KF5 Self-Registration Pattern](../scripts/zen_kf5_pattern_readme.md) — how Taskmaster registers itself without a manual Scribe authoring step.
+- [KF6 Self-Registration Pattern](../scripts/zen_kf6_pattern_readme.md) — how Taskmaster registers itself without a manual Scribe authoring step.
 
 ---
 

@@ -2,12 +2,14 @@
 
 ### **Deterministic Entity Selector for Home Assistant**
 
-**Version:** 5.1.0
+**Version:** 5.2.0
 **Namespace:** `script.zen_dojotools_query`
 **Icon:** `mdi:filter-cog`
 
 ---
 
+
+> **Backstage pass required (2026.11.0).** An agent without `zenos.agent.basic` gets this tool's `help`, `tool_manifest` and `kfc_manifest` only. Anything else answers `status: error`, `reason: "guarded: onboarding_required: ..."` and `next_step: {tool: zen_flynn_oobe, mode: run}`, and writes one `zen_entry_gate` warning to the system log. Calls no user started (boot, Flynn, automations, the scheduler) pass. See [the onboarding gate](../developer_standards.md#the-onboarding-gate).
 # 🧠 Overview
 
 **ZQ-1** is the foundational **deterministic entity filtering engine** used throughout Project Friday.
@@ -122,7 +124,9 @@ numeric_below:      # float threshold
 
 regex:              # string, matched against STATE STRING
 entity_id_regex:    # regex_search() against entity_id — SEED if pipe empty, FILTER if pipe has content
-friendly_name_regex: # regex_search() against friendly_name attribute — SEED or FILTER. Use (?i) prefix for case-insensitive.
+friendly_name_regex: # regex_search() against the display name: friendly_name while HA sets it, else device name + entity name. SEED or FILTER. Use (?i) prefix for case-insensitive.
+entity_name_regex:  # regex_search() against the entity's own name only (entity_name()). SEED or FILTER. (2026.11.0)
+device_name_regex:  # regex_search() against the device's effective name (device_name()). No device, no match. SEED or FILTER. (2026.11.0)
 
 shortcuts:
   numeric:          # require numeric state
@@ -163,6 +167,7 @@ ZQ-1 executes filters in deterministic order:
 10. Filter: exclude_states
 10b. Filter: entity_id_regex (SEED if pipe empty, FILTER if not)
 10c. Filter: friendly_name_regex (SEED if pipe empty, FILTER if not)
+10d. Filter: entity_name_regex / device_name_regex (SEED if pipe empty, FILTER if not)
 11. Filter: numeric_above / numeric_below
 12. Filter: regex (state string)
 13. Filter: shortcuts (all must match)
@@ -305,6 +310,7 @@ It is one of the most critical primitives in Project Friday’s internal reasoni
 
 | Version | Change |
 |---|---|
+| 5.2.0 | ZQ-1 4.10.0: `entity_name_regex` and `device_name_regex`. `friendly_name_regex` keeps its meaning and matches the device name + entity name once HA stops setting `friendly_name`. |
 | 4.5.7 | `friendly_name_regex` filter — `regex_search()` against `friendly_name` attribute; SEED or FILTER mode |
 | 4.6.0 | `entity_id_regex` filter — `regex_search()` against entity_id; SEED or FILTER mode. `regex` corrected to use `regex_search()`. `stats_eligible` shortcut added. |
 | 4.5.0 | `output_fields` param added (reserved, no-op) — field shaping reserved for future release |

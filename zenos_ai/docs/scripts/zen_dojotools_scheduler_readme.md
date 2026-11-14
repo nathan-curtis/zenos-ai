@@ -1,4 +1,6 @@
-# Zen DojoTools Scheduler — v5.2.4
+# Zen DojoTools Scheduler — v5.4.0
+
+> **2026.11.0:** The trigger registry: the system cabinet drawer `zen_trigger_registry` lists every trigger a KFC can subscribe to, and only the scheduler writes it. A pack registers with `zen_event` kind `trigger_pack_register` from automation context (a user or agent call is ignored); the core pack registers at start and after an automation reload, and again on the quarter-hour tick whenever `zenos_core` is missing from the registry or registered at an older version, so a fresh install, a cabinet reset or an upgrade fills it without a restart or reload. Six label triggers, idle until an entity carries the label: `zen_leak`, `zen_smoke`, `zen_door`, `zen_power`, `zen_appliance`, and `alarm_panel` (5.3.2: a panel labeled `alarm_panel` goes to triggered; Alert Manager subscribes to it). One device trigger, `print_done` (5.4.0): a Bambu Lab print finished or failed, from that integration's own `bambu_lab_event` (Home Assistant has no purpose trigger for printers). It is idle until a component subscribes; Print Shop does while its `job_end_summary` setting is on. Reload automations first, then scripts. The group-based `door_opens_or_closes`, `window_opens_or_closes`, `lock_changes` and `garage_door` are legacy; prefer `zen_door`. See [Triggers](../kung_fu/building_a_kfc.md#triggers).
 
 *Automation — no `tool_manifest`, so the file header version is canonical.*
 
@@ -59,7 +61,7 @@ kata_key: security_manager
 ```
 
 - **`trigger_subscriptions`** — list of trigger IDs this component wants to fire on
-- **`delay_seconds`** — how long to wait before running the Ninja Summarizer (skipped on `force_summary`)
+- **`delay_seconds`** — how long after the trigger to run the Ninja Summarizer (skipped on `force_summary`). It is an offset from the trigger, not a wait after the previous subscriber: subscribers run in `delay_seconds` order, and each sleeps only the gap since the one before, so a pass waits at most its largest delay. A copy of the scheduler loop of your own needs the same rule; summing the delays held the queued scheduler for minutes, and every deferred reload behind it.
 - **`kata_key`** — the drawer key in the Kata cabinet where this component's summary is stored
 
 When the scheduler fires, it reads every KFC drawer and dispatches the Ninja Summarizer for each component whose `trigger_subscriptions` includes the current `trigger.id`.
@@ -110,6 +112,12 @@ event_data:
 ```
 
 `zen_pipeline_autofire_on_enable` uses `ninja_force` and `supersummary_force` internally when kill switches are re-enabled.
+
+---
+
+## Cert Catalog Refresh
+
+The deferred script reload and `reload_all` also rebuild the cert catalog cache in the vault (`zen_dojotools_identity mode=cert_cache_refresh`, forced), so a reload that changes a tool's certs shows in `cert_list` at once.
 
 ---
 

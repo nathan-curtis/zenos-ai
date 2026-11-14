@@ -12,6 +12,7 @@
 
 - **Home Assistant** 2025.x or newer
 - **Spook Integration** Installable through HACS. [Spook Install instructions](https://spook.boo/installation/)
+  > **On Home Assistant 2026.11, install Spook 5.5.1.** Park there until the pending Spook fixes ship in 5.11.2 or later. Spook 5.6.0 to 5.10.0 fail to load on 2026.11, and 5.11.0 and 5.11.1 freeze a ZenOS install for 30 to 40 seconds at a time. In HACS, open **Spook**, choose **Redownload**, and pick **5.5.1**. See the ZenOS Spook advisory in the [README](../../../README.md) for what 5.5.1 leaves out.
   > **No Microsoft 365 Teams?** Spook will flag a ghost warning about `script.zen_dojotools_teams` referencing `sensor.homeassistant_chat` and `sensor.homeassistant_status`. These entities only exist with the M365 Teams integration. The warning is harmless — ignore it, or suppress it by assigning a `watchman_ignore` label to those entities.
 - **A conversation agent** configured in HA with a tool-calling capable model. Models smaller than ~8B parameters or with short context windows are not recommended — ZenOS-AI prompts are large and tool use is required.
 - **The Home Assistant Companion App**, installed on your phone and logged into this HA instance, with notification permission granted. Step 3.5 below walks through confirming this works — do it before you finish this guide, not after. As of 2026.9.0 this isn't optional infrastructure: every certification grant (locks, alarm, covers, infra, room overrides) requires a real push notification reaching a real device, with no fallback, every time.
@@ -65,6 +66,15 @@ homeassistant:
   packages: !include_dir_named packages  # add this
 ```
 
+**Keep the cabinets out of the recorder.** A cabinet sensor holds its drawers as attributes, and a working cabinet is often larger than the 16,384 bytes the recorder stores per state. The recorder skips those states and logs a warning for each one. Add the exclude to your `recorder:` block (create one if you have none). ZenOS doesn't ship it, because a package can't add to a `recorder:` block you already have.
+
+```yaml
+recorder:
+  exclude:
+    entity_globs:
+      - sensor.*cabinet*
+```
+
 ---
 
 ## Step 3 — Add Required Secrets
@@ -110,8 +120,28 @@ Generate a token at **Profile → Security → Long-Lived Access Tokens** in you
      message: "ZenOS test — can you see this?"
    ```
    Confirm it actually arrives and is tappable (not just visible in a notification shade preview).
+5. **Give it the name Postman calls first: `notify.admin_devices`.** The first thing onboarding does is ask you to approve your agent (its backstage pass, 2026.11.0). Postman has no routing profile yet at that point, and sends the request to its default target, `notify.admin_devices`. Wrap your phone's notify service in a notify group with that name, in `configuration.yaml` (or a package), and restart:
+   ```yaml
+   notify:
+     - platform: group
+       name: admin_devices
+       services:
+         - action: mobile_app_<your_device>
+   ```
+   Then search **Developer Tools → Actions** for `notify.admin_devices` and send yourself the same test message through it. It has to show up there as an action; a notify entity with that name won't do.
 
-You don't need to configure Postman's routing policy yet — that's covered in [Your First Alert](first_alert.md), right after OOBE. This step is just making sure the *device* is reachable at all before anything tries to depend on it.
+You don't need to configure Postman's routing policy yet — that's covered in [Your First Alert](first_alert.md), right after OOBE, once your agent is approved. This step is just making sure the *device* is reachable at all before anything tries to depend on it.
+
+### If no push can reach you
+
+No phone, no Companion App, or `notify.admin_devices` won't resolve? Then the approval at the start of onboarding fails with `dispatch_failed` or times out, and your agent can use nothing but help and onboarding. The console override stands in for you. Run it yourself from **Developer Tools → Actions**:
+
+1. Switch it on: `script.zen_admintools_prompt_loader` with `mode: cert_bypass`, `action_type: enable`. It answers `enabled: true` with your user.
+2. Start onboarding (ask your agent, or call `zen_flynn_oobe` with `mode: run`). The approval is granted at once.
+3. Check `zen_flynn_oobe` `mode: status` shows `badge_held: true`.
+4. **Switch it off** right away: same action, `action_type: disable`.
+
+While it is on, every live approval answers yes by itself, door locks and the alarm included. It's for getting unstuck, not for running on. The full story is in the [Security & Certification manual, Section 4](security_certification_manual.md#4-granting-a-certification--and-the-mobile-requirement).
 
 > **Companion App already installed from an earlier HA setup?** Skip straight to step 3 to confirm the notify service name.
 
@@ -274,6 +304,14 @@ Continue to [first_run.md](first_run.md) to complete OOBE and enable the summari
 
 If any other sensor shows `warn` or `error`, check its attributes for detail. Flynn will attempt self-repair on the next HA restart or health sensor change.
 
+**Your agent needs its backstage pass.** Until you approve it at the start of onboarding, every ZenOS tool answers the agent with help and `guarded: onboarding_required`, and points it at `zen_flynn_oobe mode=run`. Home Assistant can't tell a dashboard button or your own Developer Tools call from the agent, so those are refused too until then. Approve the agent first; the plugin configure calls below work after that. See the [Security & Certification manual, Section 2.5](security_certification_manual.md#25-the-backstage-pass-zenosagentbasic).
+
+**The vault cabinet.** `sensor.zen_cabinet_health` warns until the vault (`sensor.zenos_vault_cabinet`) is online. Flynn provisions it on its own on the first pass after warmup. Nothing to do unless the warning stays.
+
+**Access control is on for a fresh install.** FileCabinet's access gate checks every cabinet call. On a fresh install Flynn arms it, and it switches to enforce on its own once every cabinet carries the ACL record; the log says "FileCabinet locked". From then on a call the rules deny is refused, and one that needs a person asks the household admin.
+
+**An upgraded install stays in audit.** The gate refuses nothing, and `fc_acl_audit` warnings from `zen_sutra_filecabinet` in the Home Assistant log are expected, not errors: each one is a call enforcement would have refused or asked you to approve. Read them for a while, then lock it from the Home Assistant console with `zen_admintools_prompt_loader mode=fc_acl_mode action_type=enforce`. `action_type=audit` is the rollback, and `status` shows where it stands. See the [FileCabinet readme](../scripts/zen_dojotools_filecabinet_readme.md#access-control-acl-v2).
+
 ---
 
 ## Plugins (Optional)
@@ -291,7 +329,7 @@ Each plugin gets its server URL one of two ways. A few read an `input_text` URL 
 | Kitchen Sync | `plugins/mealie/kitchen_sync.yaml` | Mealie + Grocy both installed | — |
 | Firefly III | `plugins/firefly_iii/firefly_iii.yaml` | Firefly III instance + `input_text.firefly_url` | `firefly_iii_bearer` |
 
-The rest have no URL helper. Their URL lives in the household cabinet's `integrations_config` drawer, written by a configure call. Your AI can make the MCP-exposed calls for you. Run the internal ones yourself from **Developer Tools → Actions**:
+The rest have no URL helper. Their URL lives in the household cabinet's `integrations_config` drawer, written by a configure call. Your AI can make the MCP-exposed calls for you. Run the internal ones yourself from **Developer Tools → Actions**. Either way, the dojotools configure calls work only once your agent has its backstage pass:
 
 | Plugin | File | Configure with | Stored at | Secret Key(s) |
 |---|---|---|---|---|
