@@ -10,7 +10,7 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention. Each new month starts at `.0`. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
 
-**2026.11.0 'This Is Spinal Tap' — Release candidate 3, ETA Saturday, November 14, 2026**
+**2026.11.0 'This Is Spinal Tap' — Shipped 2026-11-14, current Stable**
 
 Security goes to eleven: the backstage pass on every agent-facing tool, locks on the cabinets (ACL v2, enforced on a fresh install), certs renamed and readable, consent for background work (KF6), and Home Assistant's naming model.
 
@@ -20,7 +20,7 @@ See: [Release Notes — This Is Spinal Tap](releases/spinal_tap.md)
 
 ---
 
-**2026.10.0 'Tron' (incl. 2026.10.1 and the 2026.10.2 security patch) — Shipped, current Stable**
+**2026.10.0 'Tron' (incl. 2026.10.1 and the 2026.10.2 security patch) — Shipped**
 
 Shore up the Grid: admission certification, the administrative plane, a platform-wide cert-gate audit, and the cadillac pass (one exit, one envelope) across the rest of the platform. FileCabinet's own cert-gate moves to Spinal Tap.
 

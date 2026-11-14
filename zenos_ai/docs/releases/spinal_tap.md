@@ -1,7 +1,6 @@
 # Release Notes — 2026.11.0 'This Is Spinal Tap'
 
-**Status:** Release candidate 3
-**ETA:** Saturday, November 14, 2026
+**Status:** Released 2026-11-14
 **Branch:** `feat/2026.11.0`
 **Base:** 2026.10.1 (patch on 2026.10.0 'Tron')
 
