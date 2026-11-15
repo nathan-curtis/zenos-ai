@@ -102,6 +102,7 @@ Every certification has a short plain `description`, written for the phone appro
 | `zenos.alerts.policy_edit` | Change how and when alerts reach you |
 | `zenos.autovac.operate` | Start, pause and schedule the robot vacuum |
 | `zenos.autovac.setup` | Set up the robot vacuum's rooms and settings |
+| `zenos.autovac.status` | Read the robot vacuum's status summary |
 | `zenos.comms.calendar_control` | Delete calendar events |
 | `zenos.comms.dispatch` | Send you notifications (emergencies always go through) |
 | `zenos.comms.pii_disclosure` | Send messages and add events or tasks for you; level 2 also edits the mail safe list |
@@ -282,7 +283,7 @@ If you grant broad allow scope and later regret it, remove the specific entry as
 | `m` | SuperSummary | Reserved. SuperSummary calls no gated tool, and reads katas the Ninja already filtered. |
 | `c` | scheduler | Reserved. The scheduler only calls housekeeping. |
 
-No tool allows `m` or `c` in its `st_ok`, so a grant can't ask for them. One tool allows `l`: Print Shop's `zenos.media.print_status` (`st_ok: isl`), for its `summary` mode. A tool opts a mode in by listing it in the cert entry's `modes` with `l` in `st_ok`; FileCabinet then reads a live drawer on that mode even when the tool isn't on the callout whitelist, if the agent the drawer runs as holds the cert with stage `l`. The admin plane never qualifies. Granting `l` raises the same phone acknowledgement as any other stage.
+No tool allows `m` or `c` in its `st_ok`, so a grant can't ask for them. Two tools allow `l`, each for its `summary` mode: Print Shop's `zenos.media.print_status` and Autovac's `zenos.autovac.status` (both `st_ok: isl`). A tool opts a mode in by listing it in the cert entry's `modes` with `l` in `st_ok`; FileCabinet then reads a live drawer on that mode even when the tool isn't on the callout whitelist, if the agent the drawer runs as holds the cert with stage `l`. The admin plane never qualifies. Granting `l` raises the same phone acknowledgement as any other stage.
 
 - A grant stores its stages as `st`. A grant without one is interactive only, which is every grant made before 11.0.
 - Each tool declares the stages its certs allow (`st_ok` in its `certs_required`). A grant can't ask for a stage its tool doesn't allow.

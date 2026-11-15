@@ -1,7 +1,9 @@
 # ZenOS-AI AutoVac
 
-**Version:** 5.5.2
+**Version:** 5.10.0
 **Script:** `zen_dojotools_autovac`
+
+> **2026.12.0 (5.8.0 to 5.10.0):** a bare call answers help (it answered `status`). `mode=summary` is a scored read for the `autovac` component, behind the new read cert `zenos.autovac.status`. Schedules can be added, edited and removed from the tool. The pre-run briefing push and the run confirmations are settings, off on a fresh setup and kept on for an upgraded one. See [The autovac component](#the-autovac-component), [Editing schedules](#editing-schedules) and [Notices](#notices).
 
 ---
 
@@ -53,8 +55,10 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 
 | Mode | Description |
 |------|-------------|
-| `setup` | Verify label wiring, init cabinet drawer, deploy KFC dojo entry — idempotent. `dry_run=true` previews without writing. |
+| `help` | The default: a bare call answers help. |
+| `setup` | Verify label wiring, init cabinet drawer, deploy KFC dojo entry — idempotent. `dry_run=true` previews without writing. `config={"create_labels":true}` creates every Autovac label Home Assistant doesn't have yet (the core five, `autovac_room_schedule`, `autovac_blackout`, `autovac_weekday`, `autovac_weekend`, `autovac_mon` to `autovac_sun`) and answers `label_objects_missing` for any it couldn't. Creating labels needs `zenos.registry.label_lifecycle_control` level 1 when an agent calls it. |
 | `status` | Full system snapshot: vacuum state, room decisions, election, schedules, run readiness |
+| `summary` | Scored, read-only seed for the `autovac` component. Needs `zenos.autovac.status`. See [The autovac component](#the-autovac-component). |
 | `configure` | View or update room and system config via cabinet |
 | `preset` | Apply a named config bundle to one or more rooms in one call. `preset=<name> rooms=<csv>` (or `room=<slug>`). No args: list all presets and their settings. Patches specified fields only — other settings preserved. Available: `obstacle_prone`, `mop_room`, `guest_room`, `high_traffic`, `twice_weekly`, `weekly`, `disabled`, `standard`. |
 | `queue` | Mark a room for the next run regardless of schedule |
@@ -80,6 +84,8 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 | `nightly_reset` | Reset daily run flags and pause state (call at midnight) |
 | `morning_reset` | Clear `is_ready` flags after morning run starts |
 | `schedule` | Day-resolved schedule summary — see [Scheduling](#scheduling) |
+| `schedule_edit` | Replace the time blocks on days of an existing Autovac schedule. See [Editing schedules](#editing-schedules). |
+| `schedule_add` / `schedule_remove` | Create or delete one Autovac schedule, labeled so the controller finds it. See [Editing schedules](#editing-schedules). |
 | `schedule_blocks` | Raw `schedule.get_schedule` response for all `autovac_schedule` entities, enriched with labels/state/area |
 | `kfc_manifest` | KFC dojo manifest — component summary, seed call, and drift/trigger config for the Ninja Summarizer |
 | `stacks_by_anchor` | Lens Bus provider — `area_id` anchor → `cleaning_evidence`. See [Lens Bus Provider](#lens-bus-provider) |
@@ -87,6 +93,21 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 | `unregister` | Lens Bus — remove this tool's `lens_registry` entry |
 | `health` | Lens Bus — health check (vacuum entity live, cabinet reachable, rooms configured, inventory provisioned) |
 | `inspect` | Lens Bus — static capability descriptor (consumes/returns/fields) for provider discovery |
+
+**Before setup.** The modes that write state (`configure`, `preset`, `pause`, `unpause`, `queue`, `dequeue`, `clear`, `skip`, `unskip`, `ready`, `unready`, `mark_cleaned` and the two resets) answer `autovac_not_initialized` and point at `mode=setup` when the drawer or the cabinet is missing. Before 5.9.0 they answered ok with nothing stored.
+
+`config` is accepted as JSON text or as an object (Home Assistant hands JSON with no `true`, `false` or `null` over as an object, which was ignored before 5.9.0). `mode=configure room=<slug>` with no config shows the room.
+
+---
+
+## The autovac component
+
+`mode=summary` is a read-only seed for the `autovac` Kung Fu component, built on the Print Shop pattern ([the reference pattern](../developer_standards.md#a-complete-tool-and-component-the-reference-pattern)).
+
+- **Cert:** `zenos.autovac.status`, level 1, stages `isl` (interactive, background summary, live drawer), in the `zenos_agent_advanced` bundle. Without it the component drops out of the agent's prompt.
+- **What it returns:** `urgency` 0 to 5, `action_required` (urgency 3 or more), `reasons`, `vacuum_state`, `battery_pct`, `can_run_now`, `blockers`, `elected_rooms`, `due_rooms`, `overdue_rooms`, `next_schedule`, `dnd`, `paused_today`, `out_of_service`, and `watch_entities` (real entity IDs, from labels).
+- **Scoring:** a vacuum error 4; low water that stops mop rooms (`water_low_action=stop`) 3; the vacuum unavailable, an open out-of-service ticket, or a room overdue by twice its interval, 2 each; low water that only warns, or a low battery, 1. `suggested_act_event` is always null: the controller already alerts on a vacuum error, and the pre-run briefing covers low water.
+- **The component** seeds from `mode=summary`, names the cert in `meta.requires`, and subscribes to `force_summary`. The controller emits `summary_force` for it when the vacuum docks or errors; the component's 120-minute emission cooldown keeps that from repeating.
 
 ---
 
@@ -113,6 +134,14 @@ A schedule entity with no matching label for today is excluded from resolution e
 `mode=schedule_blocks` returns the raw `schedule.get_schedule` block/event data per `autovac_schedule` entity (area, notes, custom fields) plus per-entity metadata (labels, state, area, next_event) — used when a caller needs the underlying schedule structure rather than the resolved summary.
 
 **Room-scoped and blackout schedules** (separate from the day-resolution system above): a schedule entity labeled `autovac_room_schedule` is mapped to a room by matching its `area_id` against each room's configured `area_id`. A schedule entity labeled `autovac_blackout` that is `on` blocks its matching room (or all rooms, if the entity has no area) — evaluated as a blocker in room election alongside `enabled`/`skip_next`/readiness/water checks.
+
+### Editing schedules
+
+All three need `zenos.autovac.setup`, preview with `dry_run=true`, and need Spook 5.11.0+ (storage schedules only). Autovac creates a schedule only when you call it; the controller never does.
+
+- **`schedule_edit`** replaces the blocks on the named days of an existing Autovac schedule (global, per-room or blackout); other days are untouched, and `"blocks": []` clears a day. `schedule_entity_id` plus `config={"day":["tuesday"],"blocks":[{"from":"09:00:00","to":"10:00:00","data":{"rooms":"kitchen"}}]}`. Block `data` keys are limited to `rooms`, `skip_rooms` and `mode`, and room slugs must be rooms Autovac has. A schedule without an `autovac_schedule`, `autovac_room_schedule` or `autovac_blackout` label is refused. The result reads the schedule back.
+- **`schedule_add`** takes `config={"name", "kind": "global|room|blackout", "scope": "weekday|weekend|monday..sunday", "room": "<slug>", "days": {"monday": [{"from","to","data"}], ...}}`. `scope` is for global and room schedules only. It creates the helper with a predictable entity ID (from the name), then labels it: global gets `autovac_schedule` and the scope label; room gets `autovac_room_schedule`, `autovac_schedule` and the scope label, and goes in the room's Home Assistant area; blackout gets `autovac_blackout`, in the room's area when `room` is given, else it vetoes the whole house. Before anything is made, it refuses a name that exists, a bad kind or scope, a blackout with a scope, a room kind without `room`, a room Autovac doesn't have, a room with no matching area (set `area_id` with `mode=configure`), a bad day, block or data key, and any label that doesn't exist yet (run `setup` with `create_labels`).
+- **`schedule_remove`** takes `schedule_entity_id` and deletes it. Only a schedule carrying an Autovac label can be removed.
 
 ---
 
@@ -337,6 +366,17 @@ It:
 `ack_context` format: `prerun_YYYYMMDD|schedule.entity_id` — used by `handle_ack` to identify the specific slot.
 
 Legacy `cancel` ack (old "Stop it!" button) maps to `pause_day` for backward compatibility.
+
+### Notices
+
+Two settings in the system config, set with `mode=configure config={"briefing_push":true}` or `{"run_notices":true}`:
+
+| Setting | Gates |
+|---|---|
+| `briefing_push` | The "Autovac Pre-Run Briefing" push |
+| `run_notices` | The confirmations Autovac Starting, Run Skipped, Paused and Dry Run |
+
+A fresh `setup` writes both as `false`. A drawer from before 5.9.0 (`briefing_push`) or 5.10.0 (`run_notices`) has no key, and a missing key reads as on, so an upgraded install keeps what it had. The alerts are always on: Autovac Unavailable, Can't Start, Calendar Hold, worn parts, the dock notice and the one-time provision notice.
 
 ---
 

@@ -1,6 +1,38 @@
 ###############################################################################
 # DojoTools — Autovac
-# zen_dojotools_autovac (v5.7.3)
+# zen_dojotools_autovac (v5.10.0)
+# v5.10.0: schedule_add and schedule_remove create and delete one Autovac schedule (global,
+#   per-room or blackout), labelled so the controller finds it, through Spook schedule.create /
+#   delete (zenos.autovac.setup, dry_run previews, a name that exists or a label that does not
+#   is refused before anything is made). run_notices is a second setting like briefing_push:
+#   the confirmations Autovac Starting, Run Skipped, Paused and Dry Run are opt in for a fresh
+#   setup and stay on for an install without the key; alerts are always on. The controller
+#   emits summary_force when the vacuum docks or errors. setup no longer names the old KFC keys.
+#   setup config create_labels now creates every Autovac label object Home Assistant does not
+#   have (core, autovac_room_schedule, autovac_blackout, the day scopes), one at a time with
+#   mode=create and confirm=true; it called the labels tool with action_type and no confirm,
+#   which created nothing, and only knew five labels.
+# v5.9.0: KF6 pass (the Print Shop pattern). A bare call now answers help (the
+#   default mode was status). New read cert zenos.autovac.status (level 1, stages
+#   isl) gates the new mode=summary, a scored read-only seed (urgency, action_required,
+#   reasons, blockers, due and overdue rooms, real entity ids); the autovac component
+#   seeds from it, its meta.requires names the cert, seed_modes tags it, and it
+#   subscribes to force_summary. The state-writing modes (configure, preset, pause,
+#   unpause, queue, dequeue, clear, skip, unskip, ready, unready, mark_cleaned and the
+#   two resets) answer autovac_not_initialized, and point at setup, when the drawer or
+#   the cabinet is missing, instead of answering ok with nothing stored.
+#   Pre-run briefing push is now a setting: system key briefing_push. A fresh setup
+#   writes it as false (opt in with mode=configure config={"briefing_push":true}); a
+#   drawer from before 5.9.0 has no such key, which reads as on, so an upgrade keeps
+#   its briefings. Only the briefing push is gated: acknowledgements, the calendar
+#   hold alert and the run notices are unchanged. configure also parses config when HA
+#   hands it over as a dict (a config with no true/false/null was being ignored), and
+#   mode=configure room=<slug> with no config shows the room again.
+# v5.8.0: mode=schedule_edit replaces the time blocks on days of an existing
+#   Autovac schedule (global, per-room or blackout) through Spook schedule.set_day,
+#   including the block data (rooms, skip_rooms, mode). Edit only: no schedule is
+#   created or deleted, and a schedule without an Autovac label is refused.
+#   Needs zenos.autovac.setup; dry_run previews.
 # v5.7.3: its tool_manifest declares seed_modes, the read modes the Ninja
 #   summarizer may seed a run with (#10549).
 # v5.7.2: HA naming (2026.11): name outputs carry entity_name and device_name
@@ -103,7 +135,7 @@ script:
     fields:
       mode:
         name: Mode
-        description: "status|help|setup|configure|consumables|check_wear|etc. Default: status."
+        description: "status|help|setup|configure|consumables|check_wear|etc. Default: help."
         default: status
         selector:
           select:
@@ -135,6 +167,10 @@ script:
               - morning_reset
               - schedule
               - schedule_blocks
+              - schedule_edit
+              - schedule_add
+              - schedule_remove
+              - summary
               - kfc_manifest
               - stacks_by_anchor
               - register
@@ -255,7 +291,7 @@ script:
 
       # -- 0 Normalize inputs --------------------------------------------------
       - variables:
-          _mode:               "{{ mode | default('status') | lower | trim }}"
+          _mode:               "{{ mode | default('help') | lower | trim }}"
           _caller_token:       "{{ caller_token | default('') | string | trim }}"
           _room:               "{{ room | default('') | string | lower | trim | replace(' ', '_') }}"
           _rooms:              "{{ rooms | default('') | string | lower | trim }}"
@@ -294,8 +330,9 @@ script:
       # status/help/inspect/health/etc. stay ungated (read-only). ------------
       - variables:
           _av_required_cert: >-
-            {%- if _mode in ['configure', 'setup', 'preset'] -%}zenos.autovac.setup
+            {%- if _mode in ['configure', 'setup', 'preset', 'schedule_edit', 'schedule_add', 'schedule_remove'] -%}zenos.autovac.setup
             {%- elif _mode in ['clean', 'run_elected', 'queue', 'dequeue', 'clear', 'skip', 'unskip', 'ready', 'unready', 'mark_cleaned', 'pause', 'unpause', 'maintenance_set', 'maintenance_clear'] -%}zenos.autovac.operate
+            {%- elif _mode == 'summary' -%}zenos.autovac.status
             {%- else -%}{%- endif -%}
       - if: "{{ response is not defined and _av_required_cert != '' }}"
         then:
@@ -477,6 +514,7 @@ script:
 
                   'daily_ops': {
                     'status': 'Full live snapshot. Returns: vacuum_state, battery, run_readiness (can_run_now + blockers[]), elected_rooms[], schedule_entities[], last_run, next_schedule, room_decisions[] per room. Start here for any question about what the vacuum is doing or why it is not running.',
+                    'summary': 'Read-only scored view for the autovac component and for anyone who needs the short answer: urgency (0-5), action_required (3 or more), reasons, vacuum_state, battery_pct, can_run_now and blockers, elected_rooms, due_rooms, overdue_rooms, next_schedule, dnd, paused_today, out_of_service, watch_entities. Never acts. Needs zenos.autovac.status.',
                     'run_elected': 'Fire all currently elected rooms now. dry_run=true previews election + sends Postman notification without starting the vacuum. Use to test election logic.',
                     'clean': 'Immediate clean — bypasses election. rooms=<csv of slugs> required. Vacuum must be docked or idle.',
                     'pause': 'Block all scheduled runs for the rest of today. Postman briefings still fire.',
@@ -495,8 +533,11 @@ script:
                     'view_room': 'mode=configure room=<slug> — show all current settings for that room.',
                     'update_room': 'mode=configure room=<slug> config=<json> — patch room fields. Fields: enabled (bool), days_between (int), requires_ready (bool), requires_mop (bool), segment (int, xiaomi only), area_id (str, roborock override), notes (str).',
                     'view_system': 'mode=configure (no room) — show system config: enabled, water_low_action, minimum_battery.',
-                    'update_system': 'mode=configure config={"enabled":false} or {"water_low_action":"stop"} — update system-level settings.',
-                    'presets': 'mode=preset preset=<name> rooms=<csv> — apply a named bundle. mode=preset alone lists all presets. Available: obstacle_prone (requires_ready=true), mop_room (requires_mop=true), guest_room (days_between=14 + requires_ready), high_traffic (days_between=1), twice_weekly (days_between=3), weekly (days_between=7), disabled (enabled=false), standard (enabled=true, days_between=7, requires_ready=false).'
+                    'update_system': 'mode=configure config={"enabled":false} or {"water_low_action":"stop"} — update system-level settings. Keys: enabled, water_low_action, allow_room_control_cleaning_call, briefing_push. briefing_push (bool) turns the pre-run briefing push on or off; run_notices (bool) turns the confirmations on or off (Autovac Starting, Run Skipped, Paused, Dry Run). A fresh setup starts both off; an install upgraded from before 5.9.0 or 5.10.0 has no such key and keeps it on until you set it. Alerts (Unavailable, Cannot Start, Calendar Hold, worn parts) are always on.',
+                    'presets': 'mode=preset preset=<name> rooms=<csv> — apply a named bundle. mode=preset alone lists all presets. Available: obstacle_prone (requires_ready=true), mop_room (requires_mop=true), guest_room (days_between=14 + requires_ready), high_traffic (days_between=1), twice_weekly (days_between=3), weekly (days_between=7), disabled (enabled=false), standard (enabled=true, days_between=7, requires_ready=false).',
+                    'edit_schedule': 'mode=schedule_edit schedule_entity_id=<schedule.x> config={"day":["tuesday"],"blocks":[{"from":"09:00:00","to":"10:00:00","data":{"rooms":"kitchen"}}]} — replace the time blocks on those days of an existing Autovac schedule (global, per-room or blackout). Other days are untouched; blocks:[] clears the day. data keys: rooms, skip_rooms (CSV of room slugs Autovac has), mode. Edit only: it never creates or deletes a schedule and refuses any schedule without an autovac_schedule, autovac_room_schedule or autovac_blackout label. dry_run=true previews. Storage schedules only (needs Spook 5.11.0+). Needs zenos.autovac.setup.',
+                    'add_schedule': 'mode=schedule_add config={"name":"AutoVac Weekday Morning","kind":"global","scope":"weekday","days":{"monday":[{"from":"07:00:00","to":"07:30:00"}]}} — create one schedule and label it so Autovac finds it. kind: global (labels autovac_schedule), room (autovac_room_schedule + autovac_schedule, and the schedule is put in that room area: needs room=<slug>; that room then leaves the global runs), blackout (autovac_blackout, a veto: optional room=<slug> limits it to that room area). scope (global and room only): weekday, weekend or monday to sunday, becoming the matching day label. Block data keys: rooms, skip_rooms. Refuses a name that already exists and labels that do not exist yet (run mode=setup create_labels first). dry_run=true previews. Needs zenos.autovac.setup (Spook 5.11.0+).',
+                    'remove_schedule': 'mode=schedule_remove schedule_entity_id=<schedule.x> — delete one Autovac schedule (irreversible). Only a schedule with an Autovac label can be removed. dry_run=true previews. Needs zenos.autovac.setup.'
                   },
 
                   'consumables': {
@@ -791,6 +832,23 @@ script:
             {%- set cfg = (val | from_json) if val is string else val -%}
             {{ cfg.get('system', {}) }}
 
+
+      # -- 0.7 Drawer guard -----------------------------------------------------
+      # The state-writing modes write the autovac drawer with an update, which
+      # does nothing when the drawer does not exist, and they used to answer ok
+      # anyway (configure on an install that never ran setup stored nothing and
+      # said "applied"). They now say so and point at setup.
+      - if: >-
+          {{ response is not defined and _mode in ['configure', 'preset', 'pause', 'unpause', 'queue', 'dequeue', 'clear', 'skip', 'unskip', 'ready', 'unready', 'mark_cleaned', 'nightly_reset', 'morning_reset']
+             and (_hh_cabinet == '' or (_fc_av is mapping and _fc_av.get('status', '') == 'not_found')) }}
+        then:
+          - variables:
+              response:
+                status: error
+                mode: "{{ _mode }}"
+                error: autovac_not_initialized
+                message: "{{ 'The Zen Household Cabinet is not available, so nothing was stored.' if _hh_cabinet == '' else 'Autovac has no settings drawer yet, so nothing was stored.' }} Run mode=setup first (add config={\"create_labels\":true} to create missing labels). Nothing was changed."
+                caller_token: "{{ _caller_token }}"
       # -- Maintenance status (#10546/#10547) ----------------------------------
       # Slug first, ticket derives from slug -- not the other way around.
       # robot_name (grocy_catalog, set at provision time -- see mode=consumables/
@@ -808,7 +866,7 @@ script:
       - variables:
           _avm_robot_slug: "{{ (_av_system.get('grocy_catalog', {}).get('robot_name', '') if _av_system is mapping else '') | string | trim | slugify(separator='_') }}"
           _avm_status: {}
-      - if: "{{ response is not defined and _avm_robot_slug != '' and _mode in ['status', 'health', 'briefing', 'maintenance_get', 'maintenance_set', 'maintenance_clear'] }}"
+      - if: "{{ response is not defined and _avm_robot_slug != '' and _mode in ['status', 'summary', 'health', 'briefing', 'maintenance_get', 'maintenance_set', 'maintenance_clear'] }}"
         then:
           - action: script.zen_dojotools_servicedesk
             continue_on_error: true
@@ -886,7 +944,7 @@ script:
       - if: "{{ response is not defined and _mode == 'setup' }}"
         then:
           - variables:
-              _setup_cfg:            "{{ _config | from_json(default={}) }}"
+              _setup_cfg:            "{{ _config if _config is mapping else (_config | from_json(default={})) }}"
               _dry_run:              "{{ dry_run | default(false) | bool(false) }}"
               _cabinet_ok:           "{{ _hh_cabinet != '' }}"
               _drawer_ok:            "{{ _av_rooms | length > 0 or _av_system | length > 0 }}"
@@ -911,12 +969,24 @@ script:
                 {%- if not _sched_ok -%}{%- set ns.m = ns.m + ['autovac_schedule'] -%}{%- endif -%}
                 {%- if not _cur_room_ok -%}{%- set ns.m = ns.m + ['autovac_current_room'] -%}{%- endif -%}
                 {{ ns.m }}
-          - if: "{{ _create_labels and _missing_label_names | length > 0 }}"
+              # every label object the tool can use (core, schedule layers, day scopes);
+              # create_labels makes only the ones Home Assistant does not have yet
+              _labels_to_create: >-
+                {%- set want = ['autovac', 'autovac_dnd', 'autovac_water_low', 'autovac_schedule', 'autovac_current_room',
+                                'autovac_room_schedule', 'autovac_blackout', 'autovac_weekday', 'autovac_weekend',
+                                'autovac_mon', 'autovac_tue', 'autovac_wed', 'autovac_thu', 'autovac_fri', 'autovac_sat', 'autovac_sun'] -%}
+                {{ want | reject('in', labels() | list) | list }}
+          - if: "{{ _create_labels and _labels_to_create | length > 0 }}"
             then:
-              - action: script.zen_dojotools_labels
-                data:
-                  action_type: create
-                  label_list: "{{ _missing_label_names }}"
+              - repeat:
+                  for_each: "{{ _labels_to_create }}"
+                  sequence:
+                    - action: script.zen_dojotools_labels
+                      continue_on_error: true
+                      data:
+                        mode: create
+                        label_list: ["{{ repeat.item }}"]
+                        confirm: true
           - variables:
               _room_audit: >-
                 {%- set ns = namespace(audit=[]) -%}
@@ -1009,7 +1079,7 @@ script:
                   'current_room_live': _cur_room_live,
                   'schedule_entities_found': label_entities('autovac_schedule') | list | length,
                   'missing_label_objects': _missing_label_names,
-                  'labels_created_this_run': (_create_labels and _missing_label_names | length > 0),
+                  'labels_created_this_run': (_create_labels and _labels_to_create | length > 0), 'label_objects_missing': _labels_to_create,
                   'room_audit': _room_audit,
                   'action_queue': _setup_action_queue,
                   'tip': _setup_tip | trim
@@ -1026,7 +1096,7 @@ script:
                   volume_entity_id: "{{ _hh_cabinet }}"
                   key: autovac
                   value: >-
-                    {{ {'system': {'enabled': true, 'minimum_battery': 20, 'water_low_action': 'warn'}, 'rooms': {}} | tojson }}
+                    {{ {'system': {'enabled': true, 'minimum_battery': 20, 'water_low_action': 'warn', 'briefing_push': false, 'run_notices': false}, 'rooms': {}} | tojson }}
               - variables:
                   _drawer_initialized: true
 
@@ -1058,9 +1128,9 @@ script:
                   'dry_run': _dry_run,
                   'kfc_deployed': _kfc_deployed,
                   'ninja_integration': {
-                    'seed_path': 'zen_admintools_prompt_loader mode=whitelist whitelist_type=seed action_type=add item=zen_dojotools_autovac — whitelist for full cabinet snapshot on each ninja run',
-                    'index_path': 'label:autovac entity surface — automatic fallback when seed not whitelisted (no extra setup needed)',
-                    'kfc_keys': 'autovac_status, autovac_run, autovac_briefing — registered via zen_dojotools_manifest mode=bootstrap_kfc'
+                    'seed_path': 'The autovac component seeds from mode=summary (read-only, scored by this tool). That needs the cert zenos.autovac.status at stage s: persona_editor mode=cert_req_grant cert_component=zenos.autovac.status cert_stages=isl. An agent without the cert does not run the component and it drops out of the prompt.',
+                    'index_path': 'label:autovac entity surface — automatic fallback when the seed is not available (no extra setup needed)',
+                    'kfc_keys': 'autovac — a live mount registered via zen_dojotools_manifest mode=bootstrap_kfc; its definition resolves from this tool at run time (mode=kfc_manifest), so a new version needs no re-registration'
                   },
                   'inventory_provision': _prov_result
                 }) | combine(
@@ -1208,7 +1278,7 @@ script:
           _room_exists: "{{ _room != '' and _room in _av_rooms }}"
 
       # -- configure: show current settings if no config= provided (early exit) --
-      - if: "{{ response is not defined and _mode == 'configure' and _room_exists and _config == '{}' }}"
+      - if: "{{ response is not defined and _mode == 'configure' and _room_exists and (_config == '{}' or (_config is mapping and _config | length == 0)) }}"
         then:
           - variables:
               response: >-
@@ -1220,6 +1290,283 @@ script:
                   'settings': _av_rooms[_room]
                 } }}
 
+      # -- schedule_edit: replace the time blocks on days of an existing Autovac
+      #    schedule (global, per-room or blackout). Edit only: it never creates or
+      #    deletes a schedule, and it refuses any schedule entity that does not
+      #    carry one of the three Autovac labels. config JSON:
+      #    {"day": ["tuesday"], "blocks": [{"from": "09:00:00", "to": "10:00:00",
+      #    "data": {"rooms": "kitchen"}}]}. dry_run previews. Writes through Spook
+      #    schedule.set_day (storage schedules only). ----------------------------
+      - if: "{{ response is not defined and _mode == 'schedule_edit' }}"
+        then:
+          - variables:
+              _se_cfg: "{{ _config if _config is mapping else (_config | from_json(default={})) }}"
+              _se_dry: "{{ dry_run | default(false) | bool(false) }}"
+              _se_days_all: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+              _se_data_keys: [skip_rooms, rooms, mode]
+          - variables:
+              _se_days: >-
+                {%- set d = _se_cfg.get('day', []) if _se_cfg is mapping else [] -%}
+                {{ ([d | lower | trim] if d is string and d | trim != '' else (d | map('lower') | map('trim') | list if d is iterable and d is not string and d is not mapping else [])) }}
+              _se_blocks: "{{ (_se_cfg.get('blocks') | list) if _se_cfg is mapping and _se_cfg.get('blocks') is iterable and _se_cfg.get('blocks') is not string and _se_cfg.get('blocks') is not mapping else [] }}"
+              _se_is_av: "{{ _schedule_entity_id.startswith('schedule.') and (_schedule_entity_id in label_entities('autovac_schedule') or _schedule_entity_id in label_entities('autovac_room_schedule') or _schedule_entity_id in label_entities('autovac_blackout')) }}"
+          - variables:
+              _se_bad_days: "{{ _se_days | reject('in', _se_days_all) | list }}"
+              _se_bad_blocks: >-
+                {%- set ns = namespace(bad=[]) -%}
+                {%- for b in _se_blocks -%}
+                  {%- if b is not mapping or not (b.get('from') is string) or not (b.get('to') is string) -%}
+                    {%- set ns.bad = ns.bad + ['each block needs from and to (HH:MM:SS)'] -%}
+                  {%- else -%}
+                    {%- set dt = b.get('data', {}) -%}
+                    {%- if dt is not mapping -%}
+                      {%- set ns.bad = ns.bad + ['block data must be an object'] -%}
+                    {%- else -%}
+                      {%- for k in dt.keys() if k not in _se_data_keys -%}
+                        {%- set ns.bad = ns.bad + ['data key ' ~ k ~ ' is not one of ' ~ (_se_data_keys | join(', '))] -%}
+                      {%- endfor -%}
+                      {%- for k in ['skip_rooms', 'rooms'] if dt.get(k) is string -%}
+                        {%- for r in dt.get(k).split(',') | map('trim') | reject('eq', '') if r not in _av_rooms -%}
+                          {%- set ns.bad = ns.bad + [k ~ ' names a room Autovac does not have: ' ~ r] -%}
+                        {%- endfor -%}
+                      {%- endfor -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.bad }}
+          - action: script.zen_sutra_ha_api
+            continue_on_error: true
+            data:
+              mode: services
+              has_service: schedule.set_day
+            response_variable: _se_svc
+          - variables:
+              _se_svc_found: "{{ _se_svc is mapping and _se_svc.get('found', false) == true }}"
+              _se_err: >-
+                {%- if not _se_svc_found -%}schedule.set_day is not available (needs Spook 5.11.0 or later). Nothing was changed.
+                {%- elif _schedule_entity_id == '' -%}schedule_entity_id is required.
+                {%- elif not _se_is_av -%}{{ _schedule_entity_id }} is not an Autovac schedule (it needs the autovac_schedule, autovac_room_schedule or autovac_blackout label). Nothing was changed.
+                {%- elif states(_schedule_entity_id) in ['unavailable', 'unknown'] -%}{{ _schedule_entity_id }} is {{ states(_schedule_entity_id) }}. Nothing was changed.
+                {%- elif _se_days | length == 0 -%}config.day is required (a list of monday to sunday).
+                {%- elif _se_bad_days | length > 0 -%}Not a day: {{ _se_bad_days | join(', ') }}.
+                {%- elif _se_bad_blocks | length > 0 -%}{{ _se_bad_blocks | join('; ') }}.
+                {%- endif -%}
+          - choose:
+              - conditions: "{{ _se_err | trim != '' }}"
+                sequence:
+                  - variables:
+                      response:
+                        status: error
+                        mode: schedule_edit
+                        error: invalid_schedule_edit
+                        message: "{{ _se_err | trim }}"
+                        caller_token: "{{ _caller_token }}"
+              - conditions: "{{ _se_dry }}"
+                sequence:
+                  - variables:
+                      response:
+                        status: ok
+                        mode: schedule_edit
+                        result: preview
+                        dry_run: true
+                        schedule_entity_id: "{{ _schedule_entity_id }}"
+                        layer: "{{ 'blackout' if _schedule_entity_id in label_entities('autovac_blackout') else ('room_schedule' if _schedule_entity_id in label_entities('autovac_room_schedule') else 'global') }}"
+                        day: "{{ _se_days }}"
+                        blocks: "{{ _se_blocks }}"
+                        message: "Would replace the blocks on {{ _se_days | join(', ') }} of {{ _schedule_entity_id }}. Other days are untouched. Run again without dry_run to write it."
+                        caller_token: "{{ _caller_token }}"
+            default:
+              - action: schedule.set_day
+                target:
+                  entity_id: "{{ _schedule_entity_id }}"
+                data:
+                  day: "{{ _se_days }}"
+                  blocks: "{{ _se_blocks }}"
+              - action: schedule.get_schedule
+                continue_on_error: true
+                target:
+                  entity_id: "{{ _schedule_entity_id }}"
+                data: {}
+                response_variable: _se_after
+              - variables:
+                  response:
+                    status: ok
+                    mode: schedule_edit
+                    result: written
+                    schedule_entity_id: "{{ _schedule_entity_id }}"
+                    day: "{{ _se_days }}"
+                    blocks: "{{ _se_blocks }}"
+                    now: >-
+                      {%- set src = (_se_after.get(_schedule_entity_id, {}) if _se_after is mapping else {}) -%}
+                      {%- set ns = namespace(d={}) -%}
+                      {%- for day, bl in src.items() if day in _se_days_all -%}
+                        {%- set ns2 = namespace(l=[]) -%}
+                        {%- for b in bl -%}
+                          {%- set ns2.l = ns2.l + [{'from': b['from'] | string, 'to': b['to'] | string} | combine({'data': b['data']} if b['data'] is defined else {})] -%}
+                        {%- endfor -%}
+                        {%- set ns.d = ns.d | combine({day: ns2.l}) -%}
+                      {%- endfor -%}
+                      {{ ns.d }}
+                    hint: "The trigger automation picks the change up on its own. Run mode=schedule_blocks to confirm the labels and next event. A blackout always wins over a room schedule and block data."
+                    caller_token: "{{ _caller_token }}"
+
+      # -- schedule_add / schedule_remove: make or drop one Autovac schedule.
+      #    schedule_add builds a schedule helper through Spook schedule.create,
+      #    then labels it (and puts it in the room's area for a per-room
+      #    schedule) so the controller discovers it on its own. config JSON:
+      #    {"name": "AutoVac Weekday Morning", "kind": "global|room|blackout",
+      #     "scope": "weekday|weekend|monday..sunday" (optional day scope),
+      #     "room": "<slug>" (kind room: the room; kind blackout: optional, limits
+      #     the veto to that room's area),
+      #     "days": {"monday": [{"from": "07:00:00", "to": "07:30:00"}], ...}}.
+      #    schedule_remove takes schedule_entity_id and deletes it. Both need
+      #    zenos.autovac.setup, both honor dry_run, and both touch only
+      #    schedules that are (or become) Autovac schedules. -----------------
+      - if: "{{ response is not defined and _mode in ['schedule_add', 'schedule_remove'] }}"
+        then:
+          - variables:
+              _sa_cfg: "{{ _config if _config is mapping else (_config | from_json(default={})) }}"
+              _sa_dry: "{{ dry_run | default(false) | bool(false) }}"
+              _sa_add: "{{ _mode == 'schedule_add' }}"
+              _sa_days_all: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+              _sa_scope_label: {weekday: autovac_weekday, weekend: autovac_weekend, monday: autovac_mon, tuesday: autovac_tue, wednesday: autovac_wed, thursday: autovac_thu, friday: autovac_fri, saturday: autovac_sat, sunday: autovac_sun}
+              _sa_data_keys: [skip_rooms, rooms, mode]
+          - variables:
+              _sa_name: "{{ (_sa_cfg.get('name', '') if _sa_cfg is mapping else '') | string | trim }}"
+              _sa_kind: "{{ (_sa_cfg.get('kind', 'global') if _sa_cfg is mapping else 'global') | string | lower | trim }}"
+              _sa_scope: "{{ (_sa_cfg.get('scope', '') if _sa_cfg is mapping else '') | string | lower | trim }}"
+              _sa_room: "{{ (_sa_cfg.get('room', '') if _sa_cfg is mapping else '') | string | lower | trim | replace(' ', '_') }}"
+              _sa_daymap: "{{ (_sa_cfg.get('days', {}) if _sa_cfg is mapping else {}) if (_sa_cfg.get('days', {}) if _sa_cfg is mapping else {}) is mapping else {} }}"
+          - variables:
+              _sa_ent: "{{ ('schedule.' ~ (_sa_name | slugify)) if _sa_name != '' else '' }}"
+              _sa_area: >-
+                {%- if _sa_room != '' and _sa_room in _av_rooms -%}
+                  {{ _av_rooms[_sa_room].get('area_id', _sa_room) | string | slugify }}
+                {%- else -%}{%- endif -%}
+              _sa_labels: >-
+                {%- set base = ['autovac_room_schedule', 'autovac_schedule'] if _sa_kind == 'room' else (['autovac_blackout'] if _sa_kind == 'blackout' else ['autovac_schedule']) -%}
+                {%- if _sa_kind != 'blackout' and _sa_scope in _sa_scope_label -%}{{ base + [_sa_scope_label[_sa_scope]] }}{%- else -%}{{ base }}{%- endif -%}
+              _sa_bad_blocks: >-
+                {%- set ns = namespace(bad=[]) -%}
+                {%- for day, bl in _sa_daymap.items() -%}
+                  {%- if day not in _sa_days_all -%}{%- set ns.bad = ns.bad + ['not a day: ' ~ day] -%}
+                  {%- elif bl is not iterable or bl is string or bl is mapping -%}{%- set ns.bad = ns.bad + [day ~ ' needs a list of blocks'] -%}
+                  {%- else -%}
+                    {%- for b in bl -%}
+                      {%- if b is not mapping or not (b.get('from') is string) or not (b.get('to') is string) -%}
+                        {%- set ns.bad = ns.bad + [day ~ ': each block needs from and to (HH:MM:SS)'] -%}
+                      {%- else -%}
+                        {%- set dt = b.get('data', {}) -%}
+                        {%- if dt is not mapping -%}{%- set ns.bad = ns.bad + [day ~ ': block data must be an object'] -%}
+                        {%- else -%}
+                          {%- for k in dt.keys() if k not in _sa_data_keys -%}
+                            {%- set ns.bad = ns.bad + ['data key ' ~ k ~ ' is not one of ' ~ (_sa_data_keys | join(', '))] -%}
+                          {%- endfor -%}
+                          {%- for k in ['skip_rooms', 'rooms'] if dt.get(k) is string -%}
+                            {%- for r in dt.get(k).split(',') | map('trim') | reject('eq', '') if r not in _av_rooms -%}
+                              {%- set ns.bad = ns.bad + [k ~ ' names a room Autovac does not have: ' ~ r] -%}
+                            {%- endfor -%}
+                          {%- endfor -%}
+                        {%- endif -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.bad }}
+              _sa_missing_labels: "{{ _sa_labels | reject('in', labels() | list) | list }}"
+          - action: script.zen_sutra_ha_api
+            continue_on_error: true
+            data:
+              mode: services
+              has_service: "{{ 'schedule.create' if _sa_add else 'schedule.delete' }}"
+            response_variable: _sa_svc
+          - variables:
+              _sa_svc_found: "{{ _sa_svc is mapping and _sa_svc.get('found', false) == true }}"
+              _sa_err: >-
+                {%- if not _sa_svc_found -%}{{ 'schedule.create' if _sa_add else 'schedule.delete' }} is not available (needs Spook 5.11.0 or later). Nothing was changed.
+                {%- elif _sa_add and _sa_name == '' -%}config.name is required.
+                {%- elif _sa_add and _sa_kind not in ['global', 'room', 'blackout'] -%}config.kind must be global, room or blackout.
+                {%- elif _sa_add and _sa_scope != '' and _sa_scope not in _sa_scope_label -%}config.scope must be weekday, weekend or monday to sunday.
+                {%- elif _sa_add and _sa_kind == 'blackout' and _sa_scope != '' -%}a blackout takes no day scope (it vetoes whenever it is on).
+                {%- elif _sa_add and _sa_kind == 'room' and _sa_room == '' -%}a per-room schedule needs config.room.
+                {%- elif _sa_add and _sa_room != '' and _sa_room not in _av_rooms -%}config.room {{ _sa_room }} is not an Autovac room.
+                {%- elif _sa_add and _sa_room != '' and _sa_area not in areas() -%}room {{ _sa_room }} has no matching Home Assistant area ({{ _sa_area }}); set area_id on the room first (mode=configure).
+                {%- elif _sa_add and _sa_bad_blocks | length > 0 -%}{{ _sa_bad_blocks | join('; ') }}.
+                {%- elif _sa_add and _sa_missing_labels | length > 0 -%}the label(s) {{ _sa_missing_labels | join(', ') }} do not exist yet. Run mode=setup config={"create_labels":true} first. Nothing was changed.
+                {%- elif _sa_add and states(_sa_ent) != 'unknown' -%}{{ _sa_ent }} already exists. Nothing was changed.
+                {%- elif not _sa_add and _schedule_entity_id == '' -%}schedule_entity_id is required.
+                {%- elif not _sa_add and not (_schedule_entity_id.startswith('schedule.') and (_schedule_entity_id in label_entities('autovac_schedule') or _schedule_entity_id in label_entities('autovac_room_schedule') or _schedule_entity_id in label_entities('autovac_blackout'))) -%}{{ _schedule_entity_id }} is not an Autovac schedule (it needs the autovac_schedule, autovac_room_schedule or autovac_blackout label). Nothing was changed.
+                {%- endif -%}
+          - choose:
+              - conditions: "{{ _sa_err | trim != '' }}"
+                sequence:
+                  - variables:
+                      response:
+                        status: error
+                        mode: "{{ _mode }}"
+                        error: invalid_schedule_request
+                        message: "{{ _sa_err | trim }}"
+                        caller_token: "{{ _caller_token }}"
+              - conditions: "{{ _sa_dry }}"
+                sequence:
+                  - variables:
+                      response:
+                        status: ok
+                        mode: "{{ _mode }}"
+                        result: preview
+                        dry_run: true
+                        schedule_entity_id: "{{ _sa_ent if _sa_add else _schedule_entity_id }}"
+                        labels: "{{ _sa_labels if _sa_add else (labels(_schedule_entity_id) | list) }}"
+                        area: "{{ (_sa_area if _sa_kind in ['room', 'blackout'] and _sa_room != '' else none) if _sa_add else none }}"
+                        days: "{{ _sa_daymap if _sa_add else none }}"
+                        message: "{{ ('Would create ' ~ _sa_ent ~ ' as a ' ~ _sa_kind ~ ' schedule with labels ' ~ (_sa_labels | join(', ')) ~ ('; in area ' ~ _sa_area if _sa_kind in ['room', 'blackout'] and _sa_room != '' else '') ~ '.') if _sa_add else ('Would delete ' ~ _schedule_entity_id ~ ' (irreversible).') }} Run again without dry_run to do it."
+                        caller_token: "{{ _caller_token }}"
+            default:
+              - choose:
+                  - conditions: "{{ not _sa_add }}"
+                    sequence:
+                      - action: schedule.delete
+                        target:
+                          entity_id: "{{ _schedule_entity_id }}"
+                      - variables:
+                          response:
+                            status: ok
+                            mode: schedule_remove
+                            result: deleted
+                            schedule_entity_id: "{{ _schedule_entity_id }}"
+                            caller_token: "{{ _caller_token }}"
+                default:
+                  - action: schedule.create
+                    data: "{{ {'name': _sa_name, 'schedule_id': (_sa_name | slugify)} | combine(_sa_daymap) }}"
+                  - wait_template: "{{ states(_sa_ent) in ['on', 'off'] }}"
+                    timeout: "00:00:15"
+                    continue_on_timeout: true
+                  - action: homeassistant.add_label_to_entity
+                    continue_on_error: true
+                    data:
+                      label_id: "{{ _sa_labels }}"
+                      entity_id: "{{ _sa_ent }}"
+                  - if: "{{ _sa_room != '' and _sa_kind in ['room', 'blackout'] }}"
+                    then:
+                      - action: homeassistant.add_entity_to_area
+                        continue_on_error: true
+                        data:
+                          area_id: "{{ _sa_area }}"
+                          entity_id: "{{ _sa_ent }}"
+                  - variables:
+                      _sa_after_labels: "{{ labels(_sa_ent) | list }}"
+                      _sa_labels_ok: "{{ _sa_labels | reject('in', labels(_sa_ent) | list) | list | length == 0 }}"
+                      response:
+                        status: "{{ 'ok' if (states(_sa_ent) in ['on', 'off'] and (labels(_sa_ent) | list | length) > 0) else 'error' }}"
+                        mode: schedule_add
+                        result: "{{ 'created' if (states(_sa_ent) in ['on', 'off']) else 'not_seen' }}"
+                        schedule_entity_id: "{{ _sa_ent }}"
+                        labels: "{{ _sa_after_labels }}"
+                        labels_applied: "{{ _sa_labels_ok }}"
+                        area: "{{ area_name(_sa_ent) if area_name(_sa_ent) else none }}"
+                        hint: "Run mode=schedule_blocks to confirm the layer and next event. A per-room schedule removes that room from the global runs; a blackout always wins."
+                        caller_token: "{{ _caller_token }}"
+
       # -- 6 Write / action ops (clear/skip/unskip/ready/unready/mark_cleaned
       #    live in the shared choose: block below) --
 
@@ -1227,17 +1574,17 @@ script:
       - if: "{{ response is not defined and _mode == 'configure' and _room == '' }}"
         then:
           - variables:
-              _sys_patch: "{{ _config | from_json(default={}) }}"
+              _sys_patch: "{{ _config if _config is mapping else (_config | from_json(default={})) }}"
           - variables:
               _sys_filtered: >-
-                {%- set allowed = ['water_low_action', 'enabled', 'allow_room_control_cleaning_call'] -%}
+                {%- set allowed = ['water_low_action', 'enabled', 'allow_room_control_cleaning_call', 'briefing_push', 'run_notices'] -%}
                 {%- set ns = namespace(p={}) -%}
                 {%- for k, v in _sys_patch.items() -%}
                   {%- if k in allowed -%}{%- set ns.p = ns.p | combine({k: v}) -%}{%- endif -%}
                 {%- endfor -%}
                 {{ ns.p }}
               _sys_ignored: >-
-                {%- set allowed = ['water_low_action', 'enabled', 'allow_room_control_cleaning_call'] -%}
+                {%- set allowed = ['water_low_action', 'enabled', 'allow_room_control_cleaning_call', 'briefing_push', 'run_notices'] -%}
                 {%- set ns = namespace(ign=[]) -%}
                 {%- for k in _sys_patch.keys() -%}
                   {%- if k not in allowed -%}{%- set ns.ign = ns.ign + [k] -%}{%- endif -%}
@@ -1263,10 +1610,10 @@ script:
                     {{ {'mode': 'configure', 'result': 'ok', 'caller_token': _caller_token,
                         'scope': 'system', 'current_system_config': _av_system} }}
 
-      - if: "{{ response is not defined and _mode == 'configure' and _room != '' and _config != '{}' }}"
+      - if: "{{ response is not defined and _mode == 'configure' and _room != '' and not (_config == '{}' or (_config is mapping and _config | length == 0)) }}"
         then:
           - variables:
-              _cfg_patch: "{{ _config | from_json(default={}) }}"
+              _cfg_patch: "{{ _config if _config is mapping else (_config | from_json(default={})) }}"
           - variables:
               _cfg_normalized: >-
                 {%- set ns = namespace(p={}) -%}
@@ -2699,14 +3046,16 @@ script:
                                 {%- set msg = msg ~ ' Waiting on your OK: ' ~ (_re_blocked_due | join(', ')) ~ '.' if _re_blocked_due | length > 0 else msg -%}
                                 {%- set msg = msg ~ ' Water tank is low — top it up!' if _water_low else msg -%}
                                 {{ msg }}
-                          - action: script.zen_dojotools_postman
-                            data:
-                              mode: resolve_and_dispatch
-                              message: "{{ _re_dr_msg }}"
-                              urgency: 4
-                              channel_hint: tts
-                              title: "Autovac Dry Run"
-                              tag: autovac_dryrun
+                          - if: "{{ _av_system.get('run_notices', true) | bool(true) }}"
+                            then:
+                              - action: script.zen_dojotools_postman
+                                data:
+                                  mode: resolve_and_dispatch
+                                  message: "{{ _re_dr_msg }}"
+                                  urgency: 4
+                                  channel_hint: tts
+                                  title: "Autovac Dry Run"
+                                  tag: autovac_dryrun
                           - variables:
                               response: >-
                                 {{ {'mode': 'run_elected', 'result': 'dry_run', 'caller_token': _caller_token,
@@ -3425,31 +3774,33 @@ script:
                                   {%- endif -%}
                                 {%- endfor -%}
                                 {{ {'rooms': ns.r, 'system': _sys_upd} | tojson }}
-                          - alias: Dispatch via Postman
-                            action: script.zen_dojotools_postman
-                            data:
-                              mode: resolve_and_dispatch
-                              message: "{{ _message }}"
-                              urgency: "{{ _urgency | int }}"
-                              channel_hint: tts
-                              title: "Autovac Pre-Run Briefing"
-                              tag: autovac_prerun
-                              response_type: custom
-                              response_timeout_s: 1800
-                              ack_owner: autovac
-                              ack_context: >-
-                                prerun_{{ now().strftime('%Y%m%d') }}|{{ _schedule_entity if _schedule_entity != '' else 'none' }}
-                              notification_data:
-                                actions:
-                                  - action: go_now
-                                    title: "Go now!"
-                                  - action: cancel_run
-                                    title: "Skip this run"
-                                  - action: pause_day
-                                    title: "Pause all day"
+                          - if: "{{ _av_system.get('briefing_push', true) | bool(true) }}"
+                            then:
+                              - alias: Dispatch via Postman
+                                action: script.zen_dojotools_postman
+                                data:
+                                  mode: resolve_and_dispatch
+                                  message: "{{ _message }}"
+                                  urgency: "{{ _urgency | int }}"
+                                  channel_hint: tts
+                                  title: "Autovac Pre-Run Briefing"
+                                  tag: autovac_prerun
+                                  response_type: custom
+                                  response_timeout_s: 1800
+                                  ack_owner: autovac
+                                  ack_context: >-
+                                    prerun_{{ now().strftime('%Y%m%d') }}|{{ _schedule_entity if _schedule_entity != '' else 'none' }}
+                                  notification_data:
+                                    actions:
+                                      - action: go_now
+                                        title: "Go now!"
+                                      - action: cancel_run
+                                        title: "Skip this run"
+                                      - action: pause_day
+                                        title: "Pause all day"
                           - variables:
                               response: >-
-                                {{ {'mode': 'briefing', 'result': 'dispatched', 'caller_token': _caller_token,
+                                {{ {'mode': 'briefing', 'result': ('dispatched' if _av_system.get('briefing_push', true) | bool(true) else 'briefing_push_off'), 'caller_token': _caller_token,
                                     'message': _message} }}
 
       # ---- handle_ack --------------------------------------------------------
@@ -3544,14 +3895,16 @@ script:
                                   urgency: 5
                                   channel_hint: push
                                   title: "Autovac Unavailable"
-                      - action: script.zen_dojotools_postman
-                        data:
-                          mode: resolve_and_dispatch
-                          message: "Starting now — vacuum is on its way!"
-                          urgency: 5
-                          channel_hint: push
-                          title: "Autovac Starting"
-                          tag: autovac_prerun
+                      - if: "{{ _av_system.get('run_notices', true) | bool(true) }}"
+                        then:
+                          - action: script.zen_dojotools_postman
+                            data:
+                              mode: resolve_and_dispatch
+                              message: "Starting now — vacuum is on its way!"
+                              urgency: 5
+                              channel_hint: push
+                              title: "Autovac Starting"
+                              tag: autovac_prerun
 
               # cancel_run: mark this slot done only — other scheduled runs today unaffected
               - if: "{{ _ack_action == 'cancel_run' }}"
@@ -3565,14 +3918,16 @@ script:
                           volume_entity_id: "{{ _hh_cabinet }}"
                           key: autovac
                           value: "{{ {'rooms': _av_rooms, 'system': _av_system | combine({_prerun_hrk: true})} | tojson }}"
-                  - action: script.zen_dojotools_postman
-                    data:
-                      mode: resolve_and_dispatch
-                      message: "This run skipped. Other scheduled runs today are not affected."
-                      urgency: 4
-                      channel_hint: push
-                      title: "Autovac Run Skipped"
-                      tag: autovac_prerun
+                  - if: "{{ _av_system.get('run_notices', true) | bool(true) }}"
+                    then:
+                      - action: script.zen_dojotools_postman
+                        data:
+                          mode: resolve_and_dispatch
+                          message: "This run skipped. Other scheduled runs today are not affected."
+                          urgency: 4
+                          channel_hint: push
+                          title: "Autovac Run Skipped"
+                          tag: autovac_prerun
 
               # pause_day (+ legacy 'cancel'): pause_today until midnight nightly_reset
               - if: "{{ _ack_action in ['pause_day', 'cancel'] }}"
@@ -3590,16 +3945,18 @@ script:
                         action: vacuum.return_to_base
                         target:
                           entity_id: "{{ _vac_ent }}"
-                  - action: script.zen_dojotools_postman
-                    data:
-                      mode: resolve_and_dispatch
-                      message: >-
-                        All runs paused for today.
-                        {{ "On the way back to dock." if (_vac_ent != '' and _vacuum_state in ['cleaning', 'returning', 'paused']) else '' }}
-                      urgency: 5
-                      channel_hint: push
-                      title: "Autovac Paused"
-                      tag: autovac_prerun
+                  - if: "{{ _av_system.get('run_notices', true) | bool(true) }}"
+                    then:
+                      - action: script.zen_dojotools_postman
+                        data:
+                          mode: resolve_and_dispatch
+                          message: >-
+                            All runs paused for today.
+                            {{ "On the way back to dock." if (_vac_ent != '' and _vacuum_state in ['cleaning', 'returning', 'paused']) else '' }}
+                          urgency: 5
+                          channel_hint: push
+                          title: "Autovac Paused"
+                          tag: autovac_prerun
 
           - if: "{{ _pm_tag != '' }}"
             then:
@@ -3680,11 +4037,15 @@ script:
                   component_instructions: >-
                     You are reading the vacuum system state for this household.
 
-                    SEED OUTPUT (zen_dojotools_autovac, mode=status — when whitelisted):
-                      Full cabinet snapshot: system config (enabled, pause_today, min_battery,
-                      water_low_action), elected rooms with days_since/days_between, schedule
-                      entities with has_run_today and next_event, last_run, run_readiness,
-                      consumables stock. Use this as ground truth for all vacuum questions.
+                    SEED OUTPUT (zen_dojotools_autovac, mode=summary — when whitelisted):
+                      Scored by the tool, read-only. urgency (0-5), action_required (true at 3 or
+                      more: a vacuum error, or low water blocking the mop rooms), reasons (the
+                      named causes, e.g. vacuum_error, rooms_overdue, out_of_service_ticket_open),
+                      vacuum_state, battery_pct, can_run_now and blockers, elected_rooms, due_rooms,
+                      overdue_rooms, next_schedule, dnd, paused_today, and watch_entities (real entity
+                      ids). Use these as given: do not re-derive them and do not invent entity ids.
+                      suggested_act_event is null: the controller already notifies on a vacuum error
+                      and the pre-run briefing covers low water, so do not push from here.
 
                     INDEX-ONLY PATH (label:autovac entity surface — automatic fallback):
                       Vacuum entity: state (cleaning/docked/idle/error/returning), battery_level,
@@ -3706,15 +4067,15 @@ script:
                   seed:
                     tool: zen_dojotools_autovac
                     params:
-                      mode: status
-                  trigger_subscriptions: "daily_midnight,ha_start"
+                      mode: summary
+                  trigger_subscriptions: "daily_midnight,ha_start,force_summary"
                   drift_threshold: 30
                   emission_cooldown_minutes: 120
                   meta:
                     enabled: true
                     requires:
-                      cert: ''
-                      level: 0
+                      cert: zenos.autovac.status
+                      level: 1
           - variables:
               _component: "{{ component | default('') | lower | trim }}"
           - variables:
@@ -4051,29 +4412,42 @@ script:
                 summary='Robot vacuum control and status',
                 display_name='Autovac',
                 tier='dojotools',
-                version='5.7.3',
+                version='5.10.0',
                 health=_autovac_health,
                 required_labels=['autovac'],
                 optional_labels=['autovac_battery','autovac_dnd','autovac_water_low','autovac_schedule','autovac_current_room','autovac_wear','autovac_calendar','autovac_error_detail'],
                 consumes=['household_cabinet:autovac'],
                 returns='status|setup|configure|queue|clean|run|briefing|consumables|check_wear|cleaning_evidence|maintenance results',
                 failure_policy='return error shape',
-                modes=['status','help','setup','queue','dequeue','clear','skip','unskip','ready','unready','mark_cleaned','configure','preset','consumables','check_wear','pause','unpause','clean','run_elected','run','schedule','schedule_blocks','analyze','briefing','handle_ack','nightly_reset','morning_reset','kfc_manifest','stacks_by_anchor','register','unregister','health','inspect','tool_manifest','maintenance_set','maintenance_clear','maintenance_get'],
+                modes=['status','summary','help','setup','queue','dequeue','clear','skip','unskip','ready','unready','mark_cleaned','configure','preset','consumables','check_wear','pause','unpause','clean','run_elected','run','schedule','schedule_blocks','schedule_edit','schedule_add','schedule_remove','analyze','briefing','handle_ack','nightly_reset','morning_reset','kfc_manifest','stacks_by_anchor','register','unregister','health','inspect','tool_manifest','maintenance_set','maintenance_clear','maintenance_get'],
                 icon='mdi:robot-vacuum',
                 color='teal',
                 stripe=3,
                 impact='soft',
                 mcp_exposed=true,
                 lens_provider=true,
-                seed_modes=['status'],
+                seed_modes=['summary@zenos.autovac.status:1'],
                 caller_token='{{ _caller_token }}'
               ) | from_json -%}
               {{- _tm | combine({'provider_key': 'autovac', 'register_mode': 'register', 'certs_required': [{
+                  'cert': 'zenos.autovac.status',
+                  'display_name': 'Autovac Status',
+                  'description': "Read the robot vacuum's status summary",
+                  'detail': "Read-only summary of the vacuum for the autovac component (mode=summary): urgency, whether anything needs a person, readiness blockers, due and overdue rooms and the next schedule. Changes nothing. Stage l lets a live drawer mounted on mode=summary read it.",
+                  'max_level': 1,
+                  'level': 1,
+                  'modes': ['summary'],
+                  'st_ok': 'isl',
+                  'bundle': ['zenos_agent_advanced'],
+                  'gates': ['mode=summary (interactive, stage i)', 'the Ninja seed of the autovac component (stage s)', 'a live drawer mounted on mode=summary (stage l)'],
+                  'live_ack_required_for': [],
+                  'grant_via': "persona_editor mode=cert_req_grant cert_component=zenos.autovac.status cert_stages=isl (or zen_dojotools_identity mode=cert_list to see current status)"
+                }, {
                   'cert': 'zenos.autovac.setup',
                   'display_name': 'Autovac Setup',
                   'description': "Set up the robot vacuum's rooms and settings", 'detail': "Steel-mag pattern -- structural/config edits to autovac room definitions and system settings (including allow_room_control_cleaning_call). Mirrors the room_manager zenos.spatial.room_topology_edit split between structure and behavior.",
                   'max_level': 1,
-                  'gates': ['mode=configure/setup/preset'],
+                  'gates': ['mode=configure/setup/preset/schedule_edit/schedule_add/schedule_remove'],
                   'live_ack_required_for': [],
                   'grant_via': "persona_editor mode=cert_req_grant cert_component=zenos.autovac.setup (or zen_dojotools_identity mode=cert_list to see current status)"
                 }, {
@@ -4234,9 +4608,56 @@ script:
                 {%- set ns.days = ns.days + [day | combine({'hold': nev.hold, 'calendar_events': nev.events})] -%}
               {%- endfor -%}
               {{ ns.days }}
+        # mode=summary: the autovac component's seed (a scored, read-only view of
+        # the same facts status builds). The Ninja gets the urgency, whether
+        # anything needs a human, and real entity ids, so it does not have to
+        # re-derive them or invent a watchlist.
+        - variables:
+            _summary: >-
+              {%- if _mode != 'summary' -%}{{ {} }}
+              {%- else -%}
+                {%- set ns = namespace(u=0, why=[]) -%}
+                {%- set wla = _av_system.get('water_low_action', 'warn') | lower -%}
+                {%- set due_rooms = _room_decisions | selectattr('due', 'equalto', true) | map(attribute='room') | list -%}
+                {%- set overdue = namespace(r=[]) -%}
+                {%- for d in _room_decisions if d.enabled and d.days_between > 0 and d.days_since_cleaned >= (d.days_between * 2) -%}
+                  {%- set overdue.r = overdue.r + [d.room] -%}
+                {%- endfor -%}
+                {%- set mop_due = _room_decisions | selectattr('due', 'equalto', true) | selectattr('requires_mop', 'equalto', true) | list -%}
+                {%- if _vacuum_state == 'error' -%}{%- set ns.u = [ns.u, 4] | max -%}{%- set ns.why = ns.why + ['vacuum_error'] -%}{%- endif -%}
+                {%- if _water_low and mop_due | length > 0 and wla == 'stop' -%}{%- set ns.u = [ns.u, 3] | max -%}{%- set ns.why = ns.why + ['water_low_blocks_mop_rooms'] -%}{%- endif -%}
+                {%- if _vac_ent != '' and _vacuum_state in ['unavailable', 'unknown'] -%}{%- set ns.u = [ns.u, 2] | max -%}{%- set ns.why = ns.why + ['vacuum_unavailable'] -%}{%- endif -%}
+                {%- if _avm_status is mapping and _avm_status | length > 0 -%}{%- set ns.u = [ns.u, 2] | max -%}{%- set ns.why = ns.why + ['out_of_service_ticket_open'] -%}{%- endif -%}
+                {%- if overdue.r | length > 0 -%}{%- set ns.u = [ns.u, 2] | max -%}{%- set ns.why = ns.why + ['rooms_overdue'] -%}{%- endif -%}
+                {%- if _water_low and wla != 'stop' -%}{%- set ns.u = [ns.u, 1] | max -%}{%- set ns.why = ns.why + ['water_low'] -%}{%- endif -%}
+                {%- if _battery_known and _battery < (_av_system.get('minimum_battery', 20) | int(20)) -%}{%- set ns.u = [ns.u, 1] | max -%}{%- set ns.why = ns.why + ['low_battery'] -%}{%- endif -%}
+                {%- if not _enabled -%}{%- set ns.why = ns.why + ['system_disabled'] -%}{%- endif -%}
+                {%- if _av_system.get('pause_today', false) -%}{%- set ns.why = ns.why + ['paused_today'] -%}{%- endif -%}
+                {{ {
+                  'mode': 'summary',
+                  'result': 'ok',
+                  'caller_token': _caller_token,
+                  'urgency': ns.u,
+                  'action_required': ns.u >= 3,
+                  'suggested_act_event': none,
+                  'reasons': ns.why,
+                  'vacuum_state': _vacuum_state,
+                  'battery_pct': _battery if _battery_known else none,
+                  'can_run_now': _run_readiness.can_run_now,
+                  'blockers': _run_readiness.blockers,
+                  'elected_rooms': _elected | map(attribute='room') | list,
+                  'due_rooms': due_rooms,
+                  'overdue_rooms': overdue.r,
+                  'next_schedule': _next_schedule,
+                  'dnd': _dnd,
+                  'paused_today': _av_system.get('pause_today', false),
+                  'out_of_service': (_avm_status | length > 0) if _avm_status is mapping else false,
+                  'watch_entities': ([_vac_ent] + (label_entities('autovac_water_low') | list) + (label_entities('autovac_schedule') | list)) | reject('eq', '') | list
+                } }}
+              {%- endif -%}
         - variables:
             response: >-
-              {{ {
+              {{ _summary if _mode == 'summary' else {
                 'mode': _mode,
                 'result': _op_result | trim,
                 'note': _op_note | trim,
@@ -4805,6 +5226,17 @@ automation:
                       mode: analyze
                       trigger_id: docked
             alias: HA start — catch-up analyze if run completed during restart
+
+      # The autovac component refreshes when the vacuum docks or errors, not
+      # only at midnight and start: the scheduler picks this up and runs the
+      # component (its own emission cooldown keeps it from repeating).
+      - if: "{{ trigger.id in ['dock', 'error'] }}"
+        then:
+          - event: zen_event
+            event_data:
+              event:
+                kind: summary_force
+                component: autovac
 
   # ---------------------------------------------------------------------------
   # PENDING — Real-Time Wear Sensor Alert
