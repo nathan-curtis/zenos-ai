@@ -1,4 +1,6 @@
-# Zen DojoTools Ectoplasm — v6.6.1
+# Zen DojoTools Ectoplasm — v6.8.0
+
+> **2026.11.1 (6.7.0, 6.8.0):** the reads `repair_list`, `ghost_list` and the new `orphaned_db_list` need `zenos.registry.read` (level 1), because their issue ids and titles name your entities, scripts, labels and dashboards. New modes: aliases for entities, areas and floors; `entity_set_id`; `area_update` and `floor_update` edit in place; schedule helpers and `timer_set_duration`. See the tables below.
 
 > **2026.11.0:** `entity_expose` (Assist; `zenos.registry.lifecycle_control` level 2) and `entity_unexpose` (Assist, Alexa and Google; level 1, it only tightens) wrap Spook's expose actions. Both preview without `confirm_action`. `entity_expose` always refuses the admin plane (any `script.zen_admintools_*`, `prompt_loader`, anything labeled `zen_never_expose`) before it reads a cert, and emits `ectoplasm_expose_refused`. See [The admin plane](../getting_started/security_certification_manual.md#67-the-admin-plane).
 
@@ -36,7 +38,7 @@ All write actions are **confirm-gated**:
 - Omit `confirm_action` or set it to `false` → returns `status: start` with a **preview block** describing exactly what would happen, without executing anything.
 - Set `confirm_action: true` → executes.
 
-**Read actions** (`repair_list`, `ghost_list`) execute immediately — no confirm required.
+**Read actions** (`repair_list`, `ghost_list`, `orphaned_db_list`) execute immediately — no confirm required. As of 6.7.0 they need `zenos.registry.read` (level 1).
 
 This pattern is intentional. Structural operations (deleting an area, renaming an entity, disabling an integration) are hard to undo. Preview first, confirm second.
 
@@ -63,12 +65,13 @@ data:
 
 > **New in 6.3.0 (Spook 5.7.0+):** helper create/delete for timer, input_boolean, counter, input_text, input_button, input_datetime, and input_select (same `zenos.registry.lifecycle_control` cert as input_number); `entity_set_icon` and `entity_set_aliases`; `category_create`, `category_delete`, `category_assign`, `category_unassign`. `repair_list` and `ghost_list` use Spook's `repairs.list`. Each new action checks that the Spook service exists and returns `spook_version_required` with nothing changed on older Spook.
 
-### Reads (no confirm required)
+### Reads (no confirm required; `zenos.registry.read` level 1)
 
 | Action | What It Does | Key Fields |
 |---|---|---|
 | `repair_list` | List active HA repair issues. Optional domain filter. | `domain` |
 | `ghost_list` | List ghost entities (entities whose device or integration no longer exists). | — |
+| `orphaned_db_list` | List entities the recorder keeps history for that Home Assistant no longer has (Spook 5.7.0+). Database history only, not what `orphan_cleanup` removes. | — |
 
 ---
 
@@ -90,6 +93,9 @@ data:
 | Action | What It Does | Key Fields |
 |---|---|---|
 | `area_create` | Create a new area. Optionally assign to a floor. | `area_name`, `floor_id` (optional) |
+| `area_update` | Edit an existing area in place (Spook): rename, icon, picture, temperature and humidity sensors. A field left out is kept; `clear_fields` empties `icon`, `picture`, `temperature_entity_id` or `humidity_entity_id`. Runs without a preview. Aliases, floor and labels have their own modes, and `entity_aliases` here is refused. | `target_area`, `area_name` (new name), `new_icon`, `area_picture`, `area_temperature_entity_id`, `area_humidity_entity_id`, `clear_fields` |
+| `area_add_alias` / `area_remove_alias` | Add or remove voice-assistant aliases, keeping the others (Spook 5.7.0+). | `target_area`, `entity_aliases` |
+| `area_set_aliases` | Replace an area's aliases. | `target_area`, `entity_aliases` |
 | `area_delete` | Delete an area by ID. | `target_area` |
 | `area_assign_device` | Assign a device to an area. | `target_area`, `device_id` |
 | `area_unassign_device` | Remove a device from its current area. | `device_id` |
@@ -103,6 +109,9 @@ data:
 | Action | What It Does | Key Fields |
 |---|---|---|
 | `floor_create` | Create a new floor. | `floor_name`, `floor_level` (optional), `floor_id` (optional — auto-generated if blank) |
+| `floor_update` | Edit an existing floor in place (Spook): rename, icon, level. A field left out is kept; `clear_fields` empties `icon` or `level`. Runs without a preview. | `floor_id`, `floor_name` (new name), `new_icon`, `floor_level`, `clear_fields` |
+| `floor_add_alias` / `floor_remove_alias` | Add or remove voice-assistant aliases, keeping the others (Spook 5.7.0+). | `floor_id`, `entity_aliases` |
+| `floor_set_aliases` | Replace a floor's aliases. | `floor_id`, `entity_aliases` |
 | `floor_delete` | Delete a floor by ID. Does not delete its areas. | `floor_id` |
 | `floor_assign_area` | Assign an area to a floor. | `floor_id`, `target_area` |
 | `floor_unassign_area` | Remove an area from its floor. | `target_area` |
@@ -122,6 +131,8 @@ data:
 | `entity_disable` | Disable an entity (stops polling, removes from state machine). Auto-tags the entity `zen_agent_disabled`. | `entity_id` |
 | `entity_enable` | Re-enable a disabled entity. Auto-untags `zen_agent_disabled`. | `entity_id` |
 | `entity_rename` | Set a new friendly name for an entity. | `entity_id`, `new_name` |
+| `entity_add_alias` / `entity_remove_alias` | Add or remove voice-assistant aliases, keeping the others (Spook 5.7.0+). `entity_set_aliases` replaces them all. | `entity_id`, `entity_aliases` |
+| `entity_set_id` | Rename an entity ID (Spook 5.7.0+). Same domain only; refuses an ID that exists. Level 2, a preview unless `confirm_action: true`. Automations, scripts and dashboards that name the old ID are not rewritten; Spook's repairs flag them afterwards. | `entity_id`, `new_entity_id` |
 
 **`zen_agent_disabled` label convention.** `disabled_by()` has no template global, so there was previously no way to answer "what has the agent disabled" without a raw registry read. `entity_disable`/`entity_enable` now tag/untag this label automatically — "everything the agent has disabled" is a label filter in the entity list UI, not a manual audit.
 
@@ -181,6 +192,21 @@ Same confirm-gate pattern as everything else here — preview first, `confirm_ac
 
 ---
 
+### Schedules and Timer Duration (v6.8.0, requires Spook 5.11.0+)
+
+`zenos.registry.lifecycle_control` level 2; each is a preview unless `confirm_action: true`. They edit storage helpers only: a schedule or timer defined in YAML is refused, and so is the wrong domain.
+
+| Action | What It Does | Key Fields |
+|---|---|---|
+| `schedule_create` | Create a schedule helper. | `schedule_name`, `schedule_entity_id` (optional), `schedule_icon` (optional), `schedule_days` (object: `monday` to `sunday`, each a list of `{from, to}`) |
+| `schedule_set_day` | Replace the time blocks on one or more days; other days are untouched. An empty `schedule_blocks` clears the day. | `entity_id` (`schedule.*`), `schedule_day` (list), `schedule_blocks` (list of `{from, to}`) |
+| `schedule_delete` | Delete a schedule helper. Irreversible. | `entity_id` (`schedule.*`) |
+| `timer_set_duration` | Change how long a timer runs when started. | `entity_id` (`timer.*`), `timer_duration` (`HH:MM:SS`, or an object such as `{minutes: 10}`) |
+
+`schedule_days`, `schedule_day`, `schedule_blocks` and `clear_fields` may arrive as JSON text; Ectoplasm parses them.
+
+---
+
 ## Field Reference
 
 | Field | Required | Used By | Description |
@@ -193,14 +219,21 @@ Same confirm-gate pattern as everything else here — preview first, `confirm_ac
 | `severity` | No | `repair_create` | `error`, `warning`, `info`. Default: `warning` |
 | `domain` | No | `repair_create`, `repair_list` | HA integration domain. Defaults to `zenos` for create. Filter for list. |
 | `target_area` | Conditional | Area/floor/label ops | HA area ID (slug). The field is `target_area`, not `area_id`: `area_id` is a Home Assistant template function, so `area_delete area_id=x` answers that it requires an area. |
-| `area_name` | Conditional | `area_create` | Human-readable area name |
+| `area_name` | Conditional | `area_create`, `area_update` | Human-readable area name (the new name on `area_update`) |
 | `floor_id` | Conditional | Floor ops, `area_create` | HA floor ID (slug) |
-| `floor_name` | Conditional | `floor_create` | Human-readable floor name |
-| `floor_level` | No | `floor_create` | Integer level. Convention: `0`=ground, `1`=first, `-1`=basement |
+| `floor_name` | Conditional | `floor_create`, `floor_update` | Human-readable floor name (the new name on `floor_update`) |
+| `floor_level` | No | `floor_create`, `floor_update` | Integer level. Convention: `0`=ground, `1`=first, `-1`=basement |
 | `entity_id` | Conditional | Entity ops, `area_assign_entity`, `area_unassign_entity` | HA entity ID |
 | `device_id` | Conditional | Device ops, area/label device ops | HA device ID |
 | `label_id` | Conditional | Label assignment ops | HA label ID (slug) |
 | `new_name` | Conditional | `entity_rename` | Replacement friendly name |
+| `entity_aliases` | Conditional | Alias modes, `entity_set_aliases` | List of aliases |
+| `new_entity_id` | Conditional | `entity_set_id` | The new entity ID, same domain |
+| `new_icon` | No | `entity_set_icon`, `area_update`, `floor_update` | `mdi:` icon |
+| `area_picture`, `area_temperature_entity_id`, `area_humidity_entity_id` | No | `area_update` | Picture URL and the area's temperature and humidity sensors |
+| `clear_fields` | No | `area_update`, `floor_update` | Fields to empty. Area: `icon`, `picture`, `temperature_entity_id`, `humidity_entity_id`. Floor: `icon`, `level` |
+| `schedule_name`, `schedule_entity_id`, `schedule_icon`, `schedule_days`, `schedule_day`, `schedule_blocks` | Conditional | Schedule modes | See [Schedules and Timer Duration](#schedules-and-timer-duration-v680-requires-spook-5110) |
+| `timer_duration` | Conditional | `timer_set_duration` | `HH:MM:SS` or `{minutes: 10}` |
 | `config_entry_id` | Conditional | Integration ops | Integration config entry ID |
 | `confirm_action` | No | All writes | `true` to execute. Omit/`false` returns preview. Default `false`. |
 | `caller_token` | No | All | Opaque token echoed in response for correlation |

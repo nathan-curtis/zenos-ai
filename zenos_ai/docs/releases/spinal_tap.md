@@ -450,10 +450,13 @@ Fixes found running 2026.11.0 on live installs.
 ### Read this before upgrading
 
 - **Ectoplasm results say `mode`.** Every Ectoplasm result carries `mode: <the mode called>` where it carried `action_type`. Anything that reads `action_type` from an Ectoplasm result needs updating. The `action_type` input still works.
+- **Grant `zenos.registry.read` for the repairs and ghost lists.** Ectoplasm's `repair_list` and `ghost_list` answered any caller, and their issue ids and titles name your entities, scripts, labels and dashboards. They need `zenos.registry.read` (level 1) now, and nothing grants it for you.
 - **Label Taskmaster's default To Do list.** With no `list_name`, Taskmaster used a list name written in the file. It now uses the To Do list labeled `taskmaster_default`, else the first list labeled `taskmaster`. Label the list you want it to use.
 
 ### Added
 
+- **Ectoplasm edits areas and floors in place.** `area_update` and `floor_update` rename, change an icon, a picture, a floor level or an area's temperature and humidity sensors without deleting and recreating, which emptied the area.
+- **Ectoplasm aliases, entity IDs, schedules and timers.** Add, remove or replace voice aliases on entities, areas and floors; `entity_set_id` renames an entity ID; `schedule_create`, `schedule_set_day` and `schedule_delete` manage schedule helpers; `timer_set_duration` changes a timer's length; `orphaned_db_list` lists history the recorder keeps for entities that are gone. Spook 5.7.0+ (schedules and timers 5.11.0+). See [Ectoplasm](../scripts/zen_dojotools_ectoplasm_readme.md).
 - **To Do names one item by `uid`.** `update` and `delete` take `{uid: <uid>}`, the uid a read shows, to name one item when several share a name. See [To Do](../scripts/zen_dojotools_todo_readme.md).
 - **Inventory sets up a tare-weight product.** `update_product_meta` takes `tare_weight` and `enable_tare_weight_handling`. See [Tare-Weight Products](../../../packages/zenos_ai/plugins/grocy/readme.md#tare-weight-products-593-to-596).
 
