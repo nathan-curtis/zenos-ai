@@ -59,7 +59,7 @@ Read this diagram left to right by zone: authoring fills Dojo, triggers start wo
 
 ---
 
-## 0. Zen DojoTools Scribe — v5.15.1
+## 0. Zen DojoTools Scribe — v5.15.0
 **File:** [`zen_dojotools_scribe_readme.md`](zen_dojotools_scribe_readme.md)
 
 Guided authoring and lifecycle management for KF6 artifacts. Full lifecycle: `new_thought` → `patch` → `formalize_scroll` → `publish_kfc`. MCP-exposed — Friday can run the full authoring loop without operator intervention. `zen_dojotools_kungfu_writer` is retired; Scribe is the replacement.
@@ -80,7 +80,7 @@ Boot guard, initializer, OOBE driver, and prompt fallback. Gates 0–4 drive the
 
 ---
 
-## 3. Zen DojoTools Profile Editor — v5.4.2 · Persona Editor v1.5.3
+## 3. Zen DojoTools Profile Editor — v5.4.2 · Persona Editor v1.5.4
 **File:** [`zen_dojotools_profile_readme.md`](zen_dojotools_profile_readme.md)
 
 Interactive profile surface for ZenOS-AI identity profiles. Reads and writes AI persona, household, user, and family profile drawers; signs/restores AI essence; and manages AI KFC certifications. Expose to your conversation agent so Friday can configure household details conversationally.
@@ -122,7 +122,7 @@ The KF6 action pipeline — Ninja Summarizer (per-component kata writer) and Sup
 
 ---
 
-## 8. Zen DojoTools Library — v6.15.5
+## 8. Zen DojoTools Library — v6.15.1
 **File:** [`zen_dojotools_library_readme.md`](zen_dojotools_library_readme.md)
 
 Knowledge broker and Lens Bus owner. `stack=` routing to registered providers (`paperless`, `radar`, `wiki`, `media`). Generic verbs: `get/find/list/configure/by_anchor`. `section=catalog item_type=book|game|…` unified works catalog backed by Grocy — browse/find/search/add/loan/return with library science (dedup, loan lifecycle, location tracking). Compounding capability tiers: Library alone (Lens Bus) → +Grocy (circulation desk) → +Media Manager (music evidence with playback_hint) → +Room Manager now_playing (room-context evidence). `hash_md5` and `slugify` utility tools. `command_interpreter.jinja` removed in 2026.7.0.
@@ -157,7 +157,7 @@ FileCabinet garbage collector. Enforces drawer hide/delete/recycle lifecycle. `g
 
 ---
 
-## 13. Zen DojoTools SystemTools — v5.4.4
+## 13. Zen DojoTools SystemTools — v5.4.2
 **File:** [`zen_dojotools_systemtools_readme.md`](zen_dojotools_systemtools_readme.md)
 
 HA lifecycle management: config check, safe restart, update install/skip. Log viewer (five modes). Structured `zen_event` emission. `render_dojo` and `render_system` template render tools. `prompt_health` prompt integrity checker. `pipeline` summarizer pipeline status. Internal HA API wrapper (do NOT expose). Requires long-lived HA token in `secrets.yaml`. v5.2.0: `kfc_manifest` (KF5 self-registration, `zen_system` rollup component); `home_status`/`home_mode`, `quiet_hours`/`work_hours`, `scheduler_anchors`, `guest_mode`/`entertaining` — see [components/systemtools.md](../components/systemtools.md).
@@ -248,7 +248,7 @@ Agent-composable casting of a Lovelace dashboard/view to any display in the hous
 
 ---
 
-## 25. Zen AdminTools CertAdmin — v1.8.4
+## 25. Zen AdminTools CertAdmin — v1.8.5
 **File:** [`zen_admintools_certadmin_readme.md`](zen_admintools_certadmin_readme.md)
 
 Admin-only cert issuance/revocation authority for AI persona (`ai_user`) cabinets. Not agent-reachable (`mcp_exposed: false`) — every call is a household-admin action, not something an agent invokes on itself. Grants name the pipeline stages they cover (`cert_stages`), and `zenos_agent_autonomous` covers the summarizer's background sends.

@@ -1,6 +1,6 @@
 # Zen DojoTools FileCabinet — v6.40.0
 
-> **2026.11.1 (6.39.0, 6.40.0):** a live KFC mount honours its own stored `meta.enabled`, so Scribe can turn every component on and off, tool-owned mounts included. The wiki stack stays optional: every call into `zen_sutra_wikijs` is skipped when that plugin isn't installed, so the bare call, `tool_manifest` and every cabinet operation work without Wiki.js (`stack=wiki` answers `stack_not_available`).
+> **2026.12.0 (6.39.0, 6.40.0):** a live KFC mount honours its own stored `meta.enabled`, so Scribe can turn every component on and off, tool-owned mounts included. The wiki stack stays optional: every call into `zen_sutra_wikijs` is skipped when that plugin isn't installed, so the bare call, `tool_manifest` and every cabinet operation work without Wiki.js (`stack=wiki` answers `stack_not_available`).
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 **ZenOS Release:** 2026.11.0 'This Is Spinal Tap'

@@ -1,6 +1,6 @@
 # Zen DojoTools Camera — v5.5.1
 
-> **2026.11.1 (5.5.1):** the `camera_heartbeat` component is off on a fresh install, because it acts. Turning it on through Scribe `enable` asks for `zenos.security.camera_scan`. An upgraded install keeps whatever it stores.
+> **2026.12.0 (5.5.1):** the `camera_heartbeat` component is off on a fresh install, because it acts. Turning it on through Scribe `enable` asks for `zenos.security.camera_scan`. An upgraded install keeps whatever it stores.
 
 > **2026.11.0:** Camera declares its act, `scan` (`label: exterior|interior`, required), behind the new emit cert `zenos.security.camera_scan` (stages `ie`, max level 1). With it, the `camera_heartbeat` summary scans unattended: exterior always, interior only when away. Asking for a scan in conversation doesn't need it.
 

@@ -1,6 +1,6 @@
 # Zen DojoTools Summarizers — Ninja Summarizer v5.9.0 · SuperSummary v4.9.1
 
-> **2026.11.1:** a reply that parses but has every value null, blank or empty isn't written as a summary. A number (urgency 0 is a real quiet reading), text, or a non-empty list or object counts; a true or false on its own doesn't. The Ninja logs "empty summary", keeps the previous summary, and records `outcome` (`ok`, `no_response`, `parse_failed`, `empty_content`) on its per-run record; SuperSummary's status drawer says `error` with `reason: empty_content`. The 11 seed and act bridges stay, still warning.
+> **2026.12.0:** a reply that parses but has every value null, blank or empty isn't written as a summary. A number (urgency 0 is a real quiet reading), text, or a non-empty list or object counts; a true or false on its own doesn't. The Ninja logs "empty summary", keeps the previous summary, and records `outcome` (`ok`, `no_response`, `parse_failed`, `empty_content`) on its per-run record; SuperSummary's status drawer says `error` with `reason: empty_content`. The 11 seed and act bridges stay, still warning.
 
 *Ninja Summarizer + SuperSummary — the KF6 action pipeline — MCP-exposed*
 
