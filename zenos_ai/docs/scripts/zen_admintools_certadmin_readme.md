@@ -1,6 +1,8 @@
 # Zen AdminTools CertAdmin — v1.8.5
 
-> **2026.12.0 (1.8.4, 1.8.5):** `cert_audit` skips `zen_dojotools_persona_editor` when it reads the catalog, so a grant no longer logs a "Disallowed recursion" warning. The `cert_stages` help names both tools that allow stage `l`: Print Shop and Autovac.
+> **2026.11.1 (1.8.4):** `cert_audit` skips `zen_dojotools_persona_editor` when it reads the catalog, so a grant no longer logs a "Disallowed recursion" warning.
+>
+> **2026.12.0 (1.8.5):** the `cert_stages` help names both tools that allow stage `l`: Print Shop and Autovac.
 
 > **2026.11.0:** The `zenos_agent_parity` bundle (built by `cert_audit` from what your enabled summaries actually need) is granted with stages `ise` by default, and each member gets only the stages its tool allows: read certs `is`, emit certs `ie`. See [Read certs and parity](../getting_started/security_certification_manual.md#66-read-certs-and-parity).
 

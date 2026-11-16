@@ -32,4 +32,4 @@ These are Flynn's own copies of operations `zen_dojotools_identity` also has. Id
 
 | Version | Change |
 |---------|--------|
-| v1.2.0 | New in 2026.12.0. The Sentinel's household, family, partner, identity manifest, ACL migration, cert cache refresh and persona name write calls. |
+| v1.2.0 | New in 2026.11.1. The Sentinel's household, family, partner, identity manifest, ACL migration, cert cache refresh and persona name write calls. |
