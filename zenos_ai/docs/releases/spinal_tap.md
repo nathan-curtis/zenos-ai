@@ -452,7 +452,6 @@ Fixes found running 2026.11.0 on live installs, and a fresh install that comes u
 - **Grant `zenos.registry.read` for the repairs and ghost lists.** Ectoplasm's `repair_list` and `ghost_list` answered any caller, and their issue ids and titles name your entities, scripts, labels and dashboards. They need `zenos.registry.read` (level 1) now, and nothing grants it for you.
 - **Ectoplasm results say `mode`.** Every Ectoplasm result carries `mode: <the mode called>` where it carried `action_type`. Anything that reads `action_type` from an Ectoplasm result needs updating. The `action_type` input still works.
 - **Label Taskmaster's default To Do list.** With no `list_name`, Taskmaster used a list name written in the file. It now uses the To Do list labeled `taskmaster_default`, else the first list labeled `taskmaster`. Label the list you want it to use.
-- **Restart Home Assistant after `reset_all`.** The trigger registry is rebuilt by a restart; the scheduler's self-heal hasn't been seen to do it alone.
 
 ### Changed
 
@@ -480,6 +479,7 @@ Fixes found running 2026.11.0 on live installs, and a fresh install that comes u
 - **Room Manager's summary has room data.** Its component had no seed, and `setup` shipped a second copy that replaced the registered one, so its Kata stayed empty. It now seeds from `mode=summary` (`zenos.presence.read`), and an existing install picks up the new seed.
 - **An empty summary isn't written.** A reply with every value null or blank was written as a Kata. It's skipped, the previous summary stays, and the run records why.
 - **Pausing the TV pauses the TV.** Media Manager sent every transport command to the room's Music Assistant player, so in a room with a universal player, pausing a TV paused the receiver. `play`, `pause`, `stop`, `next` and `previous` now go to what is playing. See [Media Manager](../components/media_manager.md).
+- **The trigger list rebuilds itself right away after a cabinet reset.** It came back minutes after the next quarter-hour tick; it now lands at the tick.
 - **The health report doesn't stop a fresh install over Spook findings.** Unknown icons, entities and labels no longer count as approval-path blockers; only a missing notify target does.
 - **Ectoplasm names an unknown mode.** A mode it doesn't have answers "Unknown mode", where it answered that the call had hit a bug.
 - **Ectoplasm fields left out stay empty.** `area_name`, `floor_id`, `floor_name`, `device_id` and `label_id` share names with Home Assistant template functions, and when they were left out, they read as the function. `area_create` without a floor printed `floor_id=<function ...>` in its advisory.
