@@ -401,6 +401,8 @@ script.zen_admintools_cabinetadmin   (mode: reset_all, confirm: true)
 
 ⚠️ **Wipes every cabinet and every `zen_` label. No undo.**
 
+**Restart Home Assistant afterwards.** After a reset, the scheduler's self-heal hasn't been seen to rebuild the trigger registry (`zen_trigger_registry`) on its own; a restart does. Then run onboarding again: `zen_flynn_oobe mode=run`.
+
 The default `scope: all` is a true fresh start: every cabinet (your user and AI user cabinets, the vault and expansions included) and every `zen_` label on the house, your own included; Flynn recreates only its own labels. It needs the cabinet lifecycle cert, the label delete cert at level 2, and a live household-admin yes. `scope: core` wipes only the 14 Ring-0 cabinets and keeps labels. One call does both; there is no separate label step.
 
 Flynn rebuilds the install as a fresh one, schemas, templates and the FileCabinet lock included.

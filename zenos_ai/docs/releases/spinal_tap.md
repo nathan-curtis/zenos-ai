@@ -445,12 +445,17 @@ Later: the admission-token contract with `zen_root_authentik` (it needs an OIDC 
 **Status:** Beta 1 (patch on 2026.11.0, `feat/2026.11.1`)
 **ETA:** Saturday, November 21, 2026
 
-Fixes found running 2026.11.0 on live installs.
+Fixes found running 2026.11.0 on live installs, and a fresh install that comes up clean on its own.
 
 ### Read this before upgrading
 
 - **Ectoplasm results say `mode`.** Every Ectoplasm result carries `mode: <the mode called>` where it carried `action_type`. Anything that reads `action_type` from an Ectoplasm result needs updating. The `action_type` input still works.
 - **Grant `zenos.registry.read` for the repairs and ghost lists.** Ectoplasm's `repair_list` and `ghost_list` answered any caller, and their issue ids and titles name your entities, scripts, labels and dashboards. They need `zenos.registry.read` (level 1) now, and nothing grants it for you.
+- **Onboarding asks once.** `zen_flynn_oobe mode=run` asks for the `zenos_agent_onboarding` bundle: the backstage pass and basic certs, steward at level 1 (room setup needs it), and the parity certs, behind one live acknowledgement. A component's own certs are asked for when you turn it on. See [OOBE](../getting_started/oobe.md).
+- **Alert Manager and the camera heartbeat start off on a fresh install.** Both send or act, so turning one on is where its cert is asked for: `zen_dojotools_scribe mode=enable key=alert_manager artifact_class=kfc`. An upgraded install keeps what it has.
+- **Sim mode is on unless you turn it off.** It's stamped on unless `input_boolean.zenos_sim_mode_override` exists and is off.
+- **Restart Home Assistant after `reset_all`.** The trigger registry is rebuilt by a restart; the scheduler's self-heal hasn't been seen to do it alone.
+- **The old seed and act whitelists stay.** The 2026.11.0 notes said they'd go in 2026.12. They stay, still warning, until every tool that uses them has moved; no date is set.
 - **Label Taskmaster's default To Do list.** With no `list_name`, Taskmaster used a list name written in the file. It now uses the To Do list labeled `taskmaster_default`, else the first list labeled `taskmaster`. Label the list you want it to use.
 
 ### Added
@@ -462,6 +467,14 @@ Fixes found running 2026.11.0 on live installs.
 
 ### Fixed
 
+- **A missing plugin no longer stops the core.** A call to a script that isn't installed raises an error `continue_on_error` doesn't catch, so without the Wiki.js plugin, onboarding, FileCabinet's `tool_manifest` and the KFC bootstrap failed. Every core call into a plugin now skips a plugin that isn't installed. See [Plugins](../getting_started/install.md#plugins-optional).
+- **A fresh install starts on its own.** Flynn starts the KFC bootstrap once the Dojo cabinet is up, so components appear without running `bootstrap_kfc` by hand or waiting for 00:01. Flynn's boot calls go through its own admin door, [`zen_admintools_identity_writer`](../scripts/zen_admintools_identity_writer_readme.md).
+- **Onboarding finishes.** On a fresh install OOBE read every cert as missing right after it was granted and kept answering `approval_required`; `complete` re-asked for parity. Completion is written last, so done means the pass and parity are in place.
+- **Prompt Loader's help writes nothing.** `mode=help` ran the load and re-stamped every prompt slot; an unknown mode did too. Help is now the default and an unknown mode is refused. The other admin tools answer `mode=help` the same way.
+- **Room Manager's summary has room data.** Its component had no seed, and `setup` shipped a second copy that replaced the registered one, so its Kata stayed empty. It now seeds from `mode=summary` (`zenos.presence.read`), and an existing install picks up the new seed.
+- **An empty summary isn't written.** A reply with every value null or blank was written as a Kata. It's skipped, the previous summary stays, and the run records why.
+- **The health report doesn't stop a fresh install over Spook findings.** Unknown icons, entities and labels no longer count as approval-path blockers; only a missing notify target does.
+- **Granting a cert doesn't log a recursion warning.**
 - **Ectoplasm names an unknown mode.** A mode it doesn't have answers "Unknown mode", where it answered that the call had hit a bug.
 - **Room Manager assigns floors and deletes areas again.** Its calls to Ectoplasm passed the area as `area_id`, which Ectoplasm doesn't read, so floor assignment on `area_create` and `area_update`, and `area_delete`, were refused for having no area. `area_delete` also previewed without deleting.
 - **Pausing the TV pauses the TV.** Media Manager sent every transport command to the room's Music Assistant player, so in a room with a universal player, pausing a TV paused the receiver. `play`, `pause`, `stop`, `next` and `previous` now go to what is playing. See [Media Manager](../components/media_manager.md).

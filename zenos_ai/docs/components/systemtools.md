@@ -1,6 +1,6 @@
 # ZenOS-AI SystemTools
 
-**Version:** 5.2.0
+**Version:** 5.4.2 (see the [SystemTools readme](../scripts/zen_dojotools_systemtools_readme.md) for the version history)
 **Package:** `packages/zenos_ai/dojotools/dojotools_systemtools.yaml`
 **Primary script:** `zen_dojotools_systemtools`
 

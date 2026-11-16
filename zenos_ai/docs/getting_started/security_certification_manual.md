@@ -60,7 +60,7 @@ Anything else answers `status: error`, `reason: "guarded: onboarding_required: .
 
 **Calls no user started pass:** boot, Flynn, automations, the scheduler. They carry no `context.user_id`, the same rule the admin door uses.
 
-**Getting the pass.** `zen_flynn_oobe mode=run` asks for the `zenos_agent_basic` bundle (one live ack; the bundle carries the pass) before it hands out any setup steps. On an install that finished onboarding before 2026.11.0, the agent already holds the pass if you approved the bundle then. If it doesn't, Flynn posts one "waiting for approval" notice, and every gated tool points the agent at `zen_flynn_oobe mode=run`.
+**Getting the pass.** `zen_flynn_oobe mode=run` asks for the `zenos_agent_onboarding` bundle (one live ack; it carries the pass, the basic certs, steward at level 1 and the parity certs) before it hands out any setup steps. A component's own certs are asked for when you turn that component on. On an install that finished onboarding before 2026.11.0, the agent already holds the pass if you approved the bundle then. If it doesn't, Flynn posts one "waiting for approval" notice, and every gated tool points the agent at `zen_flynn_oobe mode=run`.
 
 **Home Assistant can't tell you from the agent.** A dashboard button, or a call you make yourself from Developer Tools, runs as a logged-in user, the same as the agent. Before the pass is granted, those calls are refused too. The exceptions are the console override (Section 4) and the admin tools, which have their own gates.
 

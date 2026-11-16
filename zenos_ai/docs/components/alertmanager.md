@@ -1,6 +1,8 @@
 # ZenOS-AI AlertManager
 
-**Version:** 5.6.4
+**Version:** 5.7.0
+
+> **2026.11.1 (5.7.0):** the `alert_manager` component is off on a fresh install. It sends notifications, so turning it on is where the emit cert `zenos.comms.dispatch` is asked for: `zen_dojotools_scribe mode=enable key=alert_manager artifact_class=kfc`. An upgraded install keeps whatever it stores.
 **File:** `dojotools/dojotools_alertmanager.yaml`
 
 **Entities:**
