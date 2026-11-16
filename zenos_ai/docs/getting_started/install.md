@@ -318,7 +318,7 @@ If any other sensor shows `warn` or `error`, check its attributes for detail. Fl
 
 Plugins live under `packages/zenos_ai/plugins/`. Install only the integrations you need — each is independent.
 
-**Without a plugin, the rest still works.** As of 2026.11.1, every call from a core tool into a plugin script is skipped when that script isn't installed, so a core tool's bare call, `tool_manifest` and its other modes keep working, and the part that needs the plugin answers that it isn't available (FileCabinet's `stack=wiki` answers `stack_not_available` without Wiki.js). If you remove a plugin later, Home Assistant can keep its script as an `unavailable` entity; ZenOS treats that as not installed.
+**Without a plugin, the rest still works.** As of 2026.11.1, a core tool's direct calls into a plugin script are skipped when that script isn't installed, so its bare call, `tool_manifest` and its other modes keep working, and the part that needs the plugin answers that it isn't available (FileCabinet's `stack=wiki` answers `stack_not_available` without Wiki.js). A few calls name their script at run time (tool scans, live drawers, Dispatcher's fan-out) and aren't covered yet: pointed at a plugin you don't have, one of those can still fail. If you remove a plugin later, Home Assistant can keep its script as an `unavailable` entity; ZenOS treats that as not installed.
 
 Plugins compound. Tier 1 (Mealie + Grocy) gives food and inventory. Tier 2 (2026.7.0 Neo) connects external knowledge: tickets, documents, wiki, contacts, and finance. Each is independent — install only what you have running.
 
