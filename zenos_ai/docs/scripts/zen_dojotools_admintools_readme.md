@@ -417,6 +417,8 @@ Run when a cabinet fails identity's ACL schema check (identity answers `acl_sche
 
 | Version | Change |
 |---------|--------|
+| v5.15.1 | An unset `sim_mode_allowed` is stamped on by default; only an explicit off on `input_boolean.zenos_sim_mode_override` stamps false. Intentional: if the switch goes missing, the system fails secure. |
+| v5.15.0 | Help is the default. `prompt_loader`: a bare call or `mode=help` answers help and writes nothing; the load runs only for `mode=load`, and an unknown mode is refused (it used to fall through to the load and re-stamp every prompt slot). `reset_template`, `reset_labels`, `cabinetadmin_factory` and `run_repair` answer `mode=help` like a bare call. |
 | v5.14.0 | prompt_loader 46.0: cortex 46 (Open Door), the same text as 45. `os_release` carries only `cortex`, `cortex_codename` and `pressed_at`. `latest` = 46; slot 43 retired (slots 44, 45, 46). |
 | v5.13.0 | prompt_loader 45.7: the `seed_cert_mode` enforce parity ask uses stages `ise`. |
 | v5.12.0 | prompt_loader 45.6 declares `mcp_exposed=false` and `never_expose`: it holds the lock switches and the cortex. Anything that exposes entities must refuse it. |

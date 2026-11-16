@@ -1,4 +1,4 @@
-# Zen DojoTools SystemTools — v5.4.1
+# Zen DojoTools SystemTools — v5.4.2
 
 *`zen_dojotools_ha_log_viewer` v1.1.0 · `zen_dojotools_event_emitter` v1.0.0 (same file).*
 
@@ -431,6 +431,7 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 
 | Version | Change |
 |---------|--------|
+| v5.4.2 | `zen_health_report`'s approval-path check counts only a missing dependency, a notify target the approval push needs. Spook's unknown icon, unknown entity and missing label findings no longer put a fresh install in `system_side`. |
 | v5.4.1 | `repair_fix` calls Ectoplasm with `mode:` in place of the deprecated `action_type:` alias, and the `repair_list` hint names `mode=`. |
 | v5.4.0 | `zen_health_report` has a `certs` section that says what the agent may do and whose problem a cert gap is. `agent_side` lists each cert the household's responsible agent lacks, at the level and stage it needs and what it holds back; a request fixes these, and `next_step` says which (`zen_dojotools_persona_editor mode=cert_req_grant`, or the `zenos_agent_parity` bundle for several read certs). `system_side` lists what no request can fix (identity policy, a responsible agent that is not onboarded, the ACL schema, the vault, the approval path); tell a person. `tool_side` lists an act a tool cannot take. `posture` shows `seed_cert_mode`, the console override, and components still on the 11 legacy lists that 12 removes. The diagnosis leads with it, and `onboarding_required` from agent health counts as an issue. The pre-approval view carries `certs.system_side`. |
 | v5.3.2 | The zen_system KFC uses the health check's staleness thresholds: `zen_summary` is stale past 25 minutes and critically stale past 45, not 15 and 30. A skipped SuperSummary run no longer reads as a critical stale summary. `kfc_manifest` reports the current version. Text only. |

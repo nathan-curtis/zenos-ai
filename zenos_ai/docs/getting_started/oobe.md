@@ -1,6 +1,8 @@
 # OOBE — Out-of-Box Experience
 
-> **Version:** 2026.11.0 'This Is Spinal Tap' | **Last Updated:** Oct 2026
+> **Version:** 2026.12.0 | **Last Updated:** Nov 2026
+
+> **2026.12.0 (OOBE 5.5.0 to 5.5.2): one ask.** `mode=run` asks once, at the start, for the `zenos_agent_onboarding` bundle: the backstage pass and basic certs, steward at level 1, and the parity certs, behind one live acknowledgement. The setup steps then run through the gated tools with no exemption. A component's own certs (the vacuum, the spa, the printer) are asked for when you turn that component on, not here. `complete` writes its done flag last, so done means the pass and parity are really in place. A household with no phone to approve on uses the console override in the [Install Guide](install.md).
 
 *First-boot onboarding protocol for ZenOS-AI*
 

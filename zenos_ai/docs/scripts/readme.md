@@ -59,7 +59,7 @@ Read this diagram left to right by zone: authoring fills Dojo, triggers start wo
 
 ---
 
-## 0. Zen DojoTools Scribe — v5.14.0
+## 0. Zen DojoTools Scribe — v5.15.0
 **File:** [`zen_dojotools_scribe_readme.md`](zen_dojotools_scribe_readme.md)
 
 Guided authoring and lifecycle management for KF6 artifacts. Full lifecycle: `new_thought` → `patch` → `formalize_scroll` → `publish_kfc`. MCP-exposed — Friday can run the full authoring loop without operator intervention. `zen_dojotools_kungfu_writer` is retired; Scribe is the replacement.
@@ -80,7 +80,7 @@ Boot guard, initializer, OOBE driver, and prompt fallback. Gates 0–4 drive the
 
 ---
 
-## 3. Zen DojoTools Profile Editor — v5.4.2 · Persona Editor v1.5.2
+## 3. Zen DojoTools Profile Editor — v5.4.2 · Persona Editor v1.5.4
 **File:** [`zen_dojotools_profile_readme.md`](zen_dojotools_profile_readme.md)
 
 Interactive profile surface for ZenOS-AI identity profiles. Reads and writes AI persona, household, user, and family profile drawers; signs/restores AI essence; and manages AI KFC certifications. Expose to your conversation agent so Friday can configure household details conversationally.
@@ -115,7 +115,7 @@ Guide: fire a component summarizer run from a real-world trigger and act on the 
 
 ---
 
-## 7. Zen DojoTools Summarizers — Ninja v5.7.0 · SuperSummary v4.9.0
+## 7. Zen DojoTools Summarizers — Ninja v5.9.0 · SuperSummary v4.9.1
 **File:** [`zen_dojotools_summarizers_readme.md`](zen_dojotools_summarizers_readme.md)
 
 The KF6 action pipeline — Ninja Summarizer (per-component kata writer) and SuperSummary (whole-home synthesizer). Both MCP-exposed. Pipeline tier split: `direct` (keeper), `ambient` (Trapper Keeper pre-digest + breadcrumb), `system` (background). Trapper Keeper pre-digests ambient-tier katas into a navigation index. SuperSummary run governor (default 600s burnout). Context size guard (>200K abort, 28K max_context_tokens). Three kill switches — default off; enable only after pointing at a local inference model. Both act as the household's responsible agent (2026.11.0): seeds are modes the tool declares, and acts need the emit cert held with the Ninja emit stage.
@@ -157,7 +157,7 @@ FileCabinet garbage collector. Enforces drawer hide/delete/recycle lifecycle. `g
 
 ---
 
-## 13. Zen DojoTools SystemTools — v5.3.4
+## 13. Zen DojoTools SystemTools — v5.4.2
 **File:** [`zen_dojotools_systemtools_readme.md`](zen_dojotools_systemtools_readme.md)
 
 HA lifecycle management: config check, safe restart, update install/skip. Log viewer (five modes). Structured `zen_event` emission. `render_dojo` and `render_system` template render tools. `prompt_health` prompt integrity checker. `pipeline` summarizer pipeline status. Internal HA API wrapper (do NOT expose). Requires long-lived HA token in `secrets.yaml`. v5.2.0: `kfc_manifest` (KF5 self-registration, `zen_system` rollup component); `home_status`/`home_mode`, `quiet_hours`/`work_hours`, `scheduler_anchors`, `guest_mode`/`entertaining` — see [components/systemtools.md](../components/systemtools.md).
@@ -178,14 +178,14 @@ Universal, contract-safe telemetry tool for emitting structured ZenOS-AI events 
 
 ---
 
-## 16. Zen DojoTools FileCabinet — v6.37.1
+## 16. Zen DojoTools FileCabinet — v6.40.0
 **File:** [`zen_dojotools_filecabinet_readme.md`](zen_dojotools_filecabinet_readme.md)
 
 Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. CabCeption nested drawer trees via `/` path separator. VirtualDrawer (cross-cabinet redirect) and LiveDrawer (tool-call-on-read with warm/cold cache). **Tapestry** (`weave`/`weave_preview`/`weave_save`) — multi-cabinet drawer composer; definitions stored as labeled drawers; cycle detection; depth 3 unrolled. `move`/`copy` blocked on mounted drawers by default (`force_action=true` required to transfer mount config intact). `fleet` + `expansion_sitrep` modes. Mode-scoped `tool:mode` callout whitelist entries (KF5 self-registration support) alongside legacy plain/`tool:*` forms. Single exit per action, honest `write_unverified` answers, every write a stated merge or replace, an ACL gate that checks every hop of a mount chain (enforced on a fresh install; audit on an upgrade until the console switch, `prompt_loader mode=fc_acl_mode`), and expansions (`expand_drawer` / `collapse_drawer`) that move a root drawer and its tree to an expansion slot as a permanent redirect. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet or the admin door.
 
 ---
 
-## 17. Zen DojoTools Manifest — v6.16.0
+## 17. Zen DojoTools Manifest — v6.18.0
 **File:** [`zen_dojotools_manifest_readme.md`](zen_dojotools_manifest_readme.md)
 
 System manifest broker. Entity namespace scanning (`zen_dojotools_*`, `zen_stack_*`, `zen_sutra_*`). Modes: `cabinets` (zero-persistence cabinet health scanner), `tools`, `identity`, `labels`, `automations`, `audit`, `audit_help`, `health`, `health_refresh`, `autotag`, `publish`, `mcp_sync`, `bootstrap_stacks`, `bootstrap_kfc`, `domains`, `all`. `bootstrap_stacks` auto-registers Lens Bus providers including `script.zen_dojotools_library`. `bootstrap_kfc` auto-registers KF6 self-declaring tools — see [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract). Domain routing table maps domains to authoritative scripts (now built dynamically from `label_entities('zen_domain_*')`, not hardcoded). UMP `tool_manifest` contract supported.
@@ -206,14 +206,14 @@ Deep-inspection tool for entities. Names in HA's parts (`entity_name`, `device_n
 
 ---
 
-## 20. Zen DojoTools Ectoplasm — v6.5.1
+## 20. Zen DojoTools Ectoplasm — v6.8.0
 **File:** [`zen_dojotools_ectoplasm_readme.md`](zen_dojotools_ectoplasm_readme.md)
 
 Spook/HA extended surface wrapper. Repairs, areas, floors, entity/device lifecycle, label assignment to areas and devices, integration config entries, orphan cleanup. All write actions confirm-gated. Requires Spook integration.
 
 ---
 
-## 21. Zen DojoTools Camera — v5.4.2
+## 21. Zen DojoTools Camera — v5.5.1
 **File:** [`zen_dojotools_camera_readme.md`](zen_dojotools_camera_readme.md)
 
 Friday's visual surface. Wraps HA camera entities with LLM vision analysis, household-cabinet caching, and label-driven sweep. Modes: `look` (analyze + cache), `read` (cached result), `scan` (sweep all `security_camera`-labeled cameras), `info` (entity attributes + stored `_default_ctx` + cache status), `set_default_ctx` (store per-camera default context call), `help`. `camera_hint` resolves entity from free-text. `sendto` dispatches look results to `image.zen_image_<slot>` (dashboard snapshot) or `person.*` (postman with image).
@@ -248,7 +248,7 @@ Agent-composable casting of a Lovelace dashboard/view to any display in the hous
 
 ---
 
-## 25. Zen AdminTools CertAdmin — v1.8.2
+## 25. Zen AdminTools CertAdmin — v1.8.5
 **File:** [`zen_admintools_certadmin_readme.md`](zen_admintools_certadmin_readme.md)
 
 Admin-only cert issuance/revocation authority for AI persona (`ai_user`) cabinets. Not agent-reachable (`mcp_exposed: false`) — every call is a household-admin action, not something an agent invokes on itself. Grants name the pipeline stages they cover (`cert_stages`), and `zenos_agent_autonomous` covers the summarizer's background sends.
@@ -289,7 +289,7 @@ Deterministic entity selector for Home Assistant — the compiled-filter query e
 
 ---
 
-## 31. Zen DojoTools ToDo — v5.4.2
+## 31. Zen DojoTools ToDo — v5.4.3
 **File:** [`zen_dojotools_todo_readme.md`](zen_dojotools_todo_readme.md)
 
 MCP-exposed HA to-do list CRUD. `create`/`update` are cert-gated (`zenos.comms.pii_disclosure`) and `delete` requires `zenos.comms.todo_control` (level 2) as of 2026.10.0; read stays open.
@@ -300,6 +300,13 @@ MCP-exposed HA to-do list CRUD. `create`/`update` are cert-gated (`zenos.comms.p
 **File:** [`zen_admintools_cabinet_writer_readme.md`](zen_admintools_cabinet_writer_readme.md)
 
 The admin door: the one writer for structural, system and vault cabinet writes that FileCabinet refuses by design. Not MCP-exposed. Every write names its caller, is logged, and is verified on the cabinet before it answers. `merge` writes only the changed keys; agent and console writes pass an audit-only gate.
+
+---
+
+## 33. Zen AdminTools Identity Writer — v1.2.0
+**File:** [`zen_admintools_identity_writer_readme.md`](zen_admintools_identity_writer_readme.md)
+
+Flynn's own admin door for the identity wiring the Sentinel does at boot, before any user or agent exists. Admin plane: never exposed to agents, and its only caller is the Flynn Sentinel.
 
 ---
 

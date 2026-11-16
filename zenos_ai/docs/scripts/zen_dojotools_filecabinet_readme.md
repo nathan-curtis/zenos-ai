@@ -1,4 +1,6 @@
-# Zen DojoTools FileCabinet — v6.38.0
+# Zen DojoTools FileCabinet — v6.40.0
+
+> **2026.12.0 (6.39.0, 6.40.0):** a live KFC mount honours its own stored `meta.enabled`, so Scribe can turn every component on and off, tool-owned mounts included. The wiki stack stays optional: every call into `zen_sutra_wikijs` is skipped when that plugin isn't installed, so the bare call, `tool_manifest` and every cabinet operation work without Wiki.js (`stack=wiki` answers `stack_not_available`).
 **File:** `zen_dojotools_filecabinet_readme.md`
 **Type:** Technical Documentation
 **ZenOS Release:** 2026.11.0 'This Is Spinal Tap'
@@ -1069,6 +1071,8 @@ Tapestry is how you build a composed knowledge surface from multiple live drawer
 
 | Version | Change |
 |---------|--------|
+| v6.40.0 | Calls into the optional Wiki.js plugin are skipped when it isn't installed. A missing script raised an error `continue_on_error` doesn't catch, which stopped the whole call. |
+| v6.39.0 | A live KFC mount honours its stored `meta.enabled`. |
 | v6.2.0 | **CabCeption + Tapestry.** Nested drawer trees via `/` path separator. `get` returns `subdrawers`+`has_children` when children exist (additive). `move`/`delete`/`copy` cascade to all children via prefix scan. `move` child writes verified before source delete. `copy` cascades subtree. `inspect` surfaces subdrawers inline. **Tapestry:** `weave`/`weave_preview`/`weave_save` modes — multi-cabinet drawer composer; definitions stored as `zen_tapestry`-labeled drawers; cycle detection; depth 3 unrolled; `preview_token` gate on save. `move`/`copy` now blocked on mounted drawers (VirtualDrawer/LiveDrawer) by default — requires `force_action: true` to transfer mount config intact. `fleet` and `expansion_sitrep` added to MCP enum. |
 | v6.1.2 | v5-parity repair pass (A1–A11). |
 | v6.0.0 | **Major rewrite.** Two-script architecture: `zen_dojotools_filecabinet` (MCP face) + `zen_sutra_filecabinet` (internal terminus). `stack=` routing. `stack=wiki` absorbs the wiki surface — the standalone MCP-exposed wiki tool was retired in favor of this routing; the underlying `dojotools_wikijs.yaml` package (sutra layer + internal GraphQL root broker `zen_root_wikijs`) was NOT retired and remains active infrastructure beneath `stack=wiki` — see [wiki_js.md](../plugins/wiki_js.md). `upsert` action added. LiveDrawer / VirtualDrawer support via `set_mount`/`remove_mount`. `dict-in/dict-out` contract (no `tojson` before passing value). `content` key retired from GET response — callers read `.value`. `mount_cabinet`/`dismount_cabinet` actions. Lens Bus integration (`stacks_by_anchor`, `register`, `unregister`, `inspect`, `audit`). |
