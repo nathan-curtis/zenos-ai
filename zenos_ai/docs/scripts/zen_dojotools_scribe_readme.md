@@ -1,6 +1,6 @@
 # Zen DojoTools Scribe — v5.15.0
 
-> **2026.12.0 (5.15.0):** `enable` and `disable` work on every component, including tool-owned live mounts that `bootstrap_kfc` registered from a tool's `kfc_manifest`. Turning an act component on runs the preflight that asks for its emit cert.
+> **2026.11.1 (5.15.0):** `enable` and `disable` work on every component, including tool-owned live mounts that `bootstrap_kfc` registered from a tool's `kfc_manifest`. Turning an act component on runs the preflight that asks for its emit cert.
 
 *Guided authoring and lifecycle management for KF6 artifacts — MCP-exposed*
 
