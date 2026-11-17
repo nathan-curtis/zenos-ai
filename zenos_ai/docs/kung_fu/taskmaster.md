@@ -1,6 +1,6 @@
 # Taskmaster — KFC Guide
 
-> **dojotools 0.9.3** | ZenOS-AI 2026.11.1 'This Is Spinal Tap'
+> **dojotools 0.10.0** | ZenOS-AI 2026.12.0
 
 > **Meds have their own summary (0.9.0).** `briefing` takes `case`: `household` (everything but medications), `medications` (only medications), or none (everything, as before). The `taskmaster` summary seeds `household`, and the new `taskmaster_meds` summary seeds `medications`, which carries the read cert `zenos.health.read`. Bare `briefing` is no longer a seed mode; a summary that still seeds it keeps working, mapped to `briefing:household` through Taskmaster's `seed_aliases` (0.9.1), with a one-time notice saying so. Under `seed_cert_mode` enforce, meds reach a background summary only while that cert is granted with stage `s`.
 
@@ -59,7 +59,7 @@ Taskmaster self-registers with the Lens Bus (same pattern as `zen_dojotools_inve
 | `guest_present` / `guest_note` | Manual flags + Rolodex `stays_list` for today |
 | `upcoming_appointments` | Rolodex `appointments_list` |
 | `prep_schedule` | `zen_dojotools_kitchen mode=run case=prep_brief` for today — scheduled `[PREP:N]`-tagged dishes sorted by `start_by`, plus `unscheduled_count`. Wired in 2026.8.0 so Kitchen's prep timing is proactive on Taskmaster's existing trigger, not pull-only. |
-| `weather.outdoor_ok` | Label `zen_weather` → `weather.*` entity; `false` when condition is rain/snow/storm. |
+| `weather.outdoor_ok` | From the Weather tool when installed, else the entity labeled `main_weather` (then `zen_weather`, then the first `weather.*`); `false` when the condition now is rain, snow or storm. With the Weather tool, `weather` also carries `source`, `unit`, `temp_high`, `temp_low`, `urgency` and `hazards[]`. |
 
 Consumer guidance (baked into the KFC's own `component_instructions`): use `context.prep_schedule.scheduled` entries whose `start_by` is within the next hour (or already past) as a real "start cooking now" signal, not background noise. `unscheduled_count` is informational only. `weather.outdoor_ok == false` means note outdoor chores as weather-blocked, not urgent.
 

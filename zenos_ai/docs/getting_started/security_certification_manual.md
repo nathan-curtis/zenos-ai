@@ -104,6 +104,7 @@ Every certification has a short plain `description`, written for the phone appro
 | `zenos.autovac.setup` | Set up the robot vacuum's rooms and settings |
 | `zenos.autovac.status` | Read the robot vacuum's status summary |
 | `zenos.comms.calendar_control` | Delete calendar events |
+| `zenos.climate.read` | Read the whole-house thermostat picture for the background summary |
 | `zenos.comms.dispatch` | Send you notifications (emergencies always go through) |
 | `zenos.comms.pii_disclosure` | Send messages and add events or tasks for you; level 2 also edits the mail safe list |
 | `zenos.comms.teams_control` | Change your Teams status |
@@ -145,6 +146,8 @@ Every certification has a short plain `description`, written for the phone appro
 | `zenos.system.cabinet_lifecycle_control` | Set up and repair the assistant's storage |
 | `zenos.system.home_config_write` | Change home mode, quiet hours and schedules |
 | `zenos.system.reload_restart` | Restart or reload Home Assistant |
+| `zenos.weather.read` | Read the weather and forecast for the background summary |
+| `zenos.service.admin` | Change the service desk (Zammad) configuration (level 2, interactive stage) |
 
 `cert_list` is the source of truth: it carries each certification's `max_level` (the highest level any tool actually checks) and its `detail`.
 
@@ -336,9 +339,11 @@ A `deny` scope entry (Section 6) short-circuits before the live-ack step ever ru
 
 | Cert | What it reads |
 |---|---|
+| `zenos.climate.read` | Climate's `summary`: every thermostat, its mode and temperature, open doors and windows around it |
 | `zenos.finance.read` | Finance summaries: budget, bills, net worth, rollup |
 | `zenos.health.read` | The medication summary (`taskmaster_meds`) |
 | `zenos.presence.read` | Room Manager's `home_overview`, which the Security Manager summary reads |
+| `zenos.weather.read` | Weather's `summary`: current conditions and the next day or two scored for freeze, heat, storm and wind |
 
 **The switch is `seed_cert_mode`,** read from the system cabinet and set from a console session, like the FileCabinet lock:
 
@@ -439,6 +444,8 @@ No phone? The console override stands in for the approval, the same as any other
 | `zen_dojotools_postman` | `zenos.comms.dispatch` | `resolve_and_dispatch` (except life-safety/breakthrough urgency, which always goes), `direct_dispatch`, `author_policy`, `clear_tag` | — |
 | `zen_dojotools_systemtools` | `zenos.system.reload_restart` | `ha_restart`, `ha_reload_all` (checked once `confirm=true` is given, in addition to the confirm gate) | — |
 | `zen_dojotools_systemtools` | `zenos.system.home_config_write` | Write path of `home_mode`, `quiet_hours`, `work_hours`, `scheduler_anchors`, `guest_mode`, `entertaining` (reads stay open) | — |
+| `zen_dojotools_servicedesk` | `zenos.service.admin` (level 2) | `configure` write (saving the Zammad url); a url that is not the stored one also needs a fresh live approval. `inspect` stays open | — |
+| `zen_dojotools_rolodex` | `zenos.system.home_config_write` (reused) | `configure` write (url or labels); a url that is not the stored one also needs a fresh live approval. Inspect stays open | — |
 
 `zenos.comms.pii_disclosure` is a shared certification: level 1 gates any action that discloses or transmits household PII outward (mail/Teams send, task/calendar create-update (todo create/update moved to `zenos.comms.todo_control` level 1) since these can carry personal details to shared surfaces); level 2 gates changing the disclosure policy itself (the mail whitelist). It covers the *disclosure* axis only — irreversible deletes (`zenos.comms.todo_control`, `zenos.comms.calendar_control`) and presence representation (`zenos.comms.teams_control`) are separate, independent risk axes with their own certs, and can apply to the same tool as `zenos.comms.pii_disclosure` for different actions.
 

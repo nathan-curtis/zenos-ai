@@ -246,6 +246,8 @@ Includes:
 * [`zen_dojotools_todo_readme.md`](scripts/zen_dojotools_todo_readme.md) — Todo: HA todo + MS365 tasks, bulk complete, discoverability
 * [`zen_dojotools_calendar_readme.md`](scripts/zen_dojotools_calendar_readme.md) — Calendar: full CRUD, MS365 native APIs, label-targeted reads, wildcard discovery
 * [`zen_dojotools_utilities_readme.md`](scripts/zen_dojotools_utilities_readme.md) — Utilities: calculator, dice roller, announce, wait, canonical HA domain tools (select/boolean/number/text/climate/water_heater/datetime/zones/timekeeper)
+* [`zen_dojotools_climate_readme.md`](scripts/zen_dojotools_climate_readme.md) — Climate: GET+SET for climate and fan entities, topology context, `zenos.actuation.climate_control` gate
+* [`zen_dojotools_weather_readme.md`](scripts/zen_dojotools_weather_readme.md) — Weather: current conditions and forecast with a locked schema, flags for rain, snow, freeze, heat, wind and storm, scored summary, `zenos.weather.read`
 * [`zen_dojotools_office_readme.md`](scripts/zen_dojotools_office_readme.md)
 * [`zen_dojotools_event_emitter_readme.md`](scripts/zen_dojotools_event_emitter_readme.md)
 * [`readme.md`](scripts/readme.md) – Overview
