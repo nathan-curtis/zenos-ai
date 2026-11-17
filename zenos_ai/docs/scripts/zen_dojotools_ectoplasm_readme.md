@@ -1,4 +1,4 @@
-# Zen DojoTools Ectoplasm — v6.8.0
+# Zen DojoTools Ectoplasm — v6.8.1
 
 > **2026.11.1 (6.7.0, 6.8.0):** the reads `repair_list`, `ghost_list` and the new `orphaned_db_list` need `zenos.registry.read` (level 1), because their issue ids and titles name your entities, scripts, labels and dashboards. New modes: aliases for entities, areas and floors; `entity_set_id`; `area_update` and `floor_update` edit in place; schedule helpers and `timer_set_duration`. See the tables below.
 

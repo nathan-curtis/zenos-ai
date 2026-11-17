@@ -157,7 +157,7 @@ FileCabinet garbage collector. Enforces drawer hide/delete/recycle lifecycle. `g
 
 ---
 
-## 13. Zen DojoTools SystemTools — v5.4.2
+## 13. Zen DojoTools SystemTools — v5.4.3
 **File:** [`zen_dojotools_systemtools_readme.md`](zen_dojotools_systemtools_readme.md)
 
 HA lifecycle management: config check, safe restart, update install/skip. Log viewer (five modes). Structured `zen_event` emission. `render_dojo` and `render_system` template render tools. `prompt_health` prompt integrity checker. `pipeline` summarizer pipeline status. Internal HA API wrapper (do NOT expose). Requires long-lived HA token in `secrets.yaml`. v5.2.0: `kfc_manifest` (KF5 self-registration, `zen_system` rollup component); `home_status`/`home_mode`, `quiet_hours`/`work_hours`, `scheduler_anchors`, `guest_mode`/`entertaining` — see [components/systemtools.md](../components/systemtools.md).
@@ -206,7 +206,7 @@ Deep-inspection tool for entities. Names in HA's parts (`entity_name`, `device_n
 
 ---
 
-## 20. Zen DojoTools Ectoplasm — v6.8.0
+## 20. Zen DojoTools Ectoplasm — v6.8.1
 **File:** [`zen_dojotools_ectoplasm_readme.md`](zen_dojotools_ectoplasm_readme.md)
 
 Spook/HA extended surface wrapper. Repairs, areas, floors, entity/device lifecycle, label assignment to areas and devices, integration config entries, orphan cleanup. All write actions confirm-gated. Requires Spook integration.
