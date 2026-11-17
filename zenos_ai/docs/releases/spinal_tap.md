@@ -451,6 +451,14 @@ Fixes found running 2026.11.0 on live installs, and a fresh install that comes u
 
 - **Grant `zenos.registry.read` for the repairs and ghost lists.** Ectoplasm's `repair_list` and `ghost_list` answered any caller, and their issue ids and titles name your entities, scripts, labels and dashboards. They need `zenos.registry.read` (level 1) now, and nothing grants it for you.
 - **Ectoplasm results say `mode`.** Every Ectoplasm result carries `mode: <the mode called>` where it carried `action_type`. Anything that reads `action_type` from an Ectoplasm result needs updating. The `action_type` input still works.
+- **Some writes now need their cert.** Write paths that skipped their cert check now check it. An agent that used one of these needs the cert granted:
+  - **Service Desk (Zammad):** saving the url needs the new `zenos.service.admin` (level 2).
+  - **Rolodex (Twenty):** `configure` with `config_json` needs `zenos.system.home_config_write` (level 1).
+  - **SystemTools:** `cabinet_schema_upgrade` needs `zenos.system.cabinet_lifecycle_control`, and the four reload modes need `zenos.system.reload_restart`.
+  - **Media Manager:** queue moves, `activity_snapshot` and `prefs_apply` need `zenos.media.playback_control`.
+  - **Library:** the `catalog_*` aliases need `zenos.knowledge.catalog_edit`, and `stacks_configure` writes need `zenos.knowledge.stacks_edit` (level 2).
+  - **Lights** `prefs_sweep` (`zenos.actuation.lighting_control`), **Scribe** overwriting a live KFC (`zenos.knowledge.kfc_publish`) and **Spa Master** setup, consumables writes and an actuating `log` (`zenos.actuation.spa_control`).
+  - The default agent already holds these.
 - **Label Taskmaster's default To Do list.** With no `list_name`, Taskmaster used a list name written in the file. It now uses the To Do list labeled `taskmaster_default`, else the first list labeled `taskmaster`. Label the list you want it to use.
 
 ### Changed
@@ -469,6 +477,9 @@ Fixes found running 2026.11.0 on live installs, and a fresh install that comes u
 
 ### Fixed
 
+- **Service Desk and Rolodex don't send their token to a new URL.** `configure` tested the url the caller passed with the stored token attached, so a caller could point Zammad or Twenty at a host it controls and receive the token. A url that isn't the stored one now needs a live ack from a person. See [Zammad](../plugins/zammad.md) and [Twenty](../plugins/twenty.md).
+- **Write paths that skipped their cert check now check it.** See "Some writes now need their cert" above. `cabinet_schema_upgrade` also stops when the schema flip fails, where it could arm cabinet enforcement after a flip that never happened. ZenZork's `open`, `close` and the cover branch of `use` no longer move a real device; a text game previews only.
+- **Library's `stacks_configure inspect` no longer wipes the Paperless url.** An inspect rewrote the stored entry with an empty url.
 - **A missing plugin no longer stops the core.** A call to a script that isn't installed raises an error `continue_on_error` doesn't catch, so without the Wiki.js plugin, onboarding, FileCabinet's `tool_manifest` and the KFC bootstrap failed. A core tool's direct calls into a plugin now skip a plugin that isn't installed. A call that names its script at run time isn't covered yet. See [Plugins](../getting_started/install.md#plugins-optional).
 - **Onboarding finishes.** On a fresh install OOBE read every cert as missing right after it was granted and kept answering `approval_required`; `complete` re-asked for parity. Completion is written last, so done means the pass and parity are in place.
 - **A fresh install needn't wait for its components.** Flynn starts the KFC bootstrap once the Dojo cabinet is up, so components don't wait for 00:01. If none appear, run `zen_dojotools_manifest mode=bootstrap_kfc`. Flynn's boot calls go through its own admin door, [`zen_admintools_identity_writer`](../scripts/zen_admintools_identity_writer_readme.md).

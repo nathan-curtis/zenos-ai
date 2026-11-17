@@ -1,8 +1,10 @@
 # ZenOS-AI Media Manager (NyxMau5)
 
-**Version:** 6.6.0
+**Version:** 6.6.2
 **Script:** `zen_dojotools_media_manager`
 **Codename:** NyxMau5
+
+> **2026.11.1 (6.6.1, 6.6.2):** `queue_move_up`, `queue_move_down`, `queue_move_next`, `activity_snapshot` and `prefs_apply` need `zenos.media.playback_control` (`prefs_apply` moved from `prefs_edit`, since it applies prefs to real players), and a refused call no longer runs the queue-move or collection steps. The `zen_tts` label is created with an icon Home Assistant has (`mdi:speaker-message`).
 
 ---
 

@@ -1,4 +1,4 @@
-# Zen DojoTools Scribe — v5.15.0
+# Zen DojoTools Scribe — v5.15.1
 
 > **2026.11.1 (5.15.0):** `enable` and `disable` work on every component, including tool-owned live mounts that `bootstrap_kfc` registered from a tool's `kfc_manifest`. Turning an act component on runs the preflight that asks for its emit cert.
 
@@ -328,6 +328,7 @@ Scribe is non-destructive by default:
 
 | Version | Change |
 |---------|--------|
+| v5.15.1 | `new_thought` and `formalize_scroll` count as touching a live KFC when the drawer already at the key is a KFC, so overwriting one needs `zenos.knowledge.kfc_publish` like the other KFC writes. New keys and non-KFC drawers stay open. |
 | v5.15.0 | A tool-owned live mount counts as a KFC drawer, so `enable` and `disable` work on every component. A mount with no seed (`alert_manager`) was refused as not a Scribe artifact. |
 | v5.14.0 | The preflight doesn't report `never_fires` for a cache slot (`role: cache`). |
 | v5.13.0 | `list_triggers` reads the trigger registry (`source: registry`, with each trigger's pack, `fires`, frequency and labels; the static list is only a fallback). The preflight adds `triggers_unregistered`, `triggers_frequent` and `never_fires`. An unregistered trigger never refuses a write. |

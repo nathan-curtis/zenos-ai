@@ -1,6 +1,8 @@
 # ZenOS-AI Rolodex (Twenty CRM) Plugin
 
-**Version:** 1.15.2  
+**Version:** 1.15.4  
+
+> **2026.11.1 (1.15.3, 1.15.4):** `configure` asks a person (a live ack) before the stored token is sent to a URL that isn't the stored one, and any `configure` with `config_json` needs `zenos.system.home_config_write` level 1. Before 1.15.3, a caller could point the integration at a host it controls and receive the token. `inspect` stays open.
 **Package:** `packages/zenos_ai/plugins/twenty/twenty.yaml`  
 **Primary script:** `zen_dojotools_rolodex`  
 **Internal REST broker:** `zen_sutra_twenty`  

@@ -1,4 +1,4 @@
-# Zen DojoTools Library — v6.15.3
+# Zen DojoTools Library — v6.15.5
 
 *Knowledge broker and Lens owner for the Monastery*
 
@@ -255,6 +255,8 @@ The MCP-facing script is `zen_dojotools_library`. Consumers and agents call this
 
 | Version | Change |
 |---------|--------|
+| v6.15.5 | `stacks_configure inspect` no longer writes. An inspect, or a bad-url error, rewrote the stored Paperless entry with an empty url; the write steps now run only for `set`, `update` and `reset`. |
+| v6.15.4 | Gate fixes. The `catalog_configure`, `catalog_add`, `catalog_update`, `catalog_loan` and `catalog_return` aliases need `zenos.knowledge.catalog_edit` like the short names. `stacks_configure` writes (`set`, `update`, `reset`) need `zenos.knowledge.stacks_edit` level 2; `inspect` stays a read. |
 | v6.15.3 | Paperless `stacks_by_anchor` works for every anchor type (a `kitchen` tag answers `area_id` and `label`), matches any tag, reads top-level `anchor_type`/`anchor_ids`, and reports a missing anchor. Catalog `move`, `loan`, `return` and `update` stop on any refusal before writing, and report success only when Grocy confirms it. `move` takes `location_id` or `location_name`. |
 | v6.15.2 | Lens evidence fixes. Paperless `stacks_by_anchor` returns `evidence[]` (`document_evidence`), the shape the bus reads. Catalog `by_anchor` attributes each item only to the area it is in, carries `title` and `item_type`, and gives a `playback_hint` only when the item has a real `digital_uri`. |
 | v6.12.2 | Fixed `by_anchor` returning zero results house-wide for every area/person/label anchor. `section_norm` defaulted to `stacks` whenever the caller omitted `section` (the Lens Bus dispatcher never passes it on generic provider calls), so every real `by_anchor` call landed in the wrong section; special-cased bare `by_anchor` to default to `catalog` instead. A second, separate defect then shadowed the fix: `section=catalog`'s own named-mode router had no case for `by_anchor` and fell through to its "unknown mode" default before ever reaching the real handler further down the file — excluded `by_anchor` from that router's entry gate. Also corrected a 3-way version self-report drift (header/description/manifest disagreed). |

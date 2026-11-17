@@ -1,6 +1,15 @@
 ###############################################################################
 # ZenOS-AI Plugin: Twenty CRM
-# Version: 1.15.2: says "the agent" in its help and descriptions, not a persona name.
+# Version: 1.15.4 (#10697): configure asks a person before sending the token to a new URL. Before that: 1.15.2 says "the agent" in its help and descriptions, not a persona name.
+# v1.15.4: configure writes are gated (#10697 part 2): any configure with config_json
+#   (url or labels) needs zenos.system.home_config_write level 1. Inspect stays open.
+# v1.15.3: configure no longer sends the stored bearer token to a URL nobody approved
+#   (#10697). The connectivity test used the url the caller passed, and the token is
+#   attached to whatever host a call names, so a caller could point the integration at a
+#   host it controls and receive the token. A url that is not the stored one (a change,
+#   or the first url on a fresh install) now needs a fresh live ack from a person
+#   (zen_dojotools_identity mode=request_live_ack) before anything is tested or saved;
+#   the stored url tests as before, and label-only configure calls are unchanged.
 # v1.15.2: HA naming (2026.11): name outputs carry entity_name and device_name
 #   next to the legacy friendly_name (kept while HA still sets it), and
 #   composed names are built from those parts, so they survive HA dropping
@@ -1404,7 +1413,7 @@ script:
                 summary='Contacts, companies, and property tasks',
                 display_name='Rolodex — Contact & Company CRM',
                 tier='dojotools',
-                version='1.15.2',
+                version='1.15.4',
                 health=_health,
                 required_labels=['crm', 'zen_kfc_provider'],
                 optional_labels=['crm', 'contacts', 'companies', 'vendors'],
@@ -2408,6 +2417,99 @@ script:
             _cfg_appts: '{{ _cfg_in.get("appointments_label", "") | trim if _cfg_in is mapping else "" }}'
             _cfg_reminders: '{{ _cfg_in.get("reminders_label", "") | trim if _cfg_in is mapping else "" }}'
             _cfg_tasks: '{{ _cfg_in.get("tasks_label", "") | trim if _cfg_in is mapping else "" }}'
+
+        # Write gate (#10697 part 2): any configure write (url or labels) needs
+        # zenos.system.home_config_write level 1. Inspect (no config_json) stays open.
+        - action: script.zen_dojotools_identity
+          response_variable: _cfg_id_raw
+          continue_on_error: true
+          data:
+            mode: resolve_caller_identity
+            required_cert: zenos.system.home_config_write
+            required_cert_level: 1
+            caller_token: "{{ caller_token | default('') }}"
+        - variables:
+            _cfg_id_fields: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+              {%- set _raw = OS.resolve_identity_fields(_cfg_id_raw) -%}
+              {{- (_raw | from_json) if _raw is string else _raw -}}
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ not (_cfg_id_fields.authorized | default(false)) }}'
+            sequence:
+            - variables:
+                final_response:
+                  status: error
+                  tool: '{{ tool_name }}'
+                  version: '{{ tool_version }}'
+                  case: configure
+                  error: cert_insufficient
+                  message: 'Changing the Twenty configuration needs zenos.system.home_config_write level 1 (held level {{ _cfg_id_fields.cert_level | default(0) }}).'
+                  can_request: '{{ (_cfg_id_fields.policy_status | default("")) == "allowed" }}'
+                  request_via:
+                    tool: zen_dojotools_persona_editor
+                    mode: cert_req_grant
+                    cert_component: zenos.system.home_config_write
+                    cert_level: 1
+            - stop: Twenty configure cert insufficient
+              response_variable: final_response
+
+        # The stored bearer token is attached to whatever base_url a call names, so the
+        # connectivity test and the save must not use a host nobody approved. A url that
+        # is not the stored one (a change, or the first url on a fresh install) needs a
+        # fresh live ack from a person first (#10697). Label-only configure calls (no url)
+        # are unchanged.
+        - action: script.zen_sutra_filecabinet
+          response_variable: _cfg_ic0
+          continue_on_error: true
+          data:
+            mode: get
+            show_hidden_volumes: false
+            volume_entity_id:
+              - '{{ _hh_cab }}'
+            key: integrations_config
+        - variables:
+            _cfg_stored_url: >-
+              {%- set r = _cfg_ic0.get('value') if _cfg_ic0 is mapping else {} -%}
+              {%- set r = r if r is mapping else (r | from_json({}) if r is string else {}) -%}
+              {%- set v = r.get('value', r) if r is mapping else {} -%}
+              {%- set v = v if v is mapping else (v | from_json({}) if v is string else {}) -%}
+              {{ (v.get('twenty', {}) or {}).get('url', '') | string | trim | lower | regex_replace('/+$', '') }}
+            _cfg_new_url: '{{ _cfg_url | lower | regex_replace("/+$", "") }}'
+        - choose:
+          - conditions:
+            - condition: template
+              value_template: '{{ _cfg_url != "" and _cfg_new_url != _cfg_stored_url }}'
+            sequence:
+            - action: script.zen_dojotools_identity
+              response_variable: _cfg_ack_raw
+              continue_on_error: true
+              data:
+                mode: request_live_ack
+                ack_message: >-
+                  Rolodex (Twenty CRM) setup: point it at {{ _cfg_url }}? The stored Twenty
+                  bearer token will be sent to that host to test the connection{{ (' (it is now ' ~ _cfg_stored_url ~ ')') if _cfg_stored_url != '' else '' }}.
+                  Approve only if you typed or expect this address.
+                caller_token: "{{ caller_token | default('') }}"
+            - variables:
+                _cfg_ack_ok: '{{ _cfg_ack_raw.get("approved", false) if _cfg_ack_raw is mapping else false }}'
+                _cfg_ack_why: '{{ _cfg_ack_raw.get("reason", "dispatch_failed") if _cfg_ack_raw is mapping else "dispatch_failed" }}'
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: '{{ not _cfg_ack_ok }}'
+                sequence:
+                - variables:
+                    final_response:
+                      status: denied
+                      tool: '{{ tool_name }}'
+                      version: '{{ tool_version }}'
+                      case: configure
+                      error: url_not_approved
+                      message: 'A new Twenty URL needs a fresh live approval from a person before the stored token is sent to it. Not approved ({{ _cfg_ack_why }}); nothing was tested or saved.'
+                - stop: Twenty URL not approved
+                  response_variable: final_response
 
         # test-connect if url provided
         - choose:
