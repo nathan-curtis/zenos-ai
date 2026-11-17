@@ -1,4 +1,4 @@
-# Zen DojoTools SystemTools — v5.4.3
+# Zen DojoTools SystemTools — v5.5.0
 
 *`zen_dojotools_ha_log_viewer` v1.1.0 · `zen_dojotools_event_emitter` v1.0.0 (same file).*
 
@@ -431,6 +431,7 @@ Setting mode to `Paused` freezes the schedule. Useful when you want Friday to st
 
 | Version | Change |
 |---------|--------|
+| v5.5.0 | The health report names the security watchers and any disabled automation. The Zen Security Sentry or the Auto-Arm Watcher unavailable is critical (Home Assistant disables a whole automation when one trigger is invalid; for the Sentry the likely cause is Spook); turned off or missing is a warning. Any other unavailable automation is one warning listing them. A leftover registry entry for an automation that no longer exists isn't counted. `dependencies` carries `security_watchers` and `automations_unavailable`. |
 | v5.4.3 | The health report tells a Spook that failed to load from one that isn't installed. On Home Assistant 2026.11 or later, no Spook services at all is one critical issue naming both causes (Spook 5.6 to 5.10 can't load on 2026.11). A Spook older than 5.7.0 is a warning. |
 | v5.4.2 | `zen_health_report`'s approval-path check counts only a missing dependency, a notify target the approval push needs. Spook's unknown icon, unknown entity and missing label findings no longer put a fresh install in `system_side`. |
 | v5.4.1 | `repair_fix` calls Ectoplasm with `mode:` in place of the deprecated `action_type:` alias, and the `repair_list` hint names `mode=`. |

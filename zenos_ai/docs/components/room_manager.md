@@ -1,6 +1,8 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.19.1
+**Version:** 5.19.2
+
+> **2026.12.0 (5.19.2):** the `security` block of `home_overview` and `summary` carries a temporary security override when one exists: `temporary_override` (the record), `stuck_overrides` (one that outlived its time and was not ended) and `override_line`, a plain sentence such as "Security is temporarily armed home instead of armed away; it should return about 10:53.", read from Security Manager `lens`. With no override the block is unchanged.
 
 > **2026.11.1 (5.18.4 to 5.19.1):** `mode=summary` is the scored, read-only seed of the `room_manager` component (urgency 0 to 5, reasons, active rooms, attention, open doors and windows, maintenance), behind `zenos.presence.read` like `home_overview`. The component seeds from the tool's own `kfc_manifest`, and `mode=setup` no longer ships a second copy through Scribe. A refused call stays refused: `summary` passes the onboarding gate's refusal through instead of answering it as a summary.
 

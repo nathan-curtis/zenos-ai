@@ -1,8 +1,8 @@
 # ZenOS-AI Security Manager
 
-**Version:** 5.16.0
+**Version:** 5.18.0
 
-> **2026.12.0 (5.10.0 to 5.16.0): the foundation.** Four new reads, no cert: `readiness`, `override_list`, `activity` and `lens`. A record for temporary overrides and an activity ledger, with internal actions that only automations can call. A second automation, the Zen Security Sentry, ends overrides on time. Nothing here acts on the panel yet, and nothing creates an override on its own; that comes with the behaviors built on this. See [Readiness, overrides and activity](#readiness-overrides-and-activity).
+> **2026.12.0 (5.10.0 to 5.18.0): the foundation and vacuum sync.** Four new reads, no cert: `readiness`, `override_list`, `activity` and `lens`. A record for temporary overrides and an activity ledger, with internal actions that only automations can call. A second automation, the Zen Security Sentry, ends overrides on time. The first behavior built on it is vacuum sync, off by default: with `vac_arm_override_enabled` on, the panel goes from Away to Home while the vacuum cleans and back to Away at the dock. `auto_arm_config` with no patch now reads the settings. See [Readiness, overrides and activity](#readiness-overrides-and-activity).
 
 > **2026.11.0 (5.9.1, 5.9.2):** `auto_arm_check` is refused from a user or agent session; only the auto-arm automations call it. A `zone.home` that is unknown or unavailable is never an empty house: the count reads -1, nothing arms and the arrival path doesn't run, and the Night-Late and Away watchers ignore a change from unknown or unavailable (a template reload).
 
@@ -48,7 +48,8 @@ The `read_state` response includes a `lens` field describing the handoff to the 
 | `readiness` | Can the house arm now, and if not, what's in the way. Read, no cert. See [Readiness](#readiness). |
 | `override_list` | The temporary overrides in force: a change the system made to the panel on its own, what it left, what it moved to, why, and minutes left. Read, no cert. |
 | `activity` | What security has done on its own, and what it declined to do, newest first. `activity_hours` (default 24, at most 168), `activity_limit` (default 50, at most 150). Read, no cert. |
-| `lens` | The one security answer other tools use: the panel and its state, ready and blocker count, any temporary override as a plain sentence, the last ledger line, and one plain `line`. Read, no cert. |
+| `lens` | The one security answer other tools use: the panel and its state, ready and blocker count, any temporary override as a plain sentence (or one that outlived its time), the last ledger line, `sentry_state` and one plain `line`. Room Manager's `home_overview` and `summary` carry it. Read, no cert. |
+| `auto_arm_config` | Read or change the auto-arm settings (`auto_arm_patch` JSON). With no patch it reads the settings and the `vacuum` block (see [Vacuum sync](#vacuum-sync)). Changing them needs `zenos.actuation.security_control`. |
 | `override_set`, `override_end`, `override_sweep`, `ledger_add`, `auto_arm_check` | Internal: not for agents or people. Each refuses any call that has a user in it; automations call them. |
 | `help` | Full action reference — all actions, fields, and cert tiers in one call. Not gated. |
 
@@ -73,7 +74,7 @@ The `read_state` response includes a `lens` field describing the handoff to the 
 
 ### Temporary overrides
 
-A temporary override is a change the system makes to the panel on its own for a while, kept as a record (one per kind) in the household `security_manager` drawer: what it left, what it moved to, why, when it began and ends, and a ceiling from its start (default 180 minutes) its end can never pass. `override_list` reads them. Only automations make and end them.
+A temporary override is a change the system makes to the panel on its own for a while, kept as a record (one per kind) in the household `security_manager` drawer, so it survives a reload or restart: what it left, what it moved to, why, when it began and ends, and a ceiling from its start (default 180 minutes) its end can never pass. `override_list` reads them. Only automations make and end them, and each step (begin, extend, clamp, end, expiry) writes a line to the activity ledger.
 
 **Spook is required.** The Zen Security Sentry ends overrides on time, and it runs only when Spook's trigger platforms work. Without it, `override_set` and turning on `vac_arm_override_enabled` answer `spook_required`; turning that setting off always works. `lens` says when an override has outlived its time.
 
@@ -83,7 +84,19 @@ What security did on its own, and what it declined to do, is a short list in the
 
 ### The Zen Security Sentry
 
-A second automation, kept apart from the Auto-Arm Watcher so a missing or changed Spook can't switch the watcher off. It runs every minute while an override exists, ends any that have expired (one ledger line each), and fires a `zen_event` of kind `security_override_expired` so the behavior that owns the override can put the panel back. It never touches the panel itself.
+A second automation, kept apart from the Auto-Arm Watcher so a missing or changed Spook can't switch the watcher off. It runs every minute while an override exists, ends any that have expired (one ledger line each), and fires a `zen_event` of kind `security_override_expired` so the behavior that owns the override can put the panel back. For an expired override it never touches the panel itself; for vacuum sync it also reconciles a dock that was never reported (see [Vacuum sync](#vacuum-sync)). The health report names both watchers and raises a CRITICAL when one is unavailable.
+
+### Vacuum sync
+
+`vac_arm_override_enabled` (off by default, asked once when turned on) lets the vacuum run while the house is armed Away. When the vacuum starts cleaning with the panel armed Away, Security Manager moves the panel to Home (override `vacuum_sync`) and sends a notice with a **Cancel** button; Cancel stops the run through Autovac `mode=stop` and keeps the downgrade until the vacuum docks. Away returns when the vacuum docks (after `vac_downgrade_dock_wait_min`, default 5 minutes, because a mop wash docks mid-run; one minute after a cancelled run, read from `autovac_docked` `cancelled`), or when the override expires. Away returns only if the house is empty. A hand disarm or re-arm ends the override and nothing is put back. If the alarm triggers during an override, the run is stopped, the override ends, a ledger line is written and the person is told; the panel is left alone.
+
+A reload or restart during a run cannot strand the panel at Home: each minute the Sentry reconciles. A docked vacuum past the dock wait plus two minutes with Autovac idle ends the override and restores Away.
+
+`auto_arm_config` returns a `vacuum` block saying whether these settings apply here: `ready`, `no_vacuum` (nothing labeled `autovac`), `autovac_missing`, `autovac_disabled` or `vacuum_unavailable`. Turning `vac_arm_override_enabled` on is refused with `vacuum_required` in the first three; turning it off is always allowed. Autovac's configure shows and edits the two vacuum settings but hands the edit here.
+
+### Who runs as whom
+
+The watchers and the Autovac controller call these actions from automations with no user. Identity resolution maps every caller to the default AI user, so their cert checks pass on what that user holds (`zenos.actuation.security_control` for `auto_arm_config`, `zenos.autovac.operate` for the Autovac calls).
 
 ---
 
@@ -202,7 +215,7 @@ zen_dojotools_security_manager:
 
 ## Integration
 
-- **Room Manager** — `mode=get context_slices=+security` returns per-room zone + camera inventory derived from Security Manager data.
+- **Room Manager** — `mode=get context_slices=+security` returns per-room zone + camera inventory derived from Security Manager data. `home_overview` and `summary` carry the temporary override (`temporary_override`, `stuck_overrides`, `override_line` in the security block) from `lens`, only when one exists.
 - **AlertManager** — use `notify_target: postman` with `zen_event(kind: alert_fire)` to route panel events through the standard alert pipeline.
 - **Camera** — `zen_dojotools_camera tool=look` on any entity listed in `cameras_by_area` for visual analysis.
 
