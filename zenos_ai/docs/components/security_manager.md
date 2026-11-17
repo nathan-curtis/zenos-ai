@@ -1,6 +1,8 @@
 # ZenOS-AI Security Manager
 
-**Version:** 5.9.2
+**Version:** 5.16.0
+
+> **2026.12.0 (5.10.0 to 5.16.0): the foundation.** Four new reads, no cert: `readiness`, `override_list`, `activity` and `lens`. A record for temporary overrides and an activity ledger, with internal actions that only automations can call. A second automation, the Zen Security Sentry, ends overrides on time. Nothing here acts on the panel yet, and nothing creates an override on its own; that comes with the behaviors built on this. See [Readiness, overrides and activity](#readiness-overrides-and-activity).
 
 > **2026.11.0 (5.9.1, 5.9.2):** `auto_arm_check` is refused from a user or agent session; only the auto-arm automations call it. A `zone.home` that is unknown or unavailable is never an empty house: the count reads -1, nothing arms and the arrival path doesn't run, and the Night-Late and Away watchers ignore a change from unknown or unavailable (a template reload).
 
@@ -43,6 +45,11 @@ The `read_state` response includes a `lens` field describing the handoff to the 
 | `disarm` | Disarm the panel. **Identity-gated, higher tier than arm** — requires `zenos.actuation.security_control` **plus a fresh live household-admin ack every call**, no standing-cert shortcut. Disarming is the highest-risk direction; arming down is cert-only. |
 | `get_policy` | Read the `_alert_policy` from the household cabinet security_manager drawer. |
 | `set_alert_policy` | Merge `policy_patch` JSON into the alert policy. Partial update — existing keys not in patch are preserved. Same `zenos.actuation.security_control` cert gate as `arm`. |
+| `readiness` | Can the house arm now, and if not, what's in the way. Read, no cert. See [Readiness](#readiness). |
+| `override_list` | The temporary overrides in force: a change the system made to the panel on its own, what it left, what it moved to, why, and minutes left. Read, no cert. |
+| `activity` | What security has done on its own, and what it declined to do, newest first. `activity_hours` (default 24, at most 168), `activity_limit` (default 50, at most 150). Read, no cert. |
+| `lens` | The one security answer other tools use: the panel and its state, ready and blocker count, any temporary override as a plain sentence, the last ledger line, and one plain `line`. Read, no cert. |
+| `override_set`, `override_end`, `override_sweep`, `ledger_add`, `auto_arm_check` | Internal: not for agents or people. Each refuses any call that has a user in it; automations call them. |
 | `help` | Full action reference — all actions, fields, and cert tiers in one call. Not gated. |
 
 **Self-published cert:** `zenos.actuation.security_control` is declared in this tool's own `tool_manifest.certs_required` — that's what makes it a valid `cert_grant` target under the live-calculated catalog (`zen_dojotools_manifest mode=cert_audit`; see `zen_dojotools_profile_readme.md`'s certification section). Grant via `zen_dojotools_persona_editor mode=cert_req_grant cert_component=zenos.actuation.security_control`.
@@ -50,6 +57,33 @@ The `read_state` response includes a `lens` field describing the handoff to the 
 **Scoped disarm override:** unlike locks/covers, there's no per-entity target for a single alarm panel to scope against — an admin exempts disarm from the every-call ack via `cert_grant cert_component=zenos.actuation.security_control cert_scope=["disarm"]`, a literal token rather than an entity_id. Resolution goes through the same shared `cert_scope_check` macro as every other gated tool (2026-08-16 centralization) — see the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
 
 **v5.3.0 (2026-08-15):** full SESE (single-entry/single-exit) and canonical `envelope()` migration alongside the identity-gate work above — response shape internals changed accordingly (existing fields now live under `result`), same pattern as `zen_health_report`'s own envelope adoption.
+
+---
+
+## Readiness, overrides and activity
+
+### Readiness
+
+`readiness` answers "can the house arm now?" from three things: the panel's own zones (and its own "not ready" flag), entities labeled `zen_door` (doors, windows, garage doors), and entities labeled `ext_lock` (exterior locks).
+
+- **Blockers:** a panel that is pending, triggered or unreadable; the panel saying it isn't ready; an open or faulted zone that isn't bypassed; an open or unreadable labeled door or window; a jammed or unreadable exterior lock.
+- **Fixable:** an unlocked exterior lock. It doesn't block arming.
+- **Notes:** bypassed zones.
+- **`blind: true`:** nothing visible was checked (no panel zones and nothing labeled `zen_door`), and the summary says so instead of a bare "ready".
+
+### Temporary overrides
+
+A temporary override is a change the system makes to the panel on its own for a while, kept as a record (one per kind) in the household `security_manager` drawer: what it left, what it moved to, why, when it began and ends, and a ceiling from its start (default 180 minutes) its end can never pass. `override_list` reads them. Only automations make and end them.
+
+**Spook is required.** The Zen Security Sentry ends overrides on time, and it runs only when Spook's trigger platforms work. Without it, `override_set` and turning on `vac_arm_override_enabled` answer `spook_required`; turning that setting off always works. `lens` says when an override has outlived its time.
+
+### The activity ledger
+
+What security did on its own, and what it declined to do, is a short list in the household cabinet: at most 150 entries, at most 7 days old. `activity` reads it.
+
+### The Zen Security Sentry
+
+A second automation, kept apart from the Auto-Arm Watcher so a missing or changed Spook can't switch the watcher off. It runs every minute while an override exists, ends any that have expired (one ledger line each), and fires a `zen_event` of kind `security_override_expired` so the behavior that owns the override can put the panel back. It never touches the panel itself.
 
 ---
 

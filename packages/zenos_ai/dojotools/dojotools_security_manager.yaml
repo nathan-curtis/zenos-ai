@@ -1,6 +1,66 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Security Manager
-# Version: 5.9.2
+# Version: 5.16.0
+# v5.16.0: readiness also reads the panel's own zones. A house whose doors and windows
+#   are panel zones, with nothing labeled zen_door, had 0 perimeter sensors checked and
+#   would have said "ready" with a window open. It now calls read_state and adds every open or faulted zone that is not
+#   bypassed, plus the panel's own "not ready" flag, as blockers (de-duplicated against
+#   labeled sensors); bypassed zones are notes. checked carries panel_zones, and when
+#   nothing visible was checked (no panel zones, nothing labeled zen_door) the answer
+#   carries blind: true and says so in the summary instead of a bare "ready".
+# v5.15.0: Spook is required to make temporary overrides, and that is checked, not
+#   assumed. The Zen Security Sentry ends overrides and only runs when Spook's trigger
+#   platforms work, so its own state is the capability probe (no version read).
+#   override_set answers spook_required when the Sentry is not on; auto_arm_config
+#   refuses to turn on vac_arm_override_enabled for the same reason (turning it off
+#   is always allowed). So no override can exist without a Sentry able to end it, and
+#   no fallback sweep outside Spook is needed. lens carries sentry_state and
+#   stuck_overrides: an override that outlived its time without being ended is said
+#   plainly in the line instead of silently disappearing from the answer.
+# v5.14.0: the Zen Security Sentry and its first job, the override sweep. The Sentry
+#   is a second automation, kept apart from the Auto-Arm Watcher on purpose: it holds
+#   the behaviors that use Spook trigger platforms, because Home Assistant disables a
+#   whole automation when any one of its triggers is invalid, and a missing or changed
+#   Spook must not take the core watcher down with it. Its first trigger is
+#   spook.cron every minute, with the work gated on an override existing (spook.while
+#   was tried first and dropped: it does not fire for a condition already true at
+#   start, so a restart left a stale override unswept). override_sweep is the
+#   new internal action it calls: every override whose time has passed is removed,
+#   one ledger line each (override_expired), and a zen_event security_override_expired
+#   carries the record so the behavior that owns the override can put the panel back.
+#   The sweep never touches the panel.
+# v5.13.0: new read action lens: the security answer other tools use instead of
+#   reading the panel themselves. Home level: the panel and its state, whether the
+#   house can arm now (readiness) with the blocker count and one-line summary, the
+#   temporary override in force (kind, what it left and moved to, when it ends) as a
+#   plain sentence, and the last ledger line, plus one plain `line` for a home
+#   overview. It calls readiness, override_list and activity, so there is one source
+#   for each. Read, no cert. It never calls Room Manager (one-way dependency).
+# v5.12.0: the activity ledger. What the system did on its own, and what it declined
+#   to do, is a short list in the household cabinet (key _security_ledger, hidden like
+#   Alert Manager's _zen_active_alerts), at most 150 entries and at most 7 days old.
+#   activity reads it (no cert): newest first, last 24 hours by default, so the agent
+#   can say what security has been doing without being asked. ledger_add is internal
+#   (refused from any user or agent session) and is what behaviors call; override_set
+#   and override_end now write their own entries (begin, extend, clamp, end). All
+#   FileCabinet calls in this file moved to mode / write_mode (the legacy action_type
+#   and mode: replace forms are gone).
+# v5.11.0: the temporary override record. A temporary change the system makes to
+#   the panel (for example Away to Home while the vacuum runs) is a record in the
+#   household security_manager drawer (_overrides, one per kind): what it left,
+#   what it moved to, why, when it began, when it expires, and a hard ceiling from
+#   its start (default 180 min) that its expiry never passes. override_list reads
+#   them (no cert, with minutes left); override_set and override_end are internal
+#   (refused from any user or agent session, like auto_arm_check) and are what the
+#   automation that owns a behavior calls. override_set moves the expiry of an
+#   existing override and clamps a longer ask at the ceiling.
+# v5.10.0: new read action readiness: can the house arm now, and if not, what
+#   blocks it. Read from labels only (alarm_panel, zen_door, ext_lock): a panel
+#   that is pending, triggered or unreadable, a labeled door, window or garage
+#   door that is open or unreadable, an exterior lock that is jammed or
+#   unreadable. An unlocked exterior lock is listed as fixable (lock it), not
+#   as a blocker. Ungated, like query. It is the one check auto-arm, the night
+#   and departure sequences and the agent share.
 # v5.9.2: zone.home going unknown or unavailable no longer reads as an
 #   empty house. The watcher ignores a change to unknown/unavailable, and
 #   auto-arm reads an unreadable count as -1, so it neither arms Away nor
@@ -125,11 +185,11 @@ script:
     fields:
       action:
         name: Action
-        description: read_state (default) | query | arm | disarm | get_policy | set_alert_policy | auto_arm_check | auto_arm_config | help
+        description: read_state (default) | query | readiness | override_list | activity | lens | arm | disarm | get_policy | set_alert_policy | auto_arm_check | auto_arm_config | override_set | override_end | override_sweep | ledger_add | help
         required: false
         selector:
           select:
-            options: [read_state, query, arm, disarm, get_policy, set_alert_policy, auto_arm_check, auto_arm_config, help]
+            options: [read_state, query, readiness, override_list, activity, lens, arm, disarm, get_policy, set_alert_policy, auto_arm_check, auto_arm_config, override_set, override_end, override_sweep, ledger_add, help]
         default: read_state
 
       auto_arm_trigger:
@@ -178,6 +238,120 @@ script:
         required: false
         selector:
           text:
+
+      override_kind:
+        name: Override Kind
+        description: >-
+          Internal: which kind of temporary override override_set or
+          override_end names (for example vacuum_sync). One active override
+          per kind; the kind is the record id. Set by the automation that
+          owns the behavior, not intended for direct agent calls.
+        required: false
+        selector:
+          text:
+
+      override_from:
+        name: Override From
+        description: "Internal: the panel mode the override left (for example armed_away). Used by override_set."
+        required: false
+        selector:
+          text:
+
+      override_to:
+        name: Override To
+        description: "Internal: the panel mode the override moved to (for example armed_home). Used by override_set."
+        required: false
+        selector:
+          text:
+
+      override_reason:
+        name: Override Reason
+        description: "Internal: one plain sentence saying why, shown to the agent and the person. Used by override_set."
+        required: false
+        selector:
+          text:
+
+      override_minutes:
+        name: Override Minutes
+        description: >-
+          Internal: minutes from now until the override expires (default 30).
+          For an existing override this moves the expiry; the result is never
+          later than the override's start plus its ceiling.
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 1440
+            mode: box
+
+      override_max_minutes:
+        name: Override Ceiling Minutes
+        description: >-
+          Internal: hard ceiling in minutes from the override's start that
+          its expiry can never pass (default 180). Set when the override
+          begins; a later call can only lower it, never raise it. An
+          override_minutes past it is clamped and recorded.
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 1440
+            mode: box
+
+      override_consent:
+        name: Override Consent
+        description: "Internal: how the person agreed (for example standing, or asked_yes). Recorded as given; used by override_set."
+        required: false
+        selector:
+          text:
+
+      ledger_kind:
+        name: Ledger Entry Kind
+        description: "Internal: a short snake_case label for what happened (for example override_begin, declined_arm). Used by ledger_add."
+        required: false
+        selector:
+          text:
+
+      ledger_summary:
+        name: Ledger Entry Summary
+        description: "Internal: one plain sentence the agent can repeat to a person (what the system did or declined, and why). Used by ledger_add."
+        required: false
+        selector:
+          text:
+
+      ledger_source:
+        name: Ledger Entry Source
+        description: "Internal: which behavior wrote it (for example vacuum_sync, night_arm). Used by ledger_add."
+        required: false
+        selector:
+          text:
+
+      ledger_detail:
+        name: Ledger Entry Detail
+        description: "Internal: optional short extra text (an entity name, a count). Used by ledger_add."
+        required: false
+        selector:
+          text:
+
+      activity_hours:
+        name: Activity Window Hours
+        description: "How far back activity looks (default 24, at most 168)."
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 168
+            mode: box
+
+      activity_limit:
+        name: Activity Entry Limit
+        description: "The most entries activity returns, newest first (default 50, at most 150)."
+        required: false
+        selector:
+          number:
+            min: 1
+            max: 150
+            mode: box
 
       policy_patch:
         name: Policy Patch
@@ -266,7 +440,7 @@ script:
                     summary='Alarm panel, perimeter, and auto-arm',
                     display_name='Security Manager',
                     tier='dojotools',
-                    version='5.9.0',
+                    version='5.16.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools', 'zen_kfc_provider'],
                     optional_labels=['security_manager', 'alarm'],
@@ -691,6 +865,24 @@ script:
             _policy_patch: "{{ policy_patch | default('', true) | trim }}"
             _auto_arm_trigger: "{{ auto_arm_trigger | default('occupancy', true) | lower | trim }}"
             _auto_arm_patch: "{{ auto_arm_patch | default('', true) | trim }}"
+            _ov_kind: "{{ override_kind | default('', true) | lower | trim }}"
+            _ov_from: "{{ override_from | default('', true) | lower | trim }}"
+            _ov_to: "{{ override_to | default('', true) | lower | trim }}"
+            _ov_reason: "{{ override_reason | default('', true) | trim }}"
+            _ov_minutes: "{{ override_minutes | default(30, true) | int(30) }}"
+            _ov_max_in: "{{ override_max_minutes | default(0, true) | int(0) }}"
+            _ov_consent: "{{ override_consent | default('', true) | trim }}"
+            # Spook capability gate: overrides are ended by the Zen Security Sentry,
+            # which only runs when Spook's trigger platforms work (Home Assistant
+            # disables an automation whose triggers are invalid). So the Sentry's own
+            # state is the capability probe, no version read. No Sentry, no override.
+            _sp_ok: "{{ states('automation.zen_security_sentry') == 'on' }}"
+            _lg_kind: "{{ ledger_kind | default('', true) | lower | trim }}"
+            _lg_summary: "{{ ledger_summary | default('', true) | trim }}"
+            _lg_source: "{{ ledger_source | default('', true) | lower | trim }}"
+            _lg_detail: "{{ ledger_detail | default('', true) | trim }}"
+            _ac_hours: "{{ [[activity_hours | default(24, true) | int(24), 1] | max, 168] | min }}"
+            _ac_limit: "{{ [[activity_limit | default(50, true) | int(50), 1] | max, 150] | min }}"
 
         # ═══════════════════════════════════════════════════════════════════════
         # Single-entry/single-exit: every branch below builds `result` and falls
@@ -719,6 +911,645 @@ script:
                       action: query
                       panels: "{{ _panels }}"
                       count: "{{ _panels | length }}"
+
+            # ── READINESS (r) — can the house arm now, and if not, what blocks it.
+            # Labels only: alarm_panel, zen_door (door, window and garage-door
+            # sensors and covers), ext_lock (exterior locks). A blocker is
+            # something a person must resolve or that cannot be read; an
+            # unlocked exterior lock is fixable (lock it) and is listed apart.
+            # Read, no cert (same tier as query). Shared by auto-arm, the night
+            # and departure sequences and the agent's own "can I arm now?".
+            - conditions: "{{ _action == 'readiness' }}"
+              sequence:
+                - variables:
+                    _rd_panels: >-
+                      {{ label_entities('alarm_panel') | select('match', 'alarm_control_panel\\.') | list }}
+                    _rd_perimeter: >-
+                      {{ label_entities('zen_door') | select('match', '(binary_sensor|cover)\\.') | list }}
+                    _rd_locks: >-
+                      {{ label_entities('ext_lock') | select('match', 'lock\\.') | list }}
+                # The panel knows its own zones (doors, windows, motion) and whether it
+                # says it is ready. read_state walks them; readiness reuses that so a
+                # house whose doors and windows are panel zones, not labeled zen_door,
+                # is still checked.
+                - action: script.zen_dojotools_security_manager
+                  continue_on_error: true
+                  data:
+                    action: read_state
+                  response_variable: _rd_rs_raw
+                - variables:
+                    _rd_rs: "{{ (_rd_rs_raw.get('result', {})) if _rd_rs_raw is mapping else {} }}"
+                - variables:
+                    _rd_zones: "{{ _rd_rs.get('zones', []) if _rd_rs is mapping else [] }}"
+                    _rd_sys: "{{ _rd_rs.get('system', []) if _rd_rs is mapping else [] }}"
+                - variables:
+                    _rd_blockers: >-
+                      {%- set ns = namespace(out=[]) -%}
+                      {%- if _rd_panels | count == 0 -%}
+                        {%- set ns.out = ns.out + [{'kind': 'no_panel', 'entity_id': '', 'name': '', 'state': '', 'since': '', 'detail': 'no alarm panel is labeled alarm_panel'}] -%}
+                      {%- endif -%}
+                      {%- for eid in _rd_panels -%}
+                        {%- set st = states(eid) -%}
+                        {%- if st in ['pending', 'triggered', 'arming', 'unavailable', 'unknown'] -%}
+                          {%- set ex = expand(eid) | list -%}
+                          {%- set ns.out = ns.out + [{'kind': 'panel_' ~ st, 'entity_id': eid, 'name': state_attr(eid, 'friendly_name') | default(eid, true), 'state': st, 'since': (ex[0].last_changed.isoformat() if ex | count > 0 else ''), 'detail': 'panel is ' ~ st}] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for eid in _rd_perimeter -%}
+                        {%- set st = states(eid) -%}
+                        {%- set dc = state_attr(eid, 'device_class') | default('sensor', true) -%}
+                        {%- set is_open = (st == 'on') if eid.startswith('binary_sensor.') else (st in ['open', 'opening', 'closing']) -%}
+                        {%- if is_open or st in ['unavailable', 'unknown'] -%}
+                          {%- set ex = expand(eid) | list -%}
+                          {%- set ns.out = ns.out + [{'kind': ('open_' ~ dc) if is_open else ('unreadable_' ~ dc), 'entity_id': eid, 'name': state_attr(eid, 'friendly_name') | default(eid, true), 'state': st, 'since': (ex[0].last_changed.isoformat() if ex | count > 0 else ''), 'detail': 'open' if is_open else 'cannot be read'}] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for z in (_rd_zones if _rd_zones is iterable and _rd_zones is not string else []) -%}
+                        {%- set zid = z.get('entity_id', '') if z is mapping else '' -%}
+                        {%- if zid != '' and zid not in (ns.out | map(attribute='entity_id') | list) and not z.get('bypassed', false) and (z.get('open', false) or z.get('fault', false)) -%}
+                          {%- set ex = expand(zid) | list -%}
+                          {%- set ns.out = ns.out + [{'kind': ('zone_open_' ~ z.get('type', 'zone')) if z.get('open', false) else 'zone_fault', 'entity_id': zid, 'name': z.get('name', zid), 'state': 'open' if z.get('open', false) else 'fault', 'since': (ex[0].last_changed.isoformat() if ex | count > 0 else ''), 'detail': 'open' if z.get('open', false) else 'has a fault'}] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for s in (_rd_sys if _rd_sys is iterable and _rd_sys is not string else []) -%}
+                        {%- if s is mapping and s.get('interpretation', '') == 'panel ready' and not s.get('ok', true) -%}
+                          {%- set ns.out = ns.out + [{'kind': 'panel_not_ready', 'entity_id': s.get('entity_id', ''), 'name': s.get('name', 'Alarm panel'), 'state': s.get('state', ''), 'since': '', 'detail': 'the panel itself says it is not ready'}] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {%- for eid in _rd_locks -%}
+                        {%- set st = states(eid) -%}
+                        {%- if st in ['jammed', 'unavailable', 'unknown'] -%}
+                          {%- set ex = expand(eid) | list -%}
+                          {%- set ns.out = ns.out + [{'kind': 'lock_jammed' if st == 'jammed' else 'lock_unreadable', 'entity_id': eid, 'name': state_attr(eid, 'friendly_name') | default(eid, true), 'state': st, 'since': (ex[0].last_changed.isoformat() if ex | count > 0 else ''), 'detail': 'jammed' if st == 'jammed' else 'cannot be read'}] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ ns.out }}
+                    _rd_fixable: >-
+                      {%- set ns = namespace(out=[]) -%}
+                      {%- for eid in _rd_locks -%}
+                        {%- if states(eid) in ['unlocked', 'open', 'opening', 'unlocking'] -%}
+                          {%- set ex = expand(eid) | list -%}
+                          {%- set ns.out = ns.out + [{'kind': 'lock_unlocked', 'entity_id': eid, 'name': state_attr(eid, 'friendly_name') | default(eid, true), 'state': states(eid), 'since': (ex[0].last_changed.isoformat() if ex | count > 0 else ''), 'fix': 'lock'}] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ ns.out }}
+                - variables:
+                    _rd_zone_count: "{{ (_rd_zones | count) if (_rd_zones is iterable and _rd_zones is not string) else 0 }}"
+                    _rd_notes: >-
+                      {%- set ns = namespace(out=[]) -%}
+                      {%- for z in (_rd_zones if (_rd_zones is iterable and _rd_zones is not string) else []) -%}
+                        {%- if z is mapping and z.get('bypassed', false) -%}
+                          {%- set ns.out = ns.out + [z.get('name', z.get('entity_id', 'A zone')) ~ ' is bypassed'] -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ ns.out }}
+                - variables:
+                    # Blind: nothing the system can see was checked, so "ready" would
+                    # mean nothing. Said plainly, never a bare "ready".
+                    _rd_blind: "{{ (_rd_zone_count | int(0)) == 0 and (_rd_perimeter | count) == 0 }}"
+                - variables:
+                    _rd_summary: >-
+                      {%- set ns = namespace(parts=[], fx=[]) -%}
+                      {%- for b in _rd_blockers -%}
+                        {%- set ns.parts = ns.parts + [(b.name ~ ': ' ~ b.detail) if b.name != '' else b.detail] -%}
+                      {%- endfor -%}
+                      {%- for f in _rd_fixable -%}
+                        {%- set ns.fx = ns.fx + [f.name] -%}
+                      {%- endfor -%}
+                      {%- set _m = 'Ready to arm: nothing the system can see is open, faulted, jammed or unlocked.' if (ns.parts | count == 0 and ns.fx | count == 0) else (('Not ready: ' ~ (ns.parts | join('; ')) ~ '.') if ns.parts | count > 0 else 'Not ready yet.') -%}
+                      {%- set _f = (' Can be fixed by locking: ' ~ (ns.fx | join(', ')) ~ '.') if ns.fx | count > 0 else '' -%}
+                      {%- set _n = (' Note: ' ~ (_rd_notes | join('; ')) ~ '.') if _rd_notes | count > 0 else '' -%}
+                      {%- set _w = ' No door or window sensors are visible to check (no panel zones read, nothing labeled zen_door), so an open door would not be noticed.' if _rd_blind else '' -%}
+                      {{ _m ~ _f ~ _n ~ _w }}
+                - variables:
+                    result:
+                      status: ok
+                      action: readiness
+                      ready: "{{ _rd_blockers | count == 0 and _rd_fixable | count == 0 }}"
+                      arm_possible_after_fixes: "{{ _rd_blockers | count == 0 }}"
+                      blockers: "{{ _rd_blockers }}"
+                      fixable: "{{ _rd_fixable }}"
+                      notes: "{{ _rd_notes }}"
+                      blind: "{{ _rd_blind }}"
+                      checked:
+                        panels: "{{ _rd_panels | count }}"
+                        panel_zones: "{{ _rd_zone_count }}"
+                        perimeter_sensors: "{{ _rd_perimeter | count }}"
+                        exterior_locks: "{{ _rd_locks | count }}"
+                      summary: "{{ _rd_summary | trim }}"
+
+            # ── LENS (r) — the security answer for other tools (Room Manager's
+            # home overview first). One call, one place for each fact: readiness,
+            # override_list and activity answer it, this only composes them. Never
+            # calls Room Manager back (a loop). Read, no cert.
+            - conditions: "{{ _action == 'lens' }}"
+              sequence:
+                - variables:
+                    _ln_panel: >-
+                      {%- set ns = namespace(found='') -%}
+                      {%- for eid in label_entities('alarm_panel') -%}
+                        {%- if ns.found == '' and eid.startswith('alarm_control_panel.') -%}
+                          {%- set ns.found = eid -%}
+                        {%- endif -%}
+                      {%- endfor -%}
+                      {{ ns.found }}
+                - action: script.zen_dojotools_security_manager
+                  continue_on_error: true
+                  data:
+                    action: readiness
+                  response_variable: _ln_rd_raw
+                - action: script.zen_dojotools_security_manager
+                  continue_on_error: true
+                  data:
+                    action: override_list
+                  response_variable: _ln_ov_raw
+                - action: script.zen_dojotools_security_manager
+                  continue_on_error: true
+                  data:
+                    action: activity
+                    activity_limit: 1
+                    activity_hours: 168
+                  response_variable: _ln_ac_raw
+                - variables:
+                    _ln_rd: "{{ (_ln_rd_raw.get('result', {})) if _ln_rd_raw is mapping else {} }}"
+                    _ln_ov: "{{ (_ln_ov_raw.get('result', {})) if _ln_ov_raw is mapping else {} }}"
+                    _ln_ac: "{{ (_ln_ac_raw.get('result', {})) if _ln_ac_raw is mapping else {} }}"
+                - variables:
+                    _ln_active: >-
+                      {{ (_ln_ov.get('overrides', []) | selectattr('expired', 'equalto', false) | list) if _ln_ov is mapping else [] }}
+                    _ln_stuck: >-
+                      {{ (_ln_ov.get('overrides', []) | selectattr('expired', 'equalto', true) | list) if _ln_ov is mapping else [] }}
+                    _ln_last: "{{ (_ln_ac.get('entries', []) | first) if (_ln_ac.get('entries', []) | count) > 0 else {} }}"
+                    _ln_state: "{{ states(_ln_panel) if _ln_panel != '' else '' }}"
+                - variables:
+                    _ln_ov_line: >-
+                      {%- if _ln_active | count > 0 -%}
+                        {%- set o = _ln_active[0] -%}
+                        Security is temporarily {{ o.get('to', '') | replace('_', ' ') }}{{ (' instead of ' ~ (o.get('from', '') | replace('_', ' '))) if o.get('from', '') != '' else '' }}{{ (' (' ~ o.get('reason', '') ~ ')') if o.get('reason', '') != '' else '' }}; it should return about {{ o.get('expires_at', '')[11:16] }}.
+                      {%- endif -%}
+                - variables:
+                    result:
+                      status: ok
+                      action: lens
+                      available: "{{ _ln_panel != '' }}"
+                      panel:
+                        entity_id: "{{ _ln_panel }}"
+                        state: "{{ _ln_state }}"
+                      ready: "{{ _ln_rd.get('ready', false) if _ln_rd is mapping else false }}"
+                      blocker_count: "{{ (_ln_rd.get('blockers', []) | count) if _ln_rd is mapping else 0 }}"
+                      readiness_summary: "{{ _ln_rd.get('summary', '') if _ln_rd is mapping else '' }}"
+                      temporary_override: "{{ _ln_active[0] if _ln_active | count > 0 else none }}"
+                      stuck_overrides: "{{ _ln_stuck }}"
+                      sentry_state: "{{ states('automation.zen_security_sentry') }}"
+                      last_activity: "{{ _ln_last if _ln_last != {} else none }}"
+                      line: >-
+                        {%- if _ln_panel == '' -%}
+                          No alarm panel is set up.
+                        {%- else -%}
+                          Alarm panel is {{ _ln_state | replace('_', ' ') }}.{{ (' ' ~ _ln_ov_line) if _ln_ov_line != '' else '' }}{{ ' A temporary override has outlived its time and has not been ended: security may still be changed. The Zen Security Sentry is ' ~ ('running' if _sp_ok else 'not running (it needs Spook)') ~ '.' if _ln_stuck | count > 0 else '' }}
+                        {%- endif -%}
+
+            # ── ACTIVITY (r) — what security has done on its own, and declined ──
+            # The ledger the agent reads so the system never acts behind her back.
+            # Newest first, last 24 hours by default (at most 168), at most 150
+            # entries. Read, no cert. Lives in the household cabinet key
+            # _security_ledger (hidden, like Alert Manager's _zen_active_alerts).
+            - conditions: "{{ _action == 'activity' }}"
+              sequence:
+                - variables:
+                    _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                - action: script.zen_sutra_filecabinet
+                  continue_on_error: true
+                  data:
+                    mode: get
+                    volume_entity_id: "{{ _hh_cab }}"
+                    key: _security_ledger
+                    force_action: true
+                    caller_token: "{{ _token }}/security_manager_activity"
+                  response_variable: _lg_read
+                - variables:
+                    _lg_entries: >-
+                      {%- set r = _lg_read.get('value') if _lg_read is mapping else none -%}
+                      {%- set r = (r | from_json({})) if r is string else (r if r is mapping else {}) -%}
+                      {%- set v = r.get('value', r) if r is mapping else {} -%}
+                      {%- set v = (v | from_json({})) if v is string else v -%}
+                      {%- set e = v.get('entries', []) if v is mapping else [] -%}
+                      {{ e if e is iterable and e is not string else [] }}
+                    _ac_now_ts: "{{ now().timestamp() }}"
+                - variables:
+                    _ac_rows: >-
+                      {%- set since = (_ac_now_ts | float(0)) - (_ac_hours | int(24)) * 3600 -%}
+                      {%- set inwin = _lg_entries | selectattr('ts', 'defined') | selectattr('ts', 'ge', since) | list -%}
+                      {{ (inwin | reverse | list)[:(_ac_limit | int(50))] }}
+                - variables:
+                    result:
+                      status: ok
+                      action: activity
+                      window_hours: "{{ _ac_hours }}"
+                      entries: "{{ _ac_rows }}"
+                      count: "{{ _ac_rows | count }}"
+                      total_in_ledger: "{{ _lg_entries | count }}"
+                      newest_at: "{{ _ac_rows[0].get('at', '') if _ac_rows | count > 0 else '' }}"
+                      note: "{{ '' if _ac_rows | count > 0 else 'Nothing recorded in this window: security has not acted on its own, or has not been set up to.' }}"
+
+            # ── LEDGER_ADD (internal) — record what the system did or declined ──
+            # Only the automations and actions that own a behavior call this (no
+            # user in their context). Keeps at most 150 entries and drops any
+            # older than 7 days on every write. Read-modify-write of one hidden
+            # key: two writers in the same instant can lose one line, which is the
+            # accepted cost of a plain list (the ledger is an aid, not a record of
+            # legal weight; overrides carry their own state).
+            - conditions: "{{ _action == 'ledger_add' }}"
+              sequence:
+                - variables:
+                    _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                    _lg_user: "{{ (context.user_id if context is defined else '') or '' }}"
+                - choose:
+                    - conditions: "{{ _lg_user != '' }}"
+                      sequence:
+                        - variables:
+                            result:
+                              status: error
+                              action: ledger_add
+                              reason: "guarded: ledger_add is internal; only the behavior that acted writes it. Use activity to read the ledger."
+                    - conditions: "{{ _lg_kind == '' or _lg_summary == '' }}"
+                      sequence:
+                        - variables:
+                            result:
+                              status: error
+                              action: ledger_add
+                              error: missing_ledger_fields
+                              detail: "ledger_kind and ledger_summary are required."
+                  default:
+                    - action: script.zen_sutra_filecabinet
+                      continue_on_error: true
+                      data:
+                        mode: get
+                        volume_entity_id: "{{ _hh_cab }}"
+                        key: _security_ledger
+                        force_action: true
+                        caller_token: "{{ _token }}/security_manager_ledger_add"
+                      response_variable: _lg_read
+                    - variables:
+                        _lg_entries: >-
+                          {%- set r = _lg_read.get('value') if _lg_read is mapping else none -%}
+                          {%- set r = (r | from_json({})) if r is string else (r if r is mapping else {}) -%}
+                          {%- set v = r.get('value', r) if r is mapping else {} -%}
+                          {%- set v = (v | from_json({})) if v is string else v -%}
+                          {%- set e = v.get('entries', []) if v is mapping else [] -%}
+                          {{ e if e is iterable and e is not string else [] }}
+                        _lg_now_ts: "{{ now().timestamp() }}"
+                    - variables:
+                        _lg_entry:
+                          ts: "{{ _lg_now_ts }}"
+                          at: "{{ _lg_now_ts | timestamp_custom('%Y-%m-%dT%H:%M:%S%z') }}"
+                          kind: "{{ _lg_kind }}"
+                          source: "{{ _lg_source }}"
+                          summary: "{{ _lg_summary | truncate(300, true, '') }}"
+                          detail: "{{ _lg_detail | truncate(200, true, '') }}"
+                    - variables:
+                        _lg_new: >-
+                          {%- set cutoff = (_lg_now_ts | float(0)) - 604800 -%}
+                          {%- set kept = _lg_entries | selectattr('ts', 'defined') | selectattr('ts', 'ge', cutoff) | list -%}
+                          {{ (kept + [_lg_entry])[-150:] }}
+                    - action: script.zen_sutra_filecabinet
+                      data:
+                        mode: update
+                        write_mode: replace
+                        force_action: true
+                        volume_entity_id: ["{{ _hh_cab }}"]
+                        key: _security_ledger
+                        value: "{{ {'entries': _lg_new} | tojson }}"
+                        no_autoexpire: true
+                        caller_token: "{{ _token }}/security_manager_ledger_add"
+                      response_variable: _lg_fc_result
+                    - variables:
+                        result:
+                          status: ok
+                          action: ledger_add
+                          entry: "{{ _lg_entry }}"
+                          entries_kept: "{{ _lg_new | count }}"
+
+            # ── OVERRIDE_LIST (r) — the temporary overrides in force ─────────────
+            # A temporary override is a record, not a flag: what the panel left,
+            # what it moved to, why, when it began and when it expires, and a hard
+            # ceiling from its start that nothing may pass. Read, no cert. The agent
+            # sees these in the answer to "what is security doing" so the system
+            # never acts behind her back.
+            - conditions: "{{ _action == 'override_list' }}"
+              sequence:
+                - variables:
+                    _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                    _hh_vars: >-
+                      {{ state_attr(_hh_cab, 'variables') | default({}, true) }}
+                    _sm_drawer: "{{ _hh_vars.get('security_manager', {}) }}"
+                - variables:
+                    _sm_val: >-
+                      {%- set d = _sm_drawer -%}
+                      {{ d.get('value', d) if d is mapping else {} }}
+                    _ov_now_ts: "{{ now().timestamp() }}"
+                - variables:
+                    _ov_all: "{{ _sm_val.get('_overrides', {}) }}"
+                - variables:
+                    _ov_rows: >-
+                      {%- set ns = namespace(out=[]) -%}
+                      {%- for k, r in (_ov_all.items() if _ov_all is mapping else []) -%}
+                        {%- set left = ((r.get('expires_ts', 0) | float(0)) - (_ov_now_ts | float(0))) / 60 -%}
+                        {%- set ns.out = ns.out + [r | combine({'minutes_left': (left | round(1)) if left > 0 else 0, 'expired': left <= 0})] -%}
+                      {%- endfor -%}
+                      {{ ns.out }}
+                - variables:
+                    result:
+                      status: ok
+                      action: override_list
+                      overrides: "{{ _ov_rows }}"
+                      active_count: "{{ _ov_rows | selectattr('expired', 'equalto', false) | list | count }}"
+                      expired_count: "{{ _ov_rows | selectattr('expired', 'equalto', true) | list | count }}"
+
+            # ── OVERRIDE_SET (internal) — begin or extend a temporary override ───
+            # Only the automations that own a behavior call this (no user in
+            # their context). One override per kind; calling again for the same
+            # kind moves the expiry. The expiry can never pass the override's start
+            # plus its ceiling (default 180 min): a longer ask is clamped and
+            # counted. A running override's ceiling is fixed at its start and can
+            # only be lowered, never raised, by a later call.
+            - conditions: "{{ _action == 'override_set' }}"
+              sequence:
+                - variables:
+                    _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                    _hh_vars: >-
+                      {{ state_attr(_hh_cab, 'variables') | default({}, true) }}
+                    _sm_drawer: "{{ _hh_vars.get('security_manager', {}) }}"
+                    _ov_user: "{{ (context.user_id if context is defined else '') or '' }}"
+                - variables:
+                    _sm_val: >-
+                      {%- set d = _sm_drawer -%}
+                      {{ d.get('value', d) if d is mapping else {} }}
+                - variables:
+                    _ov_all: "{{ _sm_val.get('_overrides', {}) }}"
+                - choose:
+                    - conditions: "{{ _ov_user != '' }}"
+                      sequence:
+                        - variables:
+                            result:
+                              status: error
+                              action: override_set
+                              reason: "guarded: override_set is internal; only the automation that owns a behavior calls it. Use override_list to read the overrides in force."
+                    - conditions: "{{ _ov_kind == '' }}"
+                      sequence:
+                        - variables:
+                            result:
+                              status: error
+                              action: override_set
+                              error: missing_override_kind
+                              detail: "override_kind is required (for example vacuum_sync)."
+                    - conditions: "{{ not _sp_ok }}"
+                      sequence:
+                        - variables:
+                            result:
+                              status: error
+                              action: override_set
+                              error: spook_required
+                              detail: "A temporary override needs the Zen Security Sentry to end it, and the Sentry needs Spook's trigger platforms. The Sentry is not running (automation.zen_security_sentry is not on), so no override was made. Install or update Spook, then check security_manager readiness again."
+                  default:
+                    - variables:
+                        _ov_prev: "{{ _ov_all.get(_ov_kind, {}) if _ov_all is mapping else {} }}"
+                        _ov_now_ts: "{{ now().timestamp() }}"
+                    - variables:
+                        _ov_since_ts: "{{ _ov_prev.get('since_ts', _ov_now_ts) | float(_ov_now_ts) }}"
+                        _ov_ceiling_min: >-
+                          {%- set prev_max = _ov_prev.get('max_total_min', 0) | int(0) -%}
+                          {%- if prev_max > 0 -%}
+                            {{ [prev_max, _ov_max_in] | min if _ov_max_in > 0 else prev_max }}
+                          {%- else -%}
+                            {{ _ov_max_in if _ov_max_in > 0 else 180 }}
+                          {%- endif -%}
+                    - variables:
+                        _ov_req_ts: "{{ (_ov_now_ts | float(0)) + (_ov_minutes | int(30)) * 60 }}"
+                        _ov_cap_ts: "{{ (_ov_since_ts | float(0)) + (_ov_ceiling_min | int(180)) * 60 }}"
+                    - variables:
+                        _ov_clamped: "{{ _ov_req_ts > _ov_cap_ts }}"
+                        _ov_exp_ts: "{{ [_ov_req_ts, _ov_cap_ts] | min }}"
+                    - variables:
+                        _ov_record:
+                          id: "{{ _ov_kind }}"
+                          kind: "{{ _ov_kind }}"
+                          from: "{{ _ov_from if _ov_from != '' else _ov_prev.get('from', '') }}"
+                          to: "{{ _ov_to if _ov_to != '' else _ov_prev.get('to', '') }}"
+                          reason: "{{ _ov_reason if _ov_reason != '' else _ov_prev.get('reason', '') }}"
+                          consent: "{{ _ov_consent if _ov_consent != '' else _ov_prev.get('consent', '') }}"
+                          since_ts: "{{ _ov_since_ts }}"
+                          since: "{{ _ov_since_ts | timestamp_custom('%Y-%m-%dT%H:%M:%S%z') }}"
+                          expires_ts: "{{ _ov_exp_ts }}"
+                          expires_at: "{{ _ov_exp_ts | timestamp_custom('%Y-%m-%dT%H:%M:%S%z') }}"
+                          max_total_min: "{{ _ov_ceiling_min }}"
+                          extensions: "{{ (_ov_prev.get('extensions', 0) | int(0) + 1) if _ov_prev != {} else 0 }}"
+                          clamped_count: "{{ (_ov_prev.get('clamped_count', 0) | int(0)) + (1 if _ov_clamped else 0) }}"
+                    - variables:
+                        _new_sm_val: "{{ _sm_val | combine({'_overrides': (_ov_all | combine({_ov_kind: _ov_record}))}) }}"
+                    - action: script.zen_sutra_filecabinet
+                      data:
+                        mode: update
+                        write_mode: replace
+                        force_action: true
+                        volume_entity_id: ["{{ _hh_cab }}"]
+                        key: security_manager
+                        value: "{{ _new_sm_val | tojson }}"
+                        caller_token: "{{ _token }}/security_manager_override_set"
+                      response_variable: _ov_fc_result
+                    - action: script.zen_dojotools_security_manager
+                      continue_on_error: true
+                      data:
+                        action: ledger_add
+                        ledger_kind: "{{ 'override_begin' if _ov_prev == {} else 'override_extend' }}"
+                        ledger_source: "{{ _ov_kind }}"
+                        ledger_summary: >-
+                          {%- if _ov_prev == {} -%}
+                            Security moved from {{ _ov_record.get('from', '') | replace('_', ' ') }} to {{ _ov_record.get('to', '') | replace('_', ' ') }} for {{ _ov_kind | replace('_', ' ') }}{{ (': ' ~ _ov_record.get('reason', '')) if _ov_record.get('reason', '') != '' else '' }}. It ends about {{ _ov_exp_ts | timestamp_custom('%H:%M') }}.
+                          {%- else -%}
+                            The {{ _ov_kind | replace('_', ' ') }} override was extended to about {{ _ov_exp_ts | timestamp_custom('%H:%M') }}.
+                          {%- endif -%}
+                    - if: "{{ _ov_clamped }}"
+                      then:
+                        - action: script.zen_dojotools_security_manager
+                          continue_on_error: true
+                          data:
+                            action: ledger_add
+                            ledger_kind: override_clamped
+                            ledger_source: "{{ _ov_kind }}"
+                            ledger_summary: "The {{ _ov_kind | replace('_', ' ') }} override was asked to run past its {{ _ov_ceiling_min }}-minute limit and was held at {{ _ov_exp_ts | timestamp_custom('%H:%M') }}."
+                    - variables:
+                        result:
+                          status: ok
+                          action: override_set
+                          created: "{{ _ov_prev == {} }}"
+                          clamped: "{{ _ov_clamped }}"
+                          override: "{{ _ov_record }}"
+
+            # ── OVERRIDE_SWEEP (internal) — end every override whose time is up ──
+            # The Zen Security Sentry calls this once a minute while any override
+            # exists. For each expired override: it is removed (one write for all),
+            # a ledger line says so, and a zen_event security_override_expired
+            # carries the record so the behavior that owns it can put the panel
+            # back (this action never touches the panel itself). Same internal-only
+            # guard as override_set. A sweep and an override_set in the same instant
+            # can race on the one drawer value (the accepted cost, as for the
+            # ledger): the sweep only removes records whose time had already passed.
+            - conditions: "{{ _action == 'override_sweep' }}"
+              sequence:
+                - variables:
+                    _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                    _hh_vars: >-
+                      {{ state_attr(_hh_cab, 'variables') | default({}, true) }}
+                    _sm_drawer: "{{ _hh_vars.get('security_manager', {}) }}"
+                    _sw_user: "{{ (context.user_id if context is defined else '') or '' }}"
+                - variables:
+                    _sm_val: >-
+                      {%- set d = _sm_drawer -%}
+                      {{ d.get('value', d) if d is mapping else {} }}
+                    _sw_now_ts: "{{ now().timestamp() }}"
+                - variables:
+                    _ov_all: "{{ _sm_val.get('_overrides', {}) }}"
+                - choose:
+                    - conditions: "{{ _sw_user != '' }}"
+                      sequence:
+                        - variables:
+                            result:
+                              status: error
+                              action: override_sweep
+                              reason: "guarded: override_sweep is internal; only the Zen Security Sentry calls it. Use override_list to read the overrides in force."
+                  default:
+                    - variables:
+                        _sw_expired: >-
+                          {%- set ns = namespace(out=[]) -%}
+                          {%- for k, r in (_ov_all.items() if _ov_all is mapping else []) -%}
+                            {%- if (r.get('expires_ts', 0) | float(0)) <= (_sw_now_ts | float(0)) -%}
+                              {%- set ns.out = ns.out + [r] -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {{ ns.out }}
+                        _sw_rest: >-
+                          {%- set ns = namespace(d={}) -%}
+                          {%- for k, r in (_ov_all.items() if _ov_all is mapping else []) -%}
+                            {%- if (r.get('expires_ts', 0) | float(0)) > (_sw_now_ts | float(0)) -%}
+                              {%- set ns.d = ns.d | combine({k: r}) -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {{ ns.d }}
+                    - if: "{{ _sw_expired | count > 0 }}"
+                      then:
+                        - variables:
+                            _new_sm_val: "{{ _sm_val | combine({'_overrides': _sw_rest}) }}"
+                        - action: script.zen_sutra_filecabinet
+                          data:
+                            mode: update
+                            write_mode: replace
+                            force_action: true
+                            volume_entity_id: ["{{ _hh_cab }}"]
+                            key: security_manager
+                            value: "{{ _new_sm_val | tojson }}"
+                            caller_token: "{{ _token }}/security_manager_override_sweep"
+                          response_variable: _sw_fc_result
+                        - repeat:
+                            for_each: "{{ _sw_expired }}"
+                            sequence:
+                              - action: script.zen_dojotools_security_manager
+                                continue_on_error: true
+                                data:
+                                  action: ledger_add
+                                  ledger_kind: override_expired
+                                  ledger_source: "{{ repeat.item.get('kind', '') }}"
+                                  ledger_summary: "The {{ repeat.item.get('kind', '') | replace('_', ' ') }} override reached its end time and was ended. Whatever started it is told to put security back{{ (' to ' ~ (repeat.item.get('from', '') | replace('_', ' '))) if repeat.item.get('from', '') != '' else '' }}."
+                              - event: zen_event
+                                event_data:
+                                  event:
+                                    kind: security_override_expired
+                                    override: "{{ repeat.item }}"
+                    - variables:
+                        result:
+                          status: ok
+                          action: override_sweep
+                          swept_count: "{{ _sw_expired | count }}"
+                          swept: "{{ _sw_expired }}"
+                          remaining_count: "{{ _sw_rest | count }}"
+
+            # ── OVERRIDE_END (internal) — remove a temporary override ────────────
+            # Returns the record that was in force so the caller can revert what it
+            # changed. Same internal-only guard as override_set.
+            - conditions: "{{ _action == 'override_end' }}"
+              sequence:
+                - variables:
+                    _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+                    _hh_vars: >-
+                      {{ state_attr(_hh_cab, 'variables') | default({}, true) }}
+                    _sm_drawer: "{{ _hh_vars.get('security_manager', {}) }}"
+                    _ov_user: "{{ (context.user_id if context is defined else '') or '' }}"
+                - variables:
+                    _sm_val: >-
+                      {%- set d = _sm_drawer -%}
+                      {{ d.get('value', d) if d is mapping else {} }}
+                - variables:
+                    _ov_all: "{{ _sm_val.get('_overrides', {}) }}"
+                - choose:
+                    - conditions: "{{ _ov_user != '' }}"
+                      sequence:
+                        - variables:
+                            result:
+                              status: error
+                              action: override_end
+                              reason: "guarded: override_end is internal; only the automation that owns a behavior calls it."
+                    - conditions: "{{ _ov_kind == '' }}"
+                      sequence:
+                        - variables:
+                            result:
+                              status: error
+                              action: override_end
+                              error: missing_override_kind
+                              detail: "override_kind is required (for example vacuum_sync)."
+                    - conditions: "{{ _ov_all is not mapping or _ov_kind not in _ov_all }}"
+                      sequence:
+                        - variables:
+                            result:
+                              status: ok
+                              action: override_end
+                              found: false
+                              note: "No override of that kind is in force."
+                  default:
+                    - variables:
+                        _ov_ended: "{{ _ov_all.get(_ov_kind, {}) }}"
+                        _ov_rest: >-
+                          {%- set ns = namespace(d={}) -%}
+                          {%- for k, r in _ov_all.items() -%}
+                            {%- if k != _ov_kind -%}
+                              {%- set ns.d = ns.d | combine({k: r}) -%}
+                            {%- endif -%}
+                          {%- endfor -%}
+                          {{ ns.d }}
+                    - variables:
+                        _new_sm_val: "{{ _sm_val | combine({'_overrides': _ov_rest}) }}"
+                    - action: script.zen_sutra_filecabinet
+                      data:
+                        mode: update
+                        write_mode: replace
+                        force_action: true
+                        volume_entity_id: ["{{ _hh_cab }}"]
+                        key: security_manager
+                        value: "{{ _new_sm_val | tojson }}"
+                        caller_token: "{{ _token }}/security_manager_override_end"
+                      response_variable: _ov_fc_result
+                    - action: script.zen_dojotools_security_manager
+                      continue_on_error: true
+                      data:
+                        action: ledger_add
+                        ledger_kind: override_end
+                        ledger_source: "{{ _ov_kind }}"
+                        ledger_summary: "The {{ _ov_kind | replace('_', ' ') }} override ended{{ (' (it had moved security from ' ~ (_ov_ended.get('from', '') | replace('_', ' ')) ~ ' to ' ~ (_ov_ended.get('to', '') | replace('_', ' ')) ~ ')') if _ov_ended.get('from', '') != '' else '' }}."
+                    - variables:
+                        result:
+                          status: ok
+                          action: override_end
+                          found: true
+                          ended: "{{ _ov_ended }}"
 
             # ── GET_POLICY (r) — read _alert_policy from household cabinet ──────
             - conditions: "{{ _action == 'get_policy' }}"
@@ -801,8 +1632,8 @@ script:
                             _new_val: "{{ _sm_val | combine({'_alert_policy': _new_policy}) }}"
                         - action: script.zen_sutra_filecabinet
                           data:
-                            action_type: update
-                            mode: replace
+                            mode: update
+                            write_mode: replace
                             force_action: true
                             volume_entity_id: ["{{ _hh_cab }}"]
                             key: security_manager
@@ -861,6 +1692,18 @@ script:
                                     {%- else -%}
                                       zenos.actuation.security_control cert level {{ _aac_cert_level }} is below the required minimum (1). Certify the default agent via persona_editor to enable auto-arm config changes.
                                     {%- endif -%}
+                        # A behavior that makes temporary overrides cannot be turned on
+                        # without Spook: the Zen Security Sentry ends overrides and only
+                        # runs when Spook's trigger platforms work (see _sp_ok above).
+                        # Turning one off is always allowed.
+                        - conditions: "{{ not _sp_ok and ((_auto_arm_patch | from_json({})).get('vac_arm_override_enabled', false) | bool(false)) }}"
+                          sequence:
+                            - variables:
+                                result:
+                                  status: error
+                                  action: auto_arm_config
+                                  error: spook_required
+                                  detail: "vac_arm_override_enabled makes temporary overrides, and an override needs the Zen Security Sentry to end it. The Sentry needs Spook's trigger platforms and is not running (automation.zen_security_sentry is not on), so nothing was changed. Install or update Spook first. Turning the setting off is always allowed."
                       default:
                         - variables:
                             _hh_cab: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
@@ -878,8 +1721,8 @@ script:
                             _new_sm_val: "{{ _sm_val | combine({'_auto_arm_config': _new_aa_cfg}) }}"
                         - action: script.zen_sutra_filecabinet
                           data:
-                            action_type: update
-                            mode: replace
+                            mode: update
+                            write_mode: replace
                             force_action: true
                             volume_entity_id: ["{{ _hh_cab }}"]
                             key: security_manager
@@ -993,8 +1836,8 @@ script:
                                           continue_on_error: true
                                     - action: script.zen_sutra_filecabinet
                                       data:
-                                        action_type: update
-                                        mode: replace
+                                        mode: update
+                                        write_mode: replace
                                         force_action: true
                                         volume_entity_id: ["{{ _hh_cab }}"]
                                         key: security_manager
@@ -1039,8 +1882,8 @@ script:
                                       target: { entity_id: "{{ _aa_panel_entity }}" }
                                     - action: script.zen_sutra_filecabinet
                                       data:
-                                        action_type: update
-                                        mode: replace
+                                        mode: update
+                                        write_mode: replace
                                         force_action: true
                                         volume_entity_id: ["{{ _hh_cab }}"]
                                         key: security_manager
@@ -1316,8 +2159,8 @@ script:
                                                   target: { entity_id: "{{ _aa_panel_entity }}" }
                                                 - action: script.zen_sutra_filecabinet
                                                   data:
-                                                    action_type: update
-                                                    mode: replace
+                                                    mode: update
+                                                    write_mode: replace
                                                     force_action: true
                                                     volume_entity_id: ["{{ _hh_cab }}"]
                                                     key: security_manager
@@ -1651,6 +2494,14 @@ script:
                     _sm_actions:
                       read_state: "Default. Full panel snapshot: state, zones (open/fault/bypass), system health, keypad, chime, panic buttons, cameras_by_area. Read, no cert."
                       query: "List every alarm_control_panel entity tagged label:alarm_panel with its live state. Read, no cert."
+                      readiness: "Can the house arm now? Returns ready, blockers (a pending or triggered panel, the panel saying it is not ready, an open or faulted panel zone that is not bypassed, an open or unreadable labeled door, window or garage door, a jammed or unreadable exterior lock), fixable (unlocked exterior locks), notes (bypassed zones), blind (nothing visible was checked) and a one-line summary. Reads the panel's own zones and labels alarm_panel, zen_door, ext_lock. Read, no cert."
+                      override_list: "The temporary overrides in force (a change the system made to the panel on its own, for example Away to Home while the vacuum runs): kind, from, to, why, since, expires_at, minutes_left, ceiling. Read, no cert. Say so when asked about security."
+                      override_set: "Internal -- the automation that owns a behavior begins or extends an override (override_kind, override_from, override_to, override_reason, override_minutes, override_max_minutes, override_consent). Refused from any user or agent session."
+                      override_end: "Internal -- remove an override (override_kind) and return the record so the caller can revert. Refused from any user or agent session."
+                      override_sweep: "Internal -- the Zen Security Sentry ends every override whose time has passed: one ledger line each and a zen_event security_override_expired so the owning behavior can restore the panel. Never touches the panel. Refused from any user or agent session."
+                      activity: "What security has done on its own, and declined to do: the activity ledger, newest first. activity_hours (default 24, at most 168) and activity_limit (default 50, at most 150). Read, no cert. Say what it shows when asked about security."
+                      lens: "The security answer other tools use (Room Manager's home overview): the panel and its state, ready and blocker count, any temporary override as a plain sentence, the last ledger line, and one plain line. Calls readiness, override_list and activity. Read, no cert."
+                      ledger_add: "Internal -- a behavior records what it did or declined (ledger_kind, ledger_summary, ledger_source, ledger_detail). Keeps at most 150 entries, at most 7 days old. Refused from any user or agent session."
                       get_policy: "Read _alert_policy from the household cabinet security_manager drawer, optionally scoped. Read, no cert."
                       arm: "Arm the panel. Requires arm_mode= (away|home|night|vacation). Requires zenos.actuation.security_control cert."
                       set_alert_policy: "Merge policy_patch (JSON) into _alert_policy. Requires zenos.actuation.security_control cert."
@@ -1673,6 +2524,14 @@ script:
                       actions:
                         read_state: "Default. Full panel snapshot: state, zones (open/fault/bypass), system health, keypad, chime, panic buttons, cameras_by_area. Read, no cert."
                         query: "List every alarm_control_panel entity tagged label:alarm_panel with its live state. Read, no cert."
+                        readiness: "Can the house arm now? Returns ready, blockers (a pending or triggered panel, the panel saying it is not ready, an open or faulted panel zone that is not bypassed, an open or unreadable labeled door, window or garage door, a jammed or unreadable exterior lock), fixable (unlocked exterior locks), notes (bypassed zones), blind (nothing visible was checked), checked counts and a one-line summary. Reads the panel's own zones and labels alarm_panel, zen_door, ext_lock. Read, no cert."
+                        override_list: "The temporary overrides in force (a change the system made to the panel on its own, for example Away to Home while the vacuum runs): kind, from, to, why, since, expires_at, minutes_left, ceiling. Read, no cert. Say so when asked about security."
+                        override_set: "Internal -- the automation that owns a behavior begins or extends an override. The expiry never passes the override's start plus its ceiling (default 180 min); a longer ask is clamped and counted. Refused from any user or agent session."
+                        override_end: "Internal -- remove an override and return the record so the caller can revert. Refused from any user or agent session."
+                        override_sweep: "Internal -- the Zen Security Sentry ends every override whose time has passed: one ledger line each and a zen_event security_override_expired so the owning behavior can restore the panel. Never touches the panel. Refused from any user or agent session."
+                        activity: "What security has done on its own, and declined to do: the activity ledger, newest first. activity_hours (default 24, at most 168) and activity_limit (default 50, at most 150). Read, no cert. Say what it shows when asked about security."
+                        lens: "The security answer other tools use (Room Manager's home overview): the panel and its state, ready and blocker count, any temporary override as a plain sentence, the last ledger line, and one plain line. Calls readiness, override_list and activity, and never calls Room Manager. Read, no cert."
+                        ledger_add: "Internal -- a behavior records what it did or declined (ledger_kind, ledger_summary, ledger_source, ledger_detail). Keeps at most 150 entries, at most 7 days old. Refused from any user or agent session."
                         get_policy: "Read _alert_policy from the household cabinet security_manager drawer, optionally scoped. Read, no cert."
                         arm: "Arm the panel. Requires arm_mode= (away|home|night|vacation). Requires zenos.actuation.security_control cert."
                         set_alert_policy: "Merge policy_patch (JSON) into _alert_policy -- partial update, existing keys not in the patch are preserved. Requires zenos.actuation.security_control cert."
@@ -1687,7 +2546,8 @@ script:
                         auto_arm_patch: "JSON string for auto_arm_config, partial merge. See auto_arm_config field docs for the full key list (auto_arm_enabled, vac_arm_override_enabled, night_arm_enabled, mode_away_arm_enabled, entertaining_blocks_night_arm, alarm_drives_home_mode_enabled, disarm_occupies_arrival_area_enabled, lock_disarm_enabled)."
                         auto_arm_trigger: "Internal -- which event fired auto_arm_check (occupancy|vac_started|vac_docked). Set by the companion automation, not for direct agent calls."
                       cert_gates:
-                        read_tier: "read_state, query, get_policy -- always open, no cert."
+                        read_tier: "read_state, query, readiness, override_list, activity, lens, get_policy -- always open, no cert."
+                        internal_tier: "auto_arm_check, override_set, override_end, override_sweep, ledger_add -- refused from any session that has a user; only the automations that own a behavior call them."
                         act_tier: "arm, set_alert_policy, auto_arm_config -- require the zenos.actuation.security_control cert (same resolve_caller_identity chokepoint as locks' zenos.actuation.lock_control)."
                         disarm_tier: "disarm -- zenos.actuation.security_control cert PLUS a fresh live household-admin ack every single call, never reusable."
           default:
@@ -1998,3 +2858,39 @@ automation:
           auto_arm_trigger: "{{ trigger.id }}"
     mode: queued
     max: 10
+
+  # The Sentry holds the behaviors that need Spook trigger platforms. It is a
+  # separate automation from the Auto-Arm Watcher above on purpose: Home Assistant
+  # disables a whole automation when any one trigger is invalid, so a missing or
+  # changed Spook would switch off everything in the automation that names it. Here
+  # that costs only the Sentry; the watcher keeps running on core triggers alone.
+  - id: zen_security_sentry
+    alias: Zen Security Sentry
+    description: >-
+      Spook-trigger behaviors for Security Manager. First job: every minute, if an
+      override exists in the security_manager drawer, call action=override_sweep to
+      end any whose time has passed (ledger line and zen_event each; the panel
+      itself is left to the behavior that owns the override). A cron trigger, not
+      spook.while: while fires when its condition arrives and then on its interval,
+      but not for a condition already true when the automation starts, so an
+      override left over from before a restart or re-enable would never be swept.
+    triggers:
+      - trigger: spook.cron
+        id: override_sweep
+        options:
+          schedule: "* * * * *"
+    conditions:
+      - condition: template
+        value_template: >-
+          {% set cab = states('sensor.zen_default_household_cabinet_resolved') %}
+          {% set v = state_attr(cab, 'variables') if cab not in ['', 'unknown', 'unavailable'] else none %}
+          {% set d = v.get('security_manager', {}) if v is mapping else {} %}
+          {% set val = d.get('value', d) if d is mapping else {} %}
+          {% set val = (val | from_json({})) if val is string else val %}
+          {{ (val.get('_overrides', {}) | count) > 0 if val is mapping else false }}
+    actions:
+      - action: script.zen_dojotools_security_manager
+        data:
+          action: override_sweep
+    mode: single
+    max_exceeded: silent
