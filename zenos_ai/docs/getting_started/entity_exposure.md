@@ -57,6 +57,7 @@ Expose the agent-facing ZenOS tools. These are your AI's hands. Without them OOB
 | Expose | Why |
 |---|---|
 | `script.zen_dojotools_*` | The agent-facing tool surface: Room Manager, Labels, Identity, FileCabinet, AlertManager, Postman, ZenLux, Locks, and the rest |
+| `script.zen_flynn_oobe` | Onboarding. Your agent runs this to start OOBE, check its status, and finish it. It is not a `zen_dojotools_*` script, so the line above does not cover it |
 
 Two DojoTools declare themselves internal in their own manifests (`mcp_exposed: false`) and stay unexposed by default. `zen_dojotools_lens_dispatch` is called by Library on the agent's behalf. `zen_dojotools_filecabinet_gc` runs on the Scheduler's own schedule; expose it only if you want your agent able to force a garbage-collection run.
 
@@ -127,6 +128,7 @@ In Settings → Voice assistants → Expose, turn off "expose new entities by de
 In the Expose list:
 
 * Expose `script.zen_dojotools_*`, apart from the two internal ones above and any domain tools you do not use.
+* Expose `script.zen_flynn_oobe`, so your agent can run onboarding. It is not a `zen_dojotools_*` script.
 * Unexpose every other entity, including lights, locks, thermostats, and helpers you exposed under an earlier release.
 
 The ZenOS helpers (`input_text.zenos_conversation_agent`, `input_select.zen_home_mode`) no longer need to be exposed. The prompt layer reads them directly, and your AI reads or sets home mode through `zen_dojotools_systemtools mode=home_mode`. Put `select.zenos_conversation_agent` and `select.zenos_active_persona` on a dashboard for yourself; they write the same helpers as dropdowns.
