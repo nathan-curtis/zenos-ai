@@ -1,6 +1,14 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Security Manager
-# Version: 5.18.0
+# Version: 5.19.0
+# v5.19.0: optional notice when a room reads occupied while the panel is armed Away.
+#   New setting notify_occupied_while_away (auto_arm_config, default off). A template
+#   trigger on the Auto-Arm Watcher (room_occupied_away: panel armed Away and a
+#   zen_room_state room occupied, engaged or asleep for two minutes) calls auto_arm_check,
+#   which, only when the setting is on, no override is in force and the panel is still
+#   armed Away, writes a ledger line and sends one push naming the rooms. The panel is
+#   never changed, and it works with auto_arm_enabled off. The read shows it under
+#   notice_settings.
 # v5.18.0: the vacuum downgrade runs on the override record.
 #   When the vacuum starts while armed Away and vac_arm_override_enabled is on, the
 #   person gets the Cancel notice; unless they cancel, the panel goes to Home and a
@@ -479,7 +487,7 @@ script:
                     summary='Alarm panel, perimeter, and auto-arm',
                     display_name='Security Manager',
                     tier='dojotools',
-                    version='5.18.0',
+                    version='5.19.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools', 'zen_kfc_provider'],
                     optional_labels=['security_manager', 'alarm'],
@@ -1770,6 +1778,10 @@ script:
                                 vac_downgrade_dock_wait_min:
                                   value: "{{ _sm_val.get('_auto_arm_config', {}).get('vac_downgrade_dock_wait_min', 5) | int(5) }}"
                                   means: "Minutes to wait after the dock before putting Away back (a mop wash docks mid-run; one minute after a cancelled run)."
+                              notice_settings:
+                                notify_occupied_while_away:
+                                  value: "{{ _sm_val.get('_auto_arm_config', {}).get('notify_occupied_while_away', false) | bool(false) }}"
+                                  means: "While the panel is armed Away, send one notice (and a ledger line) when a room reads occupied, engaged or asleep for two minutes. Default off: a pet or a visitor can set it off. The panel is never changed."
                               note: "Settings not listed are at their default, which is off. Pass auto_arm_patch (JSON) to change them; that needs the zenos.actuation.security_control cert. vac_arm_override_enabled also needs the Zen Security Sentry running (sentry_state on), which needs Spook."
                   default:
                     - action: script.zen_dojotools_identity
@@ -1896,6 +1908,58 @@ script:
                               status: error
                               action: auto_arm_check
                               reason: "guarded: auto_arm_check is internal; only the auto-arm automations call it. Use mode=arm or mode=disarm."
+                    # A room reads occupied while the panel is armed Away: tell the
+                    # person, only when notify_occupied_while_away is on (default off).
+                    # It is a notice, not an arm or disarm, so it does not need
+                    # auto_arm_enabled. The panel is never touched. A vacuum downgrade
+                    # (any override) is not Away, and an override in force is skipped.
+                    - conditions: "{{ _aa_trigger == 'room_occupied_away' }}"
+                      sequence:
+                        - variables:
+                            _ro_on: "{{ _aa_cfg.get('notify_occupied_while_away', false) | bool(false) }}"
+                            _ro_panel: >-
+                              {%- set ns = namespace(found='') -%}
+                              {%- for eid in label_entities('alarm_panel') -%}
+                                {%- if ns.found == '' and eid.startswith('alarm_control_panel.') -%}{%- set ns.found = eid -%}{%- endif -%}
+                              {%- endfor -%}
+                              {{ ns.found }}
+                            _ro_rooms: >-
+                              {%- set ns = namespace(o=[]) -%}
+                              {%- for e in expand(label_entities('zen_room_state')) if e.state in ['occupied', 'engaged', 'asleep'] -%}
+                                {%- set ns.o = ns.o + [(area_name(e.entity_id) or e.name) ~ ' (' ~ e.state ~ ')'] -%}
+                              {%- endfor -%}
+                              {{ ns.o }}
+                            _ro_override: "{{ (_sm_val.get('_overrides', {}) | count) > 0 }}"
+                        - variables:
+                            _ro_go: "{{ _ro_on and _ro_panel != '' and states(_ro_panel) == 'armed_away' and (_ro_rooms | count) > 0 and not _ro_override }}"
+                        - if: "{{ _ro_go }}"
+                          then:
+                            - action: script.zen_dojotools_security_manager
+                              continue_on_error: true
+                              data:
+                                action: ledger_add
+                                ledger_kind: occupied_while_away
+                                ledger_source: room_state
+                                ledger_summary: "The alarm is armed Away but a room reads occupied: {{ _ro_rooms | join(', ') }}. You were notified. The panel was left as it is."
+                            - action: script.zen_dojotools_postman
+                              continue_on_error: true
+                              data:
+                                mode: resolve_and_dispatch
+                                title: "Someone may be home"
+                                message: >-
+                                  The alarm is armed Away, but a room reads occupied:
+                                  {{ _ro_rooms | join(', ') }}. The alarm panel was not changed.
+                                urgency: 7
+                                channel_hint: push
+                                response_type: ok
+                                tag: "pm_occupied_while_away_{{ now().timestamp() | int }}"
+                                ack_owner: security_manager
+                        - variables:
+                            result:
+                              status: ok
+                              action: auto_arm_check
+                              result: "{{ 'notified' if _ro_go else ('option_off' if not _ro_on else 'not_applicable') }}"
+                              rooms: "{{ _ro_rooms }}"
                     - conditions: "{{ not _aa_enabled }}"
                       sequence:
                         - variables:
@@ -2896,7 +2960,7 @@ script:
                         arm_mode: "away | home | night | vacation. Required for action=arm."
                         panel: "alarm_control_panel entity_id override. Omit to auto-discover via label:alarm_panel."
                         policy_patch: "JSON string, event_type -> policy overrides. Required for set_alert_policy. Event types: alarm_triggered, alarm_pending, alarm_arm_away, alarm_arm_home, alarm_arm_night, alarm_disarm, panel_fault, smoke_co, door_open_armed, door_open_night, garage_open_armed, lock_unlocked_armed, lock_unlocked_night, lock_changed, person_detected_armed. Per-entry keys: urgency (1-10), notify (bool), channel_hint, title."
-                        auto_arm_patch: "JSON string for auto_arm_config, partial merge. See auto_arm_config field docs for the full key list (auto_arm_enabled, vac_arm_override_enabled, night_arm_enabled, mode_away_arm_enabled, entertaining_blocks_night_arm, alarm_drives_home_mode_enabled, disarm_occupies_arrival_area_enabled, lock_disarm_enabled)."
+                        auto_arm_patch: "JSON string for auto_arm_config, partial merge. See auto_arm_config field docs for the full key list (auto_arm_enabled, vac_arm_override_enabled, notify_occupied_while_away, night_arm_enabled, mode_away_arm_enabled, entertaining_blocks_night_arm, alarm_drives_home_mode_enabled, disarm_occupies_arrival_area_enabled, lock_disarm_enabled)."
                         auto_arm_trigger: "Internal -- which event fired auto_arm_check (occupancy|vac_started|vac_docked|override_expired|and the panel, lock and home-mode triggers). Set by the companion automation, not for direct agent calls."
                       cert_gates:
                         read_tier: "read_state, query, readiness, override_list, activity, lens, get_policy -- always open, no cert."
@@ -3220,6 +3284,16 @@ automation:
         target:
           label_id: ext_lock
         id: lock_unlocked
+      # A room reads occupied, engaged or asleep for two minutes while the panel is
+      # armed Away. The handler only acts when notify_occupied_while_away is on (default
+      # off). expand(label_entities(...)) is used, not states() over a label result:
+      # that chain does not track reliably in a template trigger.
+      - trigger: template
+        value_template: >-
+          {{ (expand(label_entities('alarm_panel')) | selectattr('state', 'eq', 'armed_away') | list | count > 0)
+             and (expand(label_entities('zen_room_state')) | selectattr('state', 'in', ['occupied', 'engaged', 'asleep']) | list | count > 0) }}
+        for: "00:02:00"
+        id: room_occupied_away
     conditions: []
     actions:
       - action: script.zen_dojotools_security_manager
