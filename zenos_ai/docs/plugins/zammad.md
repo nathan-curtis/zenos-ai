@@ -160,8 +160,8 @@ A successful configure call connects to Zammad, writes the URL to `integrations_
 
 | Version | Change |
 |---------|--------|
-| v0.5.6 (2026.12.0) | `configure` writes are gated: saving the service desk url needs the new cert `zenos.service.admin` level 2 (stage i), declared in `tool_manifest`, on top of the live ack. `inspect` stays open. |
-| v0.5.5 (2026.12.0) | `configure` no longer sends the stored API token to a URL nobody approved. A url that isn't the stored one (a change, or the first url on a fresh install) needs a fresh live ack from a person. Before, a caller could point the integration at a host it controls and receive the token. |
+| v0.5.6 (2026.11.1) | `configure` writes are gated: saving the service desk url needs the new cert `zenos.service.admin` level 2 (stage i), declared in `tool_manifest`, on top of the live ack. `inspect` stays open. |
+| v0.5.5 (2026.11.1) | `configure` no longer sends the stored API token to a URL nobody approved. A url that isn't the stored one (a change, or the first url on a fresh install) needs a fresh live ack from a person. Before, a caller could point the integration at a host it controls and receive the token. |
 | v0.5.4 (2026.11.0) | Lens fixes. `tickets_by_anchor` uses the `query/page/per_page` search, reads either reply shape, and returns `evidence[]` (`ticket_evidence`). `zen_stack_radar` carries the bus's top-level anchors and answers `by_anchor` as `{status, count, evidence}`. An anchor is attributed by tag only, so Radar finds tickets tagged with an area or label slug. |
 | v0.5.3 (2026.11.0) | HA naming: name outputs carry `entity_name` and `device_name` next to the legacy `friendly_name`. |
 | v0.5.2 (2026.11.0) | `ticket_untag` and `ticket_retag`. A missing required field returns `reason: "guarded: input_json.<field> is required for <mode>"` next to the unchanged `message`. The help version matches the header (it said 0.4.0). |
