@@ -1,6 +1,8 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.19.2
+**Version:** 5.19.3
+
+> **2026.12.0 (5.19.3):** `summary` reports `occupied_while_away` (urgency 3) and `away_occupied_rooms[]` when the panel is armed Away and a room reads occupied, engaged or asleep (lights or media alone do not count, and a vacuum downgrade is not Away); `all_quiet` is false then. The `autovac` block of `home_overview` gains `run_state` (`active`, `queued`, `idle`), `run_on_away` and `security_downgrade`. Security Manager can also notify on it (`notify_occupied_while_away`, off by default).
 
 > **2026.12.0 (5.19.2):** the `security` block of `home_overview` and `summary` carries a temporary security override when one exists: `temporary_override` (the record), `stuck_overrides` (one that outlived its time and was not ended) and `override_line`, a plain sentence such as "Security is temporarily armed home instead of armed away; it should return about 10:53.", read from Security Manager `lens`. With no override the block is unchanged.
 

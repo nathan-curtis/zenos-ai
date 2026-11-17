@@ -1,8 +1,8 @@
 # ZenOS-AI Security Manager
 
-**Version:** 5.18.0
+**Version:** 5.19.0
 
-> **2026.12.0 (5.10.0 to 5.18.0): the foundation and vacuum sync.** Four new reads, no cert: `readiness`, `override_list`, `activity` and `lens`. A record for temporary overrides and an activity ledger, with internal actions that only automations can call. A second automation, the Zen Security Sentry, ends overrides on time. The first behavior built on it is vacuum sync, off by default: with `vac_arm_override_enabled` on, the panel goes from Away to Home while the vacuum cleans and back to Away at the dock. `auto_arm_config` with no patch now reads the settings. See [Readiness, overrides and activity](#readiness-overrides-and-activity).
+> **2026.12.0 (5.10.0 to 5.19.0): the foundation and vacuum sync.** Four new reads, no cert: `readiness`, `override_list`, `activity` and `lens`. A record for temporary overrides and an activity ledger, with internal actions that only automations can call. A second automation, the Zen Security Sentry, ends overrides on time. The first behavior built on it is vacuum sync, off by default: with `vac_arm_override_enabled` on, the panel goes from Away to Home while the vacuum cleans and back to Away at the dock. An optional notice when a room reads occupied while armed Away (`notify_occupied_while_away`, off by default). `auto_arm_config` with no patch now reads the settings. See [Readiness, overrides and activity](#readiness-overrides-and-activity) and [Occupied while away](#occupied-while-away).
 
 > **2026.11.0 (5.9.1, 5.9.2):** `auto_arm_check` is refused from a user or agent session; only the auto-arm automations call it. A `zone.home` that is unknown or unavailable is never an empty house: the count reads -1, nothing arms and the arrival path doesn't run, and the Night-Late and Away watchers ignore a change from unknown or unavailable (a template reload).
 
@@ -93,6 +93,10 @@ A second automation, kept apart from the Auto-Arm Watcher so a missing or change
 A reload or restart during a run cannot strand the panel at Home: each minute the Sentry reconciles. A docked vacuum past the dock wait plus two minutes with Autovac idle ends the override and restores Away.
 
 `auto_arm_config` returns a `vacuum` block saying whether these settings apply here: `ready`, `no_vacuum` (nothing labeled `autovac`), `autovac_missing`, `autovac_disabled` or `vacuum_unavailable`. Turning `vac_arm_override_enabled` on is refused with `vacuum_required` in the first three; turning it off is always allowed. Autovac's configure shows and edits the two vacuum settings but hands the edit here.
+
+### Occupied while away
+
+`notify_occupied_while_away` (off by default, set through `auto_arm_config`; `auto_arm_enabled` does not need to be on) sends one notice when the panel is armed Away and a room reads occupied, engaged or asleep for two minutes. It writes a ledger line (`occupied_while_away`) naming the rooms and sends a push; the panel is never changed. A vacuum downgrade or any override in force is skipped. A pet or a visitor can set it off, which is why it is off by default. The Auto-Arm Watcher fires it from a template trigger over the `alarm_panel` and `zen_room_state` labels; the read shows the setting under `notice_settings`. Room Manager `summary` reports the same condition as `occupied_while_away`.
 
 ### Who runs as whom
 
