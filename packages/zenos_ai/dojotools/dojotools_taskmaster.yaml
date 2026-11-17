@@ -1,6 +1,12 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Taskmaster
-# Version: 0.9.3
+# Version: 0.10.0
+# v0.10.0: briefing and almanac read the weather from the Weather tool (mode=summary)
+#   when it is installed: context.weather adds source, unit, temp_high, temp_low,
+#   urgency and hazards[] (each {reason, first_at, peak, unit, score}). almanac's
+#   headline leads with the worst forecast hazard that needs action (score 3+), and its
+#   weather section adds the high, low and hazards. Without the Weather tool the
+#   entity is read directly as before, now also by the main_weather label.
 # v0.9.3: the default To Do list is found by label (taskmaster_default, else the first
 #   list labeled taskmaster) instead of a list name written in this file.
 # v0.9.2: (previous)
@@ -94,7 +100,7 @@ script:
                 summary='Tasks and the day ahead; ask it any when question',
                 display_name='Taskmaster',
                 tier='dojotools',
-                version='0.9.3',
+                version='0.10.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools', 'zen_kfc_provider'],
                 optional_labels=['taskmaster', 'todo', 'radar', 'inventory', 'crm'],
@@ -391,7 +397,7 @@ script:
             intent: Self-provisioning audit + fix — checks whether zen_kfc_provider label is applied (bootstrap_kfc discovery) and whether zen_dojotools_taskmaster is on the summarizer seed whitelist (live briefing seed vs index-fallback). Both checked live, both fixed automatically unless dry_run=true. Same shape as zen_dojotools_autovac mode=setup.
             optional: [dry_run (report only, no writes, default false)]
           almanac:
-            intent: "The WHEN root: one condensed answer to what is relevant now. Leads with a short headline list, then: now (time, home_mode, schedule period, next transition and minutes to it, quiet/work hours), vacation (active, plus upcoming within lookahead_days, from zen_vacation_mode calendars), events inside horizon_hours (calendars labeled almanac plus Rolodex appointments; ongoing ones flagged), tasks due now (due by end of today or action_required, most urgent then oldest first, with overdue/due_today/stale counts), today's meals and prep, guests, weather. Sections with nothing relevant are omitted. Ask here first for any 'when' question; go to zen_dojotools_calendar for full calendar detail and zen_dojotools_history for the past."
+            intent: "The WHEN root: one condensed answer to what is relevant now. Leads with a short headline list, then: now (time, home_mode, schedule period, next transition and minutes to it, quiet/work hours), vacation (active, plus upcoming within lookahead_days, from zen_vacation_mode calendars), events inside horizon_hours (calendars labeled almanac plus Rolodex appointments; ongoing ones flagged), tasks due now (due by end of today or action_required, most urgent then oldest first, with overdue/due_today/stale counts), today's meals and prep, guests, weather (from the Weather tool when installed: now, the next 24 hours' high and low, and forecast hazards such as freeze, storm or high wind with when they start; the worst one that needs action leads the headline). Sections with nothing relevant are omitted. Ask here first for any 'when' question; go to zen_dojotools_calendar for full calendar detail and zen_dojotools_history for the past."
             optional: [horizon_hours (event window, default 24, max 168), lookahead_days (vacation window, default 14, max 60), max_items (per list, default 5, max 20)]
             needs: []
           stale_review:
@@ -593,7 +599,7 @@ script:
                 status: help
                 message: "{{ _tm_help_message }}"
                 tool: Zen DojoTools Taskmaster
-                version: "0.9.3"
+                version: "0.10.0"
                 setup_status: "{{ 'complete' if _hl_setup_done else 'incomplete — run mode=setup' }}"
                 notice: >-
                   {{
@@ -1399,14 +1405,29 @@ script:
                   {%- set ns.items = ns.items + [{'title': a.get('title', a.get('summary', '')), 'start': a.get('start', a.get('start_date', none))}] -%}
                 {%- endfor -%}
                 {{ ns.items }}
-          # ── weather: same resolution pattern as room_manager's home_overview ─
+          # ── weather: from the Weather tool when it is installed (optional): now, the
+          # next 24 hours' high and low, and the forecast hazards (freeze, heat, storm,
+          # wind, rain, snow) with when each starts. Without it, the weather entity is
+          # read directly (label main_weather, then zen_weather, then the first
+          # weather.* entity) for the condition and temperature now.
+          - action: script.zen_dojotools_weather
+            enabled: "{{ states('script.zen_dojotools_weather') in ['on', 'off'] }}"
+            continue_on_error: true
+            data:
+              mode: summary
+            response_variable: _br_wx
           - variables:
+              _br_wxr: >-
+                {%- set r = _br_wx.get('result', {}) if (_br_wx is defined and _br_wx is mapping) else {} -%}
+                {{ r if (r is mapping and r.get('status') == 'ok' and r.get('now') is mapping and r.get('now', {}).get('condition')) else {} }}
               _br_weather_entity: >-
-                {%- set _we = label_entities('zen_weather') | select('match', 'weather\\.') | list | first | default('') -%}
+                {%- set _we = (label_entities('main_weather') + label_entities('zen_weather')) | select('match', 'weather\\.') | list | first | default('') -%}
                 {{ _we if _we != '' else (states.weather | map(attribute='entity_id') | list | first | default('')) }}
-              _br_weather_condition: "{{ states(_br_weather_entity) if _br_weather_entity != '' else '' }}"
           - variables:
-              _br_weather_available: "{{ _br_weather_entity != '' and _br_weather_condition not in ['unavailable', 'unknown', ''] }}"
+              _br_weather_condition: >-
+                {{ _br_wxr.now.condition if _br_wxr else (states(_br_weather_entity) if _br_weather_entity != '' else '') }}
+          - variables:
+              _br_weather_available: "{{ (_br_wxr | count > 0) or (_br_weather_entity != '' and _br_weather_condition not in ['unavailable', 'unknown', '']) }}"
               _br_outdoor_ok: >-
                 {{ _br_weather_condition not in ['rainy', 'pouring', 'lightning', 'lightning-rainy', 'snowy', 'snowy-rainy', 'hail'] if _br_weather_available else true }}
               _br_context:
@@ -1424,8 +1445,14 @@ script:
                 weather:
                   available: "{{ _br_weather_available }}"
                   condition: "{{ _br_weather_condition if _br_weather_available else none }}"
-                  temperature: "{{ state_attr(_br_weather_entity, 'temperature') if _br_weather_available else none }}"
+                  temperature: "{{ (_br_wxr.now.temperature if _br_wxr else state_attr(_br_weather_entity, 'temperature')) if _br_weather_available else none }}"
                   outdoor_ok: "{{ _br_outdoor_ok }}"
+                  source: "{{ 'weather_tool' if _br_wxr else ('entity' if _br_weather_available else none) }}"
+                  unit: "{{ (_br_wxr.get('units', {}) or {}).get('temperature') if _br_wxr else (state_attr(_br_weather_entity, 'temperature_unit') if _br_weather_available else none) }}"
+                  temp_high: "{{ (_br_wxr.get('next_24h', {}) or {}).get('temp_high') if _br_wxr else none }}"
+                  temp_low: "{{ (_br_wxr.get('next_24h', {}) or {}).get('temp_low') if _br_wxr else none }}"
+                  urgency: "{{ _br_wxr.get('urgency', 0) if _br_wxr else none }}"
+                  hazards: "{{ _br_wxr.get('hazards', []) if _br_wxr else [] }}"
           - variables:
               final_response:
                 status: success
@@ -1799,7 +1826,13 @@ script:
                 {%- if od + dt > 0 -%}{%- set ns.h = ns.h + ['Tasks: ' ~ od ~ ' overdue, ' ~ dt ~ ' due today'] -%}{%- endif -%}
                 {%- for e in (_al_events.list | selectattr('all_day') | list)[:1] -%}{%- set ns.h = ns.h + ['Today: ' ~ e.title] -%}{%- endfor -%}
                 {%- for v in _al_vacation.upcoming[:1] -%}{%- set ns.h = ns.h + ['Coming up: ' ~ v.title ~ ' on ' ~ (v.start | string)[:10]] -%}{%- endfor -%}
-                {%- if w.get('available') and not w.get('outdoor_ok', true) -%}{%- set ns.h = ns.h + ['Weather: ' ~ w.get('condition')] -%}{%- endif -%}
+                {#- Weather: the worst forecast hazard that needs action (score 3+), else bad weather now. -#}
+                {%- set wh = (w.get('hazards') or []) | selectattr('score', 'defined') | selectattr('score', '>=', 3) | sort(attribute='score', reverse=true) | list -%}
+                {%- if w.get('available') and wh | count > 0 -%}
+                  {%- set hz = wh[0] -%}
+                  {%- set at = (hz.first_at | as_datetime(none)) if hz.first_at else none -%}
+                  {%- set ns.h = ns.h + ['Weather: ' ~ (hz.reason | replace('_', ' ')) ~ ((' from ' ~ (at | as_local).strftime('%a %H:%M')) if at else '') ~ ((' (' ~ hz.peak ~ (hz.unit or '') ~ ')') if hz.peak is number else '')] -%}
+                {%- elif w.get('available') and not w.get('outdoor_ok', true) -%}{%- set ns.h = ns.h + ['Weather: ' ~ w.get('condition')] -%}{%- endif -%}
                 {%- set out = {'status': 'success', 'mode': 'almanac', 'date': _al_today,
                                'now': {'time': now().strftime('%H:%M'), 'weekday': now().strftime('%A'),
                                        'home_mode': ctx.get('home_mode'), 'period': _al_period.get('period'),
@@ -1818,7 +1851,15 @@ script:
                 {%- if prep -%}{%- set out = out | combine({'prep': prep[:mx]}) -%}{%- endif -%}
                 {%- if _al_conflicts -%}{%- set out = out | combine({'meal_event_conflicts': _al_conflicts}) -%}{%- endif -%}
                 {%- if ctx.get('guest_present') -%}{%- set out = out | combine({'guests': ctx.get('guest_note')}) -%}{%- endif -%}
-                {%- if w.get('available') -%}{%- set out = out | combine({'weather': {'condition': w.get('condition'), 'temperature': w.get('temperature'), 'outdoor_ok': w.get('outdoor_ok')}}) -%}{%- endif -%}
+                {%- if w.get('available') -%}
+                  {%- set wo = {'condition': w.get('condition'), 'temperature': w.get('temperature'), 'outdoor_ok': w.get('outdoor_ok')} -%}
+                  {%- if w.get('source') == 'weather_tool' -%}
+                    {%- set wo = wo | combine({'unit': w.get('unit'), 'temp_high': w.get('temp_high'), 'temp_low': w.get('temp_low'), 'urgency': w.get('urgency', 0),
+                                              'hazards': ((w.get('hazards') or []) | map(attribute='reason') | list)[:mx]}) -%}
+                    {%- if (w.get('hazards') or []) | count > 0 -%}{%- set wo = wo | combine({'hazard_detail': (w.get('hazards') or [])[:mx]}) -%}{%- endif -%}
+                  {%- endif -%}
+                  {%- set out = out | combine({'weather': wo}) -%}
+                {%- endif -%}
                 {{ out | combine({'caller_token': caller_token}) }}
 
         # ── stale_review ──────────────────────────────────────────────────────
@@ -1995,7 +2036,7 @@ script:
       almanac is the WHEN root: ask it first for any time question. One condensed
       answer to what is relevant now (headline, home mode, schedule period and next
       transition, vacation, events in horizon_hours, tasks due now, meals, prep,
-      guests, weather); empty sections omitted.
+      guests, weather with forecast hazards); empty sections omitted.
       briefing is the scheduled seed (fires on quarter_hour + occupancy triggers, 60min
       cooldown): urgency-scored items plus a real (not LLM-guessed) situational
       context block: home_mode, guest_present, upcoming_appointments, prep_schedule

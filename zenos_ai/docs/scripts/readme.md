@@ -59,7 +59,7 @@ Read this diagram left to right by zone: authoring fills Dojo, triggers start wo
 
 ---
 
-## 0. Zen DojoTools Scribe — v5.15.0
+## 0. Zen DojoTools Scribe — v5.15.1
 **File:** [`zen_dojotools_scribe_readme.md`](zen_dojotools_scribe_readme.md)
 
 Guided authoring and lifecycle management for KF6 artifacts. Full lifecycle: `new_thought` → `patch` → `formalize_scroll` → `publish_kfc`. MCP-exposed — Friday can run the full authoring loop without operator intervention. `zen_dojotools_kungfu_writer` is retired; Scribe is the replacement.
@@ -122,7 +122,7 @@ The KF6 action pipeline — Ninja Summarizer (per-component kata writer) and Sup
 
 ---
 
-## 8. Zen DojoTools Library — v6.15.1
+## 8. Zen DojoTools Library — v6.15.5
 **File:** [`zen_dojotools_library_readme.md`](zen_dojotools_library_readme.md)
 
 Knowledge broker and Lens Bus owner. `stack=` routing to registered providers (`paperless`, `radar`, `wiki`, `media`). Generic verbs: `get/find/list/configure/by_anchor`. `section=catalog item_type=book|game|…` unified works catalog backed by Grocy — browse/find/search/add/loan/return with library science (dedup, loan lifecycle, location tracking). Compounding capability tiers: Library alone (Lens Bus) → +Grocy (circulation desk) → +Media Manager (music evidence with playback_hint) → +Room Manager now_playing (room-context evidence). `hash_md5` and `slugify` utility tools. `command_interpreter.jinja` removed in 2026.7.0.
@@ -150,6 +150,20 @@ General-purpose collection: `calculator`, `dice_roller`, `announce` (TTS by area
 
 ---
 
+## 11a. Zen DojoTools Climate — v2.4.1
+**File:** [`zen_dojotools_climate_readme.md`](zen_dojotools_climate_readme.md)
+
+GET+SET for `climate` and `fan` entities with topology context (open doors and windows, area sensors, HVAC bleed portals, natural vent advisory); setters need `zenos.actuation.climate_control`. Moved out of the Utilities bundle into its own file in 2026.12.0.
+
+---
+
+## 11b. Zen DojoTools Weather — v1.0.3
+**File:** [`zen_dojotools_weather_readme.md`](zen_dojotools_weather_readme.md)
+
+Weather now and the forecast with a locked schema (`schema_version` 1.0): the source is the entity labeled `main_weather`, else the first `weather.*`; `current`, `forecast` (averaged summary, high and low, flags for rain, snow, freeze, heat, wind and storm, named day parts) and a scored `summary` for the ambient-tier weather KFC. Read only; `zenos.weather.read` gates only the background seed.
+
+---
+
 ## 12. Zen DojoTools Core (FileCabinet GC) — v4.7.0
 **File:** [`zen_dojotools_core_readme.md`](zen_dojotools_core_readme.md)
 
@@ -157,7 +171,7 @@ FileCabinet garbage collector. Enforces drawer hide/delete/recycle lifecycle. `g
 
 ---
 
-## 13. Zen DojoTools SystemTools — v5.5.0
+## 13. Zen DojoTools SystemTools — v5.6.1
 **File:** [`zen_dojotools_systemtools_readme.md`](zen_dojotools_systemtools_readme.md)
 
 HA lifecycle management: config check, safe restart, update install/skip. Log viewer (five modes). Structured `zen_event` emission. `render_dojo` and `render_system` template render tools. `prompt_health` prompt integrity checker. `pipeline` summarizer pipeline status. Internal HA API wrapper (do NOT expose). Requires long-lived HA token in `secrets.yaml`. v5.2.0: `kfc_manifest` (KF5 self-registration, `zen_system` rollup component); `home_status`/`home_mode`, `quiet_hours`/`work_hours`, `scheduler_anchors`, `guest_mode`/`entertaining` — see [components/systemtools.md](../components/systemtools.md).

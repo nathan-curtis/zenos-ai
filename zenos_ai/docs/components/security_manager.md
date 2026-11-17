@@ -1,8 +1,8 @@
 # ZenOS-AI Security Manager
 
-**Version:** 5.19.0
+**Version:** 5.21.0
 
-> **2026.12.0 (5.10.0 to 5.19.0): the foundation and vacuum sync.** Four new reads, no cert: `readiness`, `override_list`, `activity` and `lens`. A record for temporary overrides and an activity ledger, with internal actions that only automations can call. A second automation, the Zen Security Sentry, ends overrides on time. The first behavior built on it is vacuum sync, off by default: with `vac_arm_override_enabled` on, the panel goes from Away to Home while the vacuum cleans and back to Away at the dock. An optional notice when a room reads occupied while armed Away (`notify_occupied_while_away`, off by default). `auto_arm_config` with no patch now reads the settings. See [Readiness, overrides and activity](#readiness-overrides-and-activity) and [Occupied while away](#occupied-while-away).
+> **2026.12.0 (5.10.0 to 5.21.0): the foundation, vacuum sync and lighting.** Four new reads, no cert: `readiness`, `override_list`, `activity` and `lens`. A record for temporary overrides and an activity ledger, with internal actions that only automations can call. A second automation, the Zen Security Sentry, ends overrides on time. The first behavior built on it is vacuum sync, off by default: with `vac_arm_override_enabled` on, the panel goes from Away to Home while the vacuum cleans and back to Away at the dock. An optional notice when a room reads occupied while armed Away, security lighting at dusk and dawn, and arrival lights after dark, each off by default. `auto_arm_config` with no patch now reads the settings. See [Readiness, overrides and activity](#readiness-overrides-and-activity) and [Occupied while away](#occupied-while-away).
 
 > **2026.11.0 (5.9.1, 5.9.2):** `auto_arm_check` is refused from a user or agent session; only the auto-arm automations call it. A `zone.home` that is unknown or unavailable is never an empty house: the count reads -1, nothing arms and the arrival path doesn't run, and the Night-Late and Away watchers ignore a change from unknown or unavailable (a template reload).
 
@@ -97,6 +97,18 @@ A reload or restart during a run cannot strand the panel at Home: each minute th
 ### Occupied while away
 
 `notify_occupied_while_away` (off by default, set through `auto_arm_config`; `auto_arm_enabled` does not need to be on) sends one notice when the panel is armed Away and a room reads occupied, engaged or asleep for two minutes. It writes a ledger line (`occupied_while_away`) naming the rooms and sends a push; the panel is never changed. A vacuum downgrade or any override in force is skipped. A pet or a visitor can set it off, which is why it is off by default. The Auto-Arm Watcher fires it from a template trigger over the `alarm_panel` and `zen_room_state` labels; the read shows the setting under `notice_settings`. Room Manager `summary` reports the same condition as `occupied_while_away`.
+
+### Dusk and dawn lighting
+
+`dusk_lights_enabled` (off by default) turns every light or switch carrying the `dusk_to_dawn` label on at civil dusk and off at civil dawn. `dusk_offset_min` and `dawn_offset_min` shift each time by minutes (negative is earlier; default 0). Set them through `auto_arm_config`; the read shows them under `lighting_settings` with the labeled entities. Two template triggers on the Auto-Arm Watcher read `sun.sun` `next_dusk` and `next_dawn` every minute, so each change lands within about a minute of its time; a start trigger sets the lights from the time of day after a restart. Each change writes a ledger line (`security_lights`). Nothing happens while nothing carries the label. The panel is never touched, and `auto_arm_enabled` does not apply.
+
+### Arrival lights
+
+`arrival_lights_enabled` (off by default) turns on the lights labeled `landing_lights` when a resident arrives home after dark. The arrival is a device tracker labeled `arrival_tracker` (normally the resident's phone) entering `zone.home`. A resident is a human user on the household cabinet, or in a family that belongs to it (two levels, as `membership` walks them), whose cabinet names a person entity. `arrival_lights_residents` can narrow it to named people (person entities or names); empty means every resident. After dark means the sun at or below `arrival_lights_dark_elevation` (default -6 degrees).
+
+Only the landing lights that were off are turned on, and the record of exactly those is kept in the household cabinet (`_security_arrival`). They are turned off again after `arrival_lights_minutes` (default 10), so lights that were already on, such as dusk-to-dawn porch lights, are never turned off by it. A second arrival inside the window extends the time. The off step acts on any record that has run out, whatever the setting, and again after a restart, so a light it turned on is never stranded. Each change writes a ledger line (`arrival_lights`) naming the resident. The read shows the settings under `arrival_settings` with the labeled lights and trackers.
+
+It prepares only. It never touches the alarm panel, and presence never disarms it.
 
 ### Who runs as whom
 

@@ -1,6 +1,10 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.19.3
+**Version:** 5.20.1
+
+> **2026.12.0 (5.20.1):** `home_overview` finds the weather entity by `main_weather` first (the Weather tool's label) and still reads `zen_weather`, so one label serves every tool.
+
+> **2026.12.0 (5.20.0):** `mode=hvac_coverage` says which areas each air handler serves and what is not covered. The designation is labels only: an air handler is the label `hvac_air_handler` or `hvac_air_handler_<n>` (the label its Grocy machine group carries, so Plant `mode=managed managed_labels=<label>` shows the equipment, parts and chores), put on every area the unit serves and on its thermostats. Two units can cover one area; the `_part` and `_chore` labels belong to the machine, not to coverage. Registered, non-exterior rooms in no unit's coverage are `uncovered_areas`; a unit with no areas is `units_without_areas`; a climate entity under no unit is `thermostats_unassigned` (spa and thermal loads are skipped). Read, no cert. The optional notice, `hvac_coverage_notice_enabled` (default off, `zenos.room.behavior_control`), adds the coverage line to `home_overview` (`domain_summaries.hvac_coverage`) and a `hvac_coverage_gap` reason (urgency 1, ambient) to `summary`.
 
 > **2026.12.0 (5.19.3):** `summary` reports `occupied_while_away` (urgency 3) and `away_occupied_rooms[]` when the panel is armed Away and a room reads occupied, engaged or asleep (lights or media alone do not count, and a vacuum downgrade is not Away); `all_quiet` is false then. The `autovac` block of `home_overview` gains `run_state` (`active`, `queued`, `idle`), `run_on_away` and `security_downgrade`. Security Manager can also notify on it (`notify_occupied_while_away`, off by default).
 
@@ -118,6 +122,7 @@ Room state is **off until you turn it on**. Nothing in setup, onboarding, or an 
 | `boundary_unlink` | Remove boundary link between two areas. |
 | `emergency` | Crisis snapshot for the whole home or a specific room. `scenario=fire\|burglar\|weather\|medical\|general`. Returns `guidance{action,advisory}`, `exits[]`, `shelter{primary/secondary/avoid}` (floor-tagged), `safety_equipment[]`, `hazards[]`, `likely_occupied[]`, `location{name,address,zip_code,gps}`, `rally_point`. Pass `area=` to add `from_room{room_exits,adjacent_exits,nearest_shelter}`. |
 | `setup_coverage` | Read-only report of how much of the house Room Manager knows: per area registered, layout, managed, floor and exits, plus the household address and rally point. Returns a color (green, yellow, red), `incomplete[]` and a `next_step`. Same definition as `sensor.zen_room_manager_health`. Informational only; nothing is gated on it. |
+| `hvac_coverage` | Which areas each air handler serves and what is not covered; `hvac_coverage_notice_enabled` turns the optional overview line on or off. See the 5.20.0 note. |
 | `home_overview` | Whole-house snapshot: `signal{}`, `alerts{}`, `domain_summaries{}`, `floors[]`, `weather{}`, `plant{}`, `home_mode`, `utility_index{}`. Optional: `include_notices=true`, `include_presence=true`. No `area=` needed. |
 | `area_create` | Create a new HA area, apply `room_layout` label, and optionally init topology in one call. `area_name=` required. `floor_id_new=`, `description=`, `walls=` optional. Pre-flight guard: if the area already exists, returns clean `{status: error}` with a "use area_update or mode=set" hint — no exception, chat survives. Invalid `floor_id_new` also returns clean error with valid floor list. |
 | `area_update` | Update floor assignment, topology, and compiled description (`area_note` + adjacency). `area=` required. Rename, icon, and picture must be set via HA Settings → Areas UI (Spook has no `update_area` service — response includes `ha_ui_advisory` when these are requested). Invalid `floor_id_new` returns clean error with valid floor list. |
@@ -423,7 +428,7 @@ Per-floor grouping of rooms with room_count and rooms[].
 
 ### `weather{}`
 
-Current conditions from the entity labeled `zen_weather` (or first available `weather.*`).
+Current conditions from the entity labeled `main_weather` (the Weather tool's label; `zen_weather` is still read), or the first available `weather.*`.
 
 | Field | Content |
 |-------|---------|
