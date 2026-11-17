@@ -1,6 +1,28 @@
 ###############################################################################
 # DojoTools — Autovac
-# zen_dojotools_autovac (v5.10.0)
+# zen_dojotools_autovac (v5.12.0)
+# v5.12.0: flush the election when the house goes Away. New system option run_on_away
+#   (mode=configure, default off): five minutes after the home mode turns Away, the
+#   controller calls the new mode=run_away (zenos.autovac.operate) with trigger_id=away,
+#   which runs whatever the next election would run (due or force-queued rooms that are
+#   enabled, not skipped, confirmed and vacant, minus any blackout) through mode=clean,
+#   because nobody is home. The option, the enabled and paused flags and the battery
+#   minimum are checked, and a run that does not start answers why. By hand it runs the
+#   elected rooms like mode=clean.
+# v5.11.0: a run can be stopped, and what the vacuum is doing is readable. mode=stop
+#   (zenos.autovac.operate) empties the force-queue, records a cancel marker in the autovac
+#   drawer (system.run_cancelled_at) and sends the vacuum home; a stop with nothing running
+#   says so and changes nothing. mode=run_state (read, no cert) answers active, queued or
+#   idle, with the vacuum state and the rooms waiting. The controller reads the marker when
+#   the vacuum docks: a cancelled run is not a finished one, so the room stamping (analyze)
+#   is skipped, the Cleaning rooms are still set back to Auto, the marker is consumed, and
+#   autovac_docked carries cancelled, run_state and queued_rooms so a listener (Security
+#   Manager's override) can tell a cancel from a finish. The marker expires after 15
+#   minutes, so a later normal dock is never read as cancelled; the start of a run does not
+#   clear it (the controller is queued, so a late start event could erase a newer stop).
+#   Without an autovac drawer (setup never ran) stop still sends the vacuum home and says
+#   no marker was recorded. Not built here: an expected run length (Autovac does not
+#   record one at dispatch) and the queue-worker redesign.
 # v5.10.0: schedule_add and schedule_remove create and delete one Autovac schedule (global,
 #   per-room or blackout), labelled so the controller finds it, through Spook schedule.create /
 #   delete (zenos.autovac.setup, dry_run previews, a name that exists or a label that does not
@@ -129,7 +151,7 @@ script:
       and a troubleshooting guide; this description only sketches the surface.
       Quick map: status (live snapshot, includes maintenance/out-of-service flag) | maintenance_set/maintenance_clear/maintenance_get (out-of-service tracking: reason, part, eta) |
       setup/configure/preset (room+system config) |
-      queue/dequeue/skip/unskip/ready/unready/mark_cleaned (per-room state ops) | clean/run_elected (manual dispatch) |
+      queue/dequeue/skip/unskip/ready/unready/mark_cleaned (per-room state ops) | clean/run_elected (manual dispatch) | run_away (run the elected rooms now; the controller calls it five minutes after Away) | stop (cancel the run: empty the queue, send the vacuum home) | run_state (active, queued or idle) |
       pause/unpause (gate today) | consumables (ERP: status/add_to_shopping/log_replaced/log_purchased/provision) |
       check_wear (IoT wear alert).
     fields:
@@ -159,6 +181,9 @@ script:
               - unpause
               - clean
               - run_elected
+              - stop
+              - run_state
+              - run_away
               - run
               - analyze
               - briefing
@@ -331,7 +356,7 @@ script:
       - variables:
           _av_required_cert: >-
             {%- if _mode in ['configure', 'setup', 'preset', 'schedule_edit', 'schedule_add', 'schedule_remove'] -%}zenos.autovac.setup
-            {%- elif _mode in ['clean', 'run_elected', 'queue', 'dequeue', 'clear', 'skip', 'unskip', 'ready', 'unready', 'mark_cleaned', 'pause', 'unpause', 'maintenance_set', 'maintenance_clear'] -%}zenos.autovac.operate
+            {%- elif _mode in ['clean', 'run_elected', 'run_away', 'stop', 'queue', 'dequeue', 'clear', 'skip', 'unskip', 'ready', 'unready', 'mark_cleaned', 'pause', 'unpause', 'maintenance_set', 'maintenance_clear'] -%}zenos.autovac.operate
             {%- elif _mode == 'summary' -%}zenos.autovac.status
             {%- else -%}{%- endif -%}
       - if: "{{ response is not defined and _av_required_cert != '' }}"
@@ -517,6 +542,9 @@ script:
                     'summary': 'Read-only scored view for the autovac component and for anyone who needs the short answer: urgency (0-5), action_required (3 or more), reasons, vacuum_state, battery_pct, can_run_now and blockers, elected_rooms, due_rooms, overdue_rooms, next_schedule, dnd, paused_today, out_of_service, watch_entities. Never acts. Needs zenos.autovac.status.',
                     'run_elected': 'Fire all currently elected rooms now. dry_run=true previews election + sends Postman notification without starting the vacuum. Use to test election logic.',
                     'clean': 'Immediate clean — bypasses election. rooms=<csv of slugs> required. Vacuum must be docked or idle.',
+                    'stop': 'Cancel the run: empties the force-queue, marks the run cancelled and sends the vacuum home. The room stamping is skipped when it docks (a cancelled run is not a finished one). With nothing running it says so and changes nothing. Requires the operate cert.',
+                    'run_away': 'Run what the next election would run, now: rooms that are due or force-queued and enabled, not skipped, confirmed and vacant, minus any blackout. With trigger_id=away (the controller, five minutes after the home mode turns Away) it only acts when the system option run_on_away is on, Autovac is enabled and not paused today, and the battery is at the minimum. By hand it runs the elected rooms like mode=clean. Answers why when nothing started.',
+                    'run_state': 'What the vacuum is doing: active (cleaning, returning or paused), queued (rooms waiting for the next run) or idle, with the vacuum state, the waiting rooms and whether a cancel is pending. Read, no cert.',
                     'pause': 'Block all scheduled runs for the rest of today. Postman briefings still fire.',
                     'unpause': 'Re-enable scheduled runs for today.',
                     'queue': 'Force-add a room to the next run regardless of days_between or due state. room=<slug>. Cleared after the run.',
@@ -533,7 +561,7 @@ script:
                     'view_room': 'mode=configure room=<slug> — show all current settings for that room.',
                     'update_room': 'mode=configure room=<slug> config=<json> — patch room fields. Fields: enabled (bool), days_between (int), requires_ready (bool), requires_mop (bool), segment (int, xiaomi only), area_id (str, roborock override), notes (str).',
                     'view_system': 'mode=configure (no room) — show system config: enabled, water_low_action, minimum_battery.',
-                    'update_system': 'mode=configure config={"enabled":false} or {"water_low_action":"stop"} — update system-level settings. Keys: enabled, water_low_action, allow_room_control_cleaning_call, briefing_push. briefing_push (bool) turns the pre-run briefing push on or off; run_notices (bool) turns the confirmations on or off (Autovac Starting, Run Skipped, Paused, Dry Run). A fresh setup starts both off; an install upgraded from before 5.9.0 or 5.10.0 has no such key and keeps it on until you set it. Alerts (Unavailable, Cannot Start, Calendar Hold, worn parts) are always on.',
+                    'update_system': 'mode=configure config={"enabled":false} or {"water_low_action":"stop"} — update system-level settings. Keys: enabled, water_low_action, allow_room_control_cleaning_call, run_on_away, briefing_push. Also vac_arm_override_enabled and vac_downgrade_dock_wait_min, which Security Manager owns: the edit is handed to it (see security_options). run_on_away (bool, default off) runs the next election (everything eligible, not only the queue) five minutes after the home mode turns Away, because nobody is home; briefing_push (bool) turns the pre-run briefing push on or off; run_notices (bool) turns the confirmations on or off (Autovac Starting, Run Skipped, Paused, Dry Run). A fresh setup starts both off; an install upgraded from before 5.9.0 or 5.10.0 has no such key and keeps it on until you set it. Alerts (Unavailable, Cannot Start, Calendar Hold, worn parts) are always on.',
                     'presets': 'mode=preset preset=<name> rooms=<csv> — apply a named bundle. mode=preset alone lists all presets. Available: obstacle_prone (requires_ready=true), mop_room (requires_mop=true), guest_room (days_between=14 + requires_ready), high_traffic (days_between=1), twice_weekly (days_between=3), weekly (days_between=7), disabled (enabled=false), standard (enabled=true, days_between=7, requires_ready=false).',
                     'edit_schedule': 'mode=schedule_edit schedule_entity_id=<schedule.x> config={"day":["tuesday"],"blocks":[{"from":"09:00:00","to":"10:00:00","data":{"rooms":"kitchen"}}]} — replace the time blocks on those days of an existing Autovac schedule (global, per-room or blackout). Other days are untouched; blocks:[] clears the day. data keys: rooms, skip_rooms (CSV of room slugs Autovac has), mode. Edit only: it never creates or deletes a schedule and refuses any schedule without an autovac_schedule, autovac_room_schedule or autovac_blackout label. dry_run=true previews. Storage schedules only (needs Spook 5.11.0+). Needs zenos.autovac.setup.',
                     'add_schedule': 'mode=schedule_add config={"name":"AutoVac Weekday Morning","kind":"global","scope":"weekday","days":{"monday":[{"from":"07:00:00","to":"07:30:00"}]}} — create one schedule and label it so Autovac finds it. kind: global (labels autovac_schedule), room (autovac_room_schedule + autovac_schedule, and the schedule is put in that room area: needs room=<slug>; that room then leaves the global runs), blackout (autovac_blackout, a veto: optional room=<slug> limits it to that room area). scope (global and room only): weekday, weekend or monday to sunday, becoming the matching day label. Block data keys: rooms, skip_rooms. Refuses a name that already exists and labels that do not exist yet (run mode=setup create_labels first). dry_run=true previews. Needs zenos.autovac.setup (Spook 5.11.0+).',
@@ -600,7 +628,8 @@ script:
 
                   'cabinet_schema': {
                     'drawer': 'autovac (in household cabinet)',
-                    'system_keys': 'enabled, pause_today, minimum_battery, water_low_action, <schedule_slug>_has_run',
+                    'system_keys': 'enabled, pause_today, minimum_battery, water_low_action, run_on_away, <schedule_slug>_has_run',
+                    'security_options': 'Two Security Manager settings are about the vacuum: vac_arm_override_enabled (while the vacuum cleans with the alarm armed Away, move the panel to Home for the run and put Away back when it docks; Cancel in the notice stops the run) and vac_downgrade_dock_wait_min (minutes to wait after the dock before Away returns, default 5). mode=configure with no config shows them with whether they apply on this install; mode=configure config={"vac_arm_override_enabled":true} edits them. Security Manager owns them: the edit is handed to its auto_arm_config, needs the zenos.actuation.security_control cert, and is refused when no vacuum is labeled autovac, Autovac is off, or the Security Sentry (needs Spook) is not running. Turning it off is always allowed. run_on_away belongs to Autovac and is edited here with the other system keys.',
                     'room_keys': 'enabled, segment, area_id, days_between, requires_ready, requires_mop, notes, last_cleaned, queued, skip_next, is_ready',
                     'grocy_catalog': 'Written by consumables action=provision. Contains robot SN, location IDs, and per-part product/chore/wear_entity data. Stored under autovac.grocy_catalog in household cabinet.'
                   }
@@ -1573,25 +1602,52 @@ script:
       #    live in the shared choose: block below) --
 
       # ---- system configure (no room — sets water_low_action, enabled) --------
+      # Two Security Manager settings are about the vacuum too (vac_arm_override_enabled,
+      # vac_downgrade_dock_wait_min). They are shown and edited here so a person or agent
+      # finds them next to the vacuum, but Security Manager owns them: the edit is
+      # handed to its auto_arm_config (its cert, its checks: a vacuum must exist, Autovac
+      # must be on, the Sentry must run) and its answer is returned as security_manager.
       - if: "{{ response is not defined and _mode == 'configure' and _room == '' }}"
         then:
           - variables:
               _sys_patch: "{{ _config if _config is mapping else (_config | from_json(default={})) }}"
+              _sys_sec_keys: ['vac_arm_override_enabled', 'vac_downgrade_dock_wait_min']
           - variables:
               _sys_filtered: >-
-                {%- set allowed = ['water_low_action', 'enabled', 'allow_room_control_cleaning_call', 'briefing_push', 'run_notices'] -%}
+                {%- set allowed = ['water_low_action', 'enabled', 'allow_room_control_cleaning_call', 'briefing_push', 'run_notices', 'run_on_away'] -%}
                 {%- set ns = namespace(p={}) -%}
                 {%- for k, v in _sys_patch.items() -%}
                   {%- if k in allowed -%}{%- set ns.p = ns.p | combine({k: v}) -%}{%- endif -%}
                 {%- endfor -%}
                 {{ ns.p }}
+              _sys_sec: >-
+                {%- set ns = namespace(p={}) -%}
+                {%- for k, v in _sys_patch.items() -%}
+                  {%- if k in _sys_sec_keys -%}{%- set ns.p = ns.p | combine({k: v}) -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.p }}
               _sys_ignored: >-
-                {%- set allowed = ['water_low_action', 'enabled', 'allow_room_control_cleaning_call', 'briefing_push', 'run_notices'] -%}
+                {%- set allowed = ['water_low_action', 'enabled', 'allow_room_control_cleaning_call', 'briefing_push', 'run_notices', 'run_on_away'] + _sys_sec_keys -%}
                 {%- set ns = namespace(ign=[]) -%}
                 {%- for k in _sys_patch.keys() -%}
                   {%- if k not in allowed -%}{%- set ns.ign = ns.ign + [k] -%}{%- endif -%}
                 {%- endfor -%}
                 {{ ns.ign }}
+          # Handed to Security Manager: an edit when a security key was given, a read
+          # (no patch) otherwise, so the answer always shows the vacuum settings and
+          # whether they apply on this install.
+          - action: script.zen_dojotools_security_manager
+            continue_on_error: true
+            data:
+              action: auto_arm_config
+              auto_arm_patch: "{{ (_sys_sec | tojson) if _sys_sec | length > 0 else '' }}"
+              caller_token: "{{ _caller_token }}"
+            response_variable: _sys_sec_raw
+          - variables:
+              _sys_sec_res: >-
+                {{ _sys_sec_raw.get('result', {}) if _sys_sec_raw is defined and _sys_sec_raw is mapping
+                   else {'status': 'error', 'error': 'security_manager_unreachable',
+                         'detail': 'Security Manager did not answer, so the vacuum security settings were not read or changed.'} }}
           - if: "{{ _sys_filtered | length > 0 }}"
             then:
               - action: script.zen_sutra_filecabinet
@@ -1605,12 +1661,20 @@ script:
               - variables:
                   response: >-
                     {{ {'mode': 'configure', 'result': 'ok', 'caller_token': _caller_token,
-                        'scope': 'system', 'applied': _sys_filtered, 'ignored': _sys_ignored} }}
+                        'scope': 'system', 'applied': _sys_filtered, 'ignored': _sys_ignored,
+                        'security_manager': _sys_sec_res if _sys_sec | length > 0 else none} }}
             else:
               - variables:
                   response: >-
-                    {{ {'mode': 'configure', 'result': 'ok', 'caller_token': _caller_token,
-                        'scope': 'system', 'current_system_config': _av_system} }}
+                    {{ {'mode': 'configure', 'result': 'ok' if (_sys_sec | length == 0 or _sys_sec_res.get('status', '') == 'ok') else 'error',
+                        'caller_token': _caller_token, 'scope': 'system',
+                        'current_system_config': _av_system, 'ignored': _sys_ignored,
+                        'security_options': {
+                          'owner': 'zen_dojotools_security_manager (auto_arm_config)',
+                          'vacuum': _sys_sec_res.get('vacuum', none),
+                          'settings': _sys_sec_res.get('vacuum_settings', none),
+                          'how_to_edit': 'mode=configure config={"vac_arm_override_enabled":true} (or vac_downgrade_dock_wait_min). The edit is handed to Security Manager, which needs the zenos.actuation.security_control cert and refuses when there is no vacuum, Autovac is off or the Sentry is not running.'},
+                        'security_manager': _sys_sec_res if _sys_sec | length > 0 else none} }}
 
       - if: "{{ response is not defined and _mode == 'configure' and _room != '' and not (_config == '{}' or (_config is mapping and _config | length == 0)) }}"
         then:
@@ -1744,6 +1808,84 @@ script:
                 response: >-
                   {{ {'mode': 'clear', 'result': 'ok', 'caller_token': _caller_token,
                       'note': 'all force-queued rooms cleared'} }}
+        # stop: cancel the run. Acts only on an active run (cleaning or paused): a vacuum
+        # already returning is finishing normally, and marking that cancelled would skip
+        # the stamping of a finished run. The force-queue is emptied so nothing else
+        # starts, a cancel marker is recorded for the dock path to read, and the vacuum
+        # is sent home. A docked or idle vacuum answers nothing_to_stop and nothing is
+        # written.
+        - conditions: "{{ _mode == 'stop' }}"
+          sequence:
+            - choose:
+                - conditions: "{{ _vac_ent == '' }}"
+                  sequence:
+                    - variables:
+                        response: >-
+                          {{ {'mode': 'stop', 'result': 'error', 'caller_token': _caller_token,
+                              'note': 'No vacuum entity found — label your vacuum with autovac. Run mode=setup to verify.'} }}
+                - conditions: "{{ _vacuum_state in ['cleaning', 'paused'] }}"
+                  sequence:
+                    # The drawer write is an update, which does nothing when the autovac
+                    # drawer does not exist (Autovac setup never ran). Sending the vacuum
+                    # home is the safety action and always happens; the marker is
+                    # recorded only when there is a drawer to hold it, and the answer
+                    # says which.
+                    - variables:
+                        _st_has_drawer: "{{ _hh_cabinet != '' and not (_fc_av is mapping and _fc_av.get('status', '') == 'not_found') }}"
+                    - if: "{{ _st_has_drawer }}"
+                      then:
+                        - action: script.zen_sutra_filecabinet
+                          data:
+                            mode: update
+                            write_mode: replace
+                            volume_entity_id: "{{ _hh_cabinet }}"
+                            key: autovac
+                            value: >-
+                              {%- set ns = namespace(r={}) -%}
+                              {%- for rn, rv in _av_rooms.items() -%}
+                                {%- set ns.r = ns.r | combine({rn: rv | combine({'queued': false})}) -%}
+                              {%- endfor -%}
+                              {{ {'rooms': ns.r, 'system': _av_system | combine({'run_cancelled_at': now().isoformat()})} | tojson }}
+                    - action: vacuum.return_to_base
+                      continue_on_error: true
+                      target:
+                        entity_id: "{{ _vac_ent }}"
+                    - event: zen_event
+                      event_data:
+                        event:
+                          kind: autovac_run_state
+                          state: stopping
+                          cancelled: true
+                    - variables:
+                        response: >-
+                          {{ {'mode': 'stop', 'result': 'ok', 'caller_token': _caller_token,
+                              'vacuum_state': _vacuum_state, 'marker_recorded': _st_has_drawer,
+                              'note': ('Run cancelled: the force-queue is empty and the vacuum was sent home. The room stamping is skipped when it docks.' if _st_has_drawer else 'The vacuum was sent home. Autovac has no drawer yet (run mode=setup), so no cancel marker was recorded and the dock will be read as a normal run.')} }}
+              default:
+                - variables:
+                    response: >-
+                      {{ {'mode': 'stop', 'result': 'nothing_to_stop', 'caller_token': _caller_token,
+                          'vacuum_state': _vacuum_state,
+                          'note': 'The vacuum is not on an active run (cleaning or paused); nothing was changed.'} }}
+        # run_state: what the vacuum is doing, for anything that has to act on it (Security
+        # Manager's override, the agent). Read, no cert. active = cleaning, returning or
+        # paused; queued = rooms are waiting for the next run; idle = neither.
+        - conditions: "{{ _mode == 'run_state' }}"
+          sequence:
+            - variables:
+                _rs_queued: >-
+                  {%- set ns = namespace(q=[]) -%}
+                  {%- for rn, rv in _av_rooms.items() -%}
+                    {%- if rv.get('queued', false) -%}{%- set ns.q = ns.q + [rn] -%}{%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.q }}
+                _rs_active: "{{ _vacuum_state in ['cleaning', 'returning', 'paused'] }}"
+            - variables:
+                response: >-
+                  {{ {'mode': 'run_state', 'result': 'ok', 'caller_token': _caller_token,
+                      'run_state': 'active' if _rs_active else ('queued' if _rs_queued | count > 0 else 'idle'),
+                      'vacuum_state': _vacuum_state, 'queued_rooms': _rs_queued,
+                      'cancel_pending': (_av_system.get('run_cancelled_at', '') != '')} }}
         - conditions: "{{ _mode == 'skip' and _room_exists }}"
           sequence:
             - action: script.zen_sutra_filecabinet
@@ -3013,6 +3155,93 @@ script:
                                             'rooms': _clean_rooms, 'segments': _segments,
                                             'areas': _clean_areas if _use_clean_area else none,
                                             'vacuum_state': _vacuum_state} }}
+
+      # ---- run_away ----------------------------------------------------------
+      # Flush whatever the next election would run, now, because nobody is home and it
+      # is safe to. The rooms are the elected ones (enabled, due or force-queued, not
+      # skipped, confirmed when a room needs confirming, vacant), minus any room a
+      # blackout vetoes. They go to mode=clean, which checks the vacuum is docked or
+      # idle and writes the run record. trigger_id=away is the controller's call five
+      # minutes after the home mode turns Away: it only acts when the system option
+      # run_on_away is on, the system is enabled, the day is not paused and the battery
+      # is at or above the minimum. Called by hand (no trigger_id) it runs the elected
+      # rooms without those checks, like mode=clean.
+      - if: "{{ response is not defined and _mode == 'run_away' }}"
+        then:
+          - variables:
+              _rq_away: "{{ _trigger_id == 'away' }}"
+              _rq_bo_all: "{{ '*' in (_blackout_rooms | default([])) }}"
+              _rq_rooms: >-
+                {%- set ns = namespace(r=[]) -%}
+                {%- for e in _elected -%}
+                  {%- if not _rq_bo_all and e.room not in (_blackout_rooms | default([])) -%}{%- set ns.r = ns.r + [e.room] -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.r }}
+              _rq_waiting: >-
+                {%- set ns = namespace(r=[]) -%}
+                {%- for rn, rv in _av_rooms.items() -%}
+                  {%- if rv.get('queued', false) -%}{%- set ns.r = ns.r + [rn] -%}{%- endif -%}
+                {%- endfor -%}
+                {{ ns.r }}
+          - choose:
+              - conditions: "{{ _rq_away and not (_av_system.get('run_on_away', false) | bool(false)) }}"
+                sequence:
+                  - variables:
+                      response: >-
+                        {{ {'mode': 'run_away', 'result': 'option_off', 'caller_token': _caller_token,
+                            'note': 'run_on_away is off, so nothing was started.'} }}
+              - conditions: "{{ _rq_away and (not _enabled or _av_system.get('pause_today', false) | bool(false)) }}"
+                sequence:
+                  - variables:
+                      response: >-
+                        {{ {'mode': 'run_away', 'result': 'not_started', 'caller_token': _caller_token,
+                            'note': 'Autovac is ' ~ ('disabled' if not _enabled else 'paused for today') ~ ', so nothing was started.'} }}
+              - conditions: "{{ _rq_away and _battery_known and _battery < (_av_system.get('minimum_battery', 20) | int(20)) }}"
+                sequence:
+                  - variables:
+                      response: >-
+                        {{ {'mode': 'run_away', 'result': 'not_started', 'caller_token': _caller_token,
+                            'note': 'Battery is below the minimum, so nothing was started.'} }}
+              - conditions: "{{ _elected | count == 0 }}"
+                sequence:
+                  - variables:
+                      response: >-
+                        {{ {'mode': 'run_away', 'result': 'nothing_elected', 'caller_token': _caller_token,
+                            'note': 'No rooms are elected (none due or queued that are enabled, not skipped, confirmed and vacant).',
+                            'queued_rooms': _rq_waiting} }}
+              - conditions: "{{ _rq_rooms | count == 0 }}"
+                sequence:
+                  - variables:
+                      response: >-
+                        {{ {'mode': 'run_away', 'result': 'not_started', 'caller_token': _caller_token,
+                            'note': 'Rooms are elected but every one is vetoed by a blackout.',
+                            'queued_rooms': _rq_waiting} }}
+            default:
+              - action: script.zen_dojotools_autovac
+                continue_on_error: true
+                data:
+                  mode: clean
+                  rooms: "{{ _rq_rooms | join(',') }}"
+                response_variable: _rq_clean_raw
+              - variables:
+                  _rq_clean: "{{ _rq_clean_raw.get('result', {}) if _rq_clean_raw is defined and _rq_clean_raw is mapping else {} }}"
+              - variables:
+                  response: >-
+                    {{ {'mode': 'run_away', 'result': _rq_clean.get('result', 'error') if _rq_clean is mapping else 'error',
+                        'caller_token': _caller_token, 'rooms': _rq_rooms,
+                        'vacuum_state': _vacuum_state,
+                        'note': _rq_clean.get('note', '') if _rq_clean is mapping else ''} }}
+              - if: "{{ _rq_away and response.get('result') == 'ok' and (_av_system.get('run_notices', true) | bool(true)) }}"
+                then:
+                  - action: script.zen_dojotools_postman
+                    continue_on_error: true
+                    data:
+                      mode: resolve_and_dispatch
+                      title: "Autovac Starting"
+                      message: "Home switched to Away. Running: {{ _rq_rooms | join(', ') | replace('_', ' ') }}."
+                      urgency: 3
+                      channel_hint: push
+                      tag: autovac_away_run
 
       # ---- run_elected -------------------------------------------------------
       - if: "{{ response is not defined and _mode == 'run_elected' }}"
@@ -4441,14 +4670,14 @@ script:
                 summary='Robot vacuum control and status',
                 display_name='Autovac',
                 tier='dojotools',
-                version='5.10.0',
+                version='5.12.0',
                 health=_autovac_health,
                 required_labels=['autovac'],
                 optional_labels=['autovac_battery','autovac_dnd','autovac_water_low','autovac_schedule','autovac_current_room','autovac_wear','autovac_calendar','autovac_error_detail'],
                 consumes=['household_cabinet:autovac'],
                 returns='status|setup|configure|queue|clean|run|briefing|consumables|check_wear|cleaning_evidence|maintenance results',
                 failure_policy='return error shape',
-                modes=['status','summary','help','setup','queue','dequeue','clear','skip','unskip','ready','unready','mark_cleaned','configure','preset','consumables','check_wear','pause','unpause','clean','run_elected','run','schedule','schedule_blocks','schedule_edit','schedule_add','schedule_remove','analyze','briefing','handle_ack','nightly_reset','morning_reset','kfc_manifest','stacks_by_anchor','register','unregister','health','inspect','tool_manifest','maintenance_set','maintenance_clear','maintenance_get'],
+                modes=['status','summary','help','setup','queue','dequeue','clear','skip','unskip','ready','unready','mark_cleaned','configure','preset','consumables','check_wear','pause','unpause','clean','run_elected','run_away','stop','run_state','run','schedule','schedule_blocks','schedule_edit','schedule_add','schedule_remove','analyze','briefing','handle_ack','nightly_reset','morning_reset','kfc_manifest','stacks_by_anchor','register','unregister','health','inspect','tool_manifest','maintenance_set','maintenance_clear','maintenance_get'],
                 icon='mdi:robot-vacuum',
                 color='teal',
                 stripe=3,
@@ -4484,7 +4713,7 @@ script:
                   'display_name': 'Autovac Operate',
                   'description': "Start, pause and schedule the robot vacuum", 'detail': "Steel-mag pattern -- runtime dispatch of the vacuum and its per-room queue state, including the force override that bypasses the DND election gate. mode=status/help stay ungated (read-only).",
                   'max_level': 1,
-                  'gates': ['mode=clean/run_elected/queue/dequeue/clear/skip/unskip/ready/unready/mark_cleaned/pause/unpause/maintenance_set/maintenance_clear'],
+                  'gates': ['mode=clean/run_elected/run_away/stop/queue/dequeue/clear/skip/unskip/ready/unready/mark_cleaned/pause/unpause/maintenance_set/maintenance_clear'],
                   'live_ack_required_for': [],
                   'grant_via': "persona_editor mode=cert_req_grant cert_component=zenos.autovac.operate (or zen_dojotools_identity mode=cert_list to see current status)"
                 }]}) -}}
@@ -4862,6 +5091,19 @@ automation:
         event: start
         id: ha_start
 
+      # zen_home_mode is a singleton global sensor with no label to target, the same
+      # category as zone.home in Security Manager's watcher. A reload or restart
+      # restarts the five minutes, so a run is only ever started by a full five minutes
+      # of Away that this automation saw.
+      - trigger: state
+        entity_id: sensor.zen_home_mode
+        to: "Away"
+        for: "00:05:00"
+        not_from:
+        - unknown
+        - unavailable
+        id: away_run
+
     mode: queued
     max: 5
     actions:
@@ -4913,10 +5155,38 @@ automation:
                             room_control_state: Auto
                           continue_on_error: true
                 alias: Dock sweep — clear every remaining 'Cleaning' room to Auto, unconditionally
-              - action: script.zen_dojotools_autovac
-                data:
-                  mode: analyze
-                  trigger_id: docked
+              # A stop marker (system.run_cancelled_at, set by mode=stop, under 15 minutes
+              # old) means the run was cancelled, not finished: its rooms are not stamped
+              # as cleaned. The Cleaning rooms were already set back to Auto above, and
+              # the marker is consumed here so one cancel is read once. The start of a
+              # run does not clear it: the controller is queued, so a start event can be
+              # processed after a stop that came later, and clearing there lost a real
+              # cancel. An unconsumed marker (the vacuum never docked) simply expires.
+              - variables:
+                  _dk_av: >-
+                    {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                    {{- CABS.cabinet_drawer_value(_dk_hh, 'autovac') | from_json({}) -}}
+              - variables:
+                  _dk_cancel_at: "{{ (_dk_av.get('system', {}) if _dk_av is mapping else {}).get('run_cancelled_at', '') }}"
+              - variables:
+                  _dk_cancelled: >-
+                    {{ _dk_cancel_at != '' and ((now() - as_datetime(_dk_cancel_at)).total_seconds() < 900) }}
+              - if: "{{ not _dk_cancelled }}"
+                then:
+                  - action: script.zen_dojotools_autovac
+                    data:
+                      mode: analyze
+                      trigger_id: docked
+              - if: "{{ _dk_cancel_at != '' }}"
+                then:
+                  - action: script.zen_sutra_filecabinet
+                    data:
+                      mode: update
+                      write_mode: replace
+                      volume_entity_id: "{{ _dk_hh }}"
+                      key: autovac
+                      value: >-
+                        {{ {'rooms': _dk_av.get('rooms', {}), 'system': _dk_av.get('system', {}) | combine({'run_cancelled_at': ''})} | tojson }}
               - action: script.zen_dojotools_autovac
                 data:
                   mode: check_wear
@@ -4926,11 +5196,38 @@ automation:
                   mode: run
                   kung_fu_component_id: autovac
                   force: true
+              - action: script.zen_dojotools_autovac
+                continue_on_error: true
+                data:
+                  mode: run_state
+                response_variable: _dk_rs
+              - variables:
+                  _dk_rs_r: >-
+                    {%- set r = _dk_rs.get('result', _dk_rs) if _dk_rs is mapping else {} -%}
+                    {{ r if r is mapping else {} }}
               - event: zen_event
                 event_data:
                   event:
                     kind: autovac_docked
-            alias: Dock — analyze, wear check, ninja refresh, latch event
+                    cancelled: "{{ _dk_cancelled }}"
+                    run_state: "{{ _dk_rs_r.get('run_state', 'idle') }}"
+                    queued_rooms: "{{ _dk_rs_r.get('queued_rooms', []) }}"
+            alias: Dock — analyze (skipped for a cancelled run), wear check, ninja refresh, latch event
+
+          # The home mode has been Away for five minutes: run the next election,
+          # if the run_on_away option is on (mode=run_away checks the option,
+          # the enabled and paused flags, the battery and each room, and answers why it
+          # did nothing).
+          - conditions:
+              - condition: trigger
+                id: away_run
+            sequence:
+              - action: script.zen_dojotools_autovac
+                continue_on_error: true
+                data:
+                  mode: run_away
+                  trigger_id: away
+            alias: Away for five minutes — run the next election (option run_on_away)
 
           - conditions:
               - condition: trigger

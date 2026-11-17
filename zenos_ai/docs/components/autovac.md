@@ -1,9 +1,9 @@
 # ZenOS-AI AutoVac
 
-**Version:** 5.10.0
+**Version:** 5.12.0
 **Script:** `zen_dojotools_autovac`
 
-> **2026.12.0 (5.8.0 to 5.10.0):** a bare call answers help (it answered `status`). `mode=summary` is a scored read for the `autovac` component, behind the new read cert `zenos.autovac.status`. Schedules can be added, edited and removed from the tool. The pre-run briefing push and the run confirmations are settings, off on a fresh setup and kept on for an upgraded one. See [The autovac component](#the-autovac-component), [Editing schedules](#editing-schedules) and [Notices](#notices).
+> **2026.12.0 (5.8.0 to 5.12.0):** a bare call answers help (it answered `status`). `mode=summary` is a scored read for the `autovac` component, behind the new read cert `zenos.autovac.status`. Schedules can be added, edited and removed from the tool. The pre-run briefing push and the run confirmations are settings, off on a fresh setup and kept on for an upgraded one. A run can be stopped (`mode=stop`) and read (`mode=run_state`), the new option `run_on_away` (off by default) runs what's due once the house goes Away, and the vacuum's two security settings show and edit here. See [The autovac component](#the-autovac-component), [Editing schedules](#editing-schedules), [Notices](#notices), [Run on Away](#run-on-away) and [Security options](#security-options).
 
 ---
 
@@ -73,6 +73,9 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 | `clean` | Immediate clean by room slug(s) — vacuum must be docked or idle |
 | `run` | Schedule-triggered run — evaluates election, guards, dedup |
 | `run_elected` | Run all currently elected rooms (bypasses schedule dedup) |
+| `run_away` | Run what the next election would run, now, because the house is empty. The controller calls it five minutes after the home mode turns Away when `run_on_away` is on. See [Run on Away](#run-on-away). Requires `zenos.autovac.operate`. |
+| `stop` | Cancel the run: empties the force-queue, marks the run cancelled and sends the vacuum home. See [Stopping a run](#stopping-a-run). Requires `zenos.autovac.operate`. |
+| `run_state` | What the vacuum is doing: `active` (cleaning, returning or paused), `queued` (rooms waiting) or `idle`. Read, no cert. |
 | `consumables` | ERP loop — stock, reorder, provision, replace, purchase |
 | `check_wear` | Check one or all wear sensors; alerts and queues shopping if worn and out of stock |
 | `analyze` | Post-dock map analysis — updates room last_cleaned, broadcasts completion event |
@@ -235,6 +238,20 @@ zen_dojotools_autovac:
   mode: clean
   rooms: living_room,kitchen
 ```
+
+### Run on Away
+
+`run_on_away` is a system option, off by default (`mode=configure config={"run_on_away":true}`). When it is on, five minutes after the home mode turns Away the controller calls `mode=run_away` with `trigger_id=away`. Nobody is home, so it is safe to flush whatever the next election would run: rooms that are due or force-queued, enabled, not skipped, confirmed when a room needs confirming and vacant, minus any room a blackout vetoes. The rooms go through `mode=clean`, which checks the vacuum is docked or idle and writes the run record.
+
+The call only acts when the option is on, Autovac is enabled and not paused for today, and the battery is at or above the minimum. When nothing starts it says why: `option_off`, `not_started` (disabled, paused, low battery, or every room vetoed) or `nothing_elected`. An "Autovac Starting" push goes out when run notices are on. A reload or restart during the five minutes restarts the wait. Called by hand without `trigger_id`, `run_away` runs the elected rooms like `mode=clean`, without those checks.
+
+### Stopping a run
+
+`mode=stop` cancels a run in progress: it empties the force-queue, records a cancel marker, and sends the vacuum home. With nothing running it answers `nothing_to_stop` and changes nothing. A stopped run is not a finished one: when the vacuum docks, the room stamping is skipped, and the `autovac_docked` event carries `cancelled: true`, `run_state` and `queued_rooms`. Security Manager reads that flag (see its [vacuum sync](security_manager.md#vacuum-sync)). `mode=run_state` is the read-only answer to "is it running": `active`, `queued` or `idle`, with the vacuum state and any waiting rooms.
+
+### Security options
+
+Two Security Manager settings are about the vacuum: `vac_arm_override_enabled` (while the vacuum cleans with the alarm armed Away, move the panel to Home and put Away back at the dock) and `vac_downgrade_dock_wait_min` (minutes to wait after the dock, default 5). Autovac shows them and edits them next to the vacuum, but Security Manager owns them: `mode=configure` with no config returns `security_options` (the vacuum state and whether each setting applies), and `config={"vac_arm_override_enabled":true}` hands the edit to Security Manager's `auto_arm_config`. That needs the `zenos.actuation.security_control` cert and is refused with `vacuum_required` when no vacuum is labeled `autovac`, Autovac is not installed, or Autovac is off, and while the Security Sentry (needs Spook) is not running. Turning it off is always allowed.
 
 ---
 

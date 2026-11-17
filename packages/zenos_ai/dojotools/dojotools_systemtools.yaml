@@ -1,6 +1,16 @@
 ###############################################################################
 # ZenOS-AI DojoTools: SystemTools Package
-# Version: 5.4.3
+# Version: 5.5.0
+# v5.5.0: the health report names the security watchers and any disabled
+#   automation. Home Assistant disables a whole automation when one trigger is invalid
+#   (state unavailable). The Zen Security Sentry or the Auto-Arm Watcher unavailable is
+#   a CRITICAL (the Sentry names the likely cause, Spook), turned off or missing is a
+#   warning, and every other unavailable automation is one warning that lists them.
+#   An unavailable automation with restored: true is a leftover registry entry for one
+#   that no longer exists, not one Home Assistant disabled, so it
+#   is not counted, and a restored watcher reads as missing. dependencies carries
+#   security_watchers (each with its state) and automations_unavailable. The watchers
+#   are found by id, not entity name.
 # v5.4.3: the health report tells a Spook that failed to load from one that is not installed.
 #   On HA 2026.11 or later, no Spook services at all is one CRITICAL naming both causes (Spook
 #   5.6 to 5.10 fail to load there: HA removed CONF_STOP_ACTIONS), and a Spook that has
@@ -799,7 +809,7 @@ script:
                 summary='Health, reloads, notifications, repairs, home settings',
                 display_name='SystemTools - ZenOS Platform Kernel',
                 tier='dojotools',
-                version='5.4.3',
+                version='5.5.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools', 'zen_kfc_provider'],
                 optional_labels=['system_monitor', 'system_status'],
@@ -1697,6 +1707,26 @@ script:
             _hr_ha_ym: >-
               {%- set m = _hr_ha_ver | regex_findall('^([0-9]+)[.]([0-9]+)') -%}
               {{ (m[0][0] | int(0)) * 100 + (m[0][1] | int(0)) if m | count > 0 else 0 }}
+            # Security watchers and disabled automations. Home Assistant disables a
+            # whole automation when one of its triggers is invalid (a missing or
+            # changed Spook, a removed integration) and its state becomes
+            # unavailable; a deliberate off stays off. The two security watchers are
+            # found by their own id (an entity name comes from an alias and differs
+            # between installs), and every other unavailable automation is counted.
+            _hr_sec_watchers: >-
+              {%- set ids = {'zen_security_sentry': 'Zen Security Sentry', '1755840000001': 'Zen Security Auto-Arm Watcher'} -%}
+              {%- set ns = namespace(out=[]) -%}
+              {%- for k, nm in ids.items() -%}
+                {%- set ents = states.automation | selectattr('attributes.id', 'eq', k) | list -%}
+                {%- set _gone = ents | count == 0 or (ents[0].attributes.get('restored', false) | bool(false)) -%}
+                {%- set ns.out = ns.out + [{'id': k, 'name': nm, 'entity_id': (ents[0].entity_id if ents | count > 0 else ''), 'state': ('missing' if _gone else ents[0].state)}] -%}
+              {%- endfor -%}
+              {{ ns.out }}
+            # An unavailable automation with restored: true is a leftover registry entry
+            # for one that no longer exists (T had 120), not one Home Assistant disabled;
+            # only a defined automation with an invalid trigger counts.
+            _hr_auto_unavailable: >-
+              {{ states.automation | selectattr('state', 'eq', 'unavailable') | rejectattr('attributes.restored', 'eq', true) | map(attribute='entity_id') | list }}
         # ── Persistent log file status ────────────────────────────────────────
         # HA 2026.1+ dropped the persistent home-assistant.log file by default
         # (journal-mode logging) — this is the exact gap zen_log_check's
@@ -2035,6 +2065,20 @@ script:
               {%- elif _spook_installed == 'unknown' -%}
                 {%- set _ns.issues = _ns.issues + ['warn: could not determine Spook install status — the internal HA API check (rest_command.ha_api_get) returned HTTP ' ~ (_hr_services_raw.get('api_status', 'no response') | string) ~ ', not Spook itself. Check the ha_bearer secret (missing/expired long-lived token causes this) before assuming Spook is absent.'] -%}
               {%- endif -%}
+              {%- for w in _hr_sec_watchers -%}
+                {%- if w.state == 'unavailable' -%}
+                  {%- set _why = ' It uses Spook trigger platforms, so this usually means Spook is missing or changed. Until it runs, temporary security overrides cannot be made or ended.' if w.id == 'zen_security_sentry' else ' Automatic arming and disarming do not run while it is disabled.' -%}
+                  {%- set _ns.issues = _ns.issues + ['CRITICAL: ' ~ w.name ~ ' is unavailable: Home Assistant disabled it because one of its triggers is invalid.' ~ _why ~ ' Fix the cause, then reload automations.'] -%}
+                {%- elif w.state == 'off' -%}
+                  {%- set _ns.issues = _ns.issues + ['warn: ' ~ w.name ~ ' is turned off.' ~ (' Temporary security overrides cannot be made while it is off.' if w.id == 'zen_security_sentry' else ' Automatic arming and disarming do not run while it is off.')] -%}
+                {%- elif w.state == 'missing' -%}
+                  {%- set _ns.issues = _ns.issues + ['warn: ' ~ w.name ~ ' was not found: it is not installed yet, or automations have not been reloaded since the update.'] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- set _other_un = _hr_auto_unavailable | reject('in', _hr_sec_watchers | map(attribute='entity_id') | list) | list -%}
+              {%- if _other_un | count > 0 -%}
+                {%- set _ns.issues = _ns.issues + ['warn: ' ~ (_other_un | count) ~ ' automation(s) are unavailable (Home Assistant disabled them at load: an invalid trigger or a missing integration): ' ~ (_other_un[:8] | join(', ')) ~ ('; and ' ~ (_other_un | count - 8) ~ ' more' if _other_un | count > 8 else '') ~ '.'] -%}
+              {%- endif -%}
               {%- if _dojo in ['unknown','unavailable','none',''] -%}
                 {%- set _ns.issues = _ns.issues + ['CRITICAL: dojo resolver unavailable — label zen_dojo_cabinet has no sensor entities'] -%}
               {%- endif -%}
@@ -2249,6 +2293,8 @@ script:
                 spook_installed: "{{ _spook_installed }}"
                 spook_has_5_7_services: "{{ _spook_has_57 }}"
                 ha_version: "{{ _hr_ha_ver if _hr_ha_ver != '' else none }}"
+                security_watchers: "{{ _hr_sec_watchers }}"
+                automations_unavailable: "{{ _hr_auto_unavailable | count }}"
                 spook_note: "Provides homeassistant.create_label/rename_label/remove_label — required by Flynn Gate 0. Not core HA. https://spook.boo/installation/"
                 internal_api_ok: "{{ _hr_services_raw.get('api_ok', none) if _hr_services_raw is mapping else none }}"
                 internal_api_status: "{{ _hr_services_raw.get('api_status', none) if _hr_services_raw is mapping else none }}"
