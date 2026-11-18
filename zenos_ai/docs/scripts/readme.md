@@ -87,7 +87,7 @@ Interactive profile surface for ZenOS-AI identity profiles. Reads and writes AI 
 
 ---
 
-## 4. Zen DojoTools Labels — v5.11.0
+## 4. Zen DojoTools Labels — v5.11.1
 **File:** [`zen_dojotools_labels_readme.md`](zen_dojotools_labels_readme.md)
 
 Core primitive for label CRUD and entity tagging. Backbone of the label index that powers HyperIndex, KFC components, and cabinet resolution. MCP-exposed — write operations are confirm-gated. All mutating actions emit `zen_event(kind: label_mutation)` and auto-rebuild the compact index. `mode` is now the primary selector (project-wide standardization) — `action_type` remains a deprecated backward-compatible alias.
