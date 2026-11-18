@@ -1,4 +1,4 @@
-# Zen DojoTools Postman — v5.4.0
+# Zen DojoTools Postman — v5.6.0
 
 > **2026.11.0:** Postman declares its act, `resolve_and_dispatch` (no args), next to its emit cert `zenos.comms.dispatch`. Its hand-written dispatcher route still wins, so nothing changes.
 

@@ -1,6 +1,21 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Climate
-# zen_dojotools_climate (v2.4.1)
+# zen_dojotools_climate (v2.5.0)
+# v2.5.0: the envelope offer. Exterior doors, windows and openings are the sensors
+#   labeled exterior (device_class door, window, opening or garage_door). With
+#   envelope_offer_enabled on (mode=envelope, needs zenos.system.home_config_write,
+#   default off), one open five minutes while heating or cooling brings an
+#   announcement and a Yes/No on the household's phones. A Yes turns off the units
+#   that serve that area (the hvac_air_handler label the area and its thermostats
+#   share, else a thermostat in the same area, else every unit running) and saves
+#   each one's mode in the household drawer climate_envelope. Once everything has
+#   been closed two minutes, it offers to put them back the same way. The new
+#   automation Zen Climate Envelope Watcher calls the internal mode envelope_check;
+#   nothing happens while the setting is off. The message carries the outdoor
+#   temperature when the Weather tool is installed. Quiet while the house sleeps
+#   (Postman's sleep rule): nothing is announced or asked; a Yes meant "off until it's
+#   closed", so closing up overnight puts the units back quietly, and a courtesy note
+#   is sent when the house wakes (Postman drops a message sent into the sleep gate).
 # v2.4.1: zenos.climate.read also allows stage l (st_ok isl) and names its mode
 #   (modes: ['summary'], level 1), so a live drawer mounted on mode=summary can read it,
 #   like Print Shop. Grant with cert_stages=isl.
@@ -266,6 +281,27 @@ script:
               - help
               - summary
               - kfc_manifest
+              - envelope
+              - envelope_check
+
+      envelope_offer_enabled:
+        name: Envelope offer
+        description: >-
+          mode=envelope only. Omit to read. true/false writes the setting (needs
+          zenos.system.home_config_write): with it on, an exterior door, window or
+          opening open five minutes while heating or cooling brings an announcement and
+          a Yes/No on the household's phones to turn those units off, and an offer to
+          turn them back on once everything is closed. Default off.
+        required: false
+        selector:
+          boolean:
+
+      envelope_event:
+        name: Envelope event
+        description: "Internal (mode=envelope_check, the Climate Envelope Watcher only): open or closed."
+        required: false
+        selector:
+          text:
 
       caller_token:
         name: Caller Token
@@ -291,7 +327,13 @@ script:
                   climate). Also the default when no setter fields are given.
                   mode=set name=X + one or more setters (temperature/hvac_mode/fan_mode/
                   etc for climate; fan_percentage/fan_preset_mode/etc for fan) — requires
-                  zenos.actuation.climate_control cert. mode=tool_manifest — this tool's manifest
+                  zenos.actuation.climate_control cert. mode=summary — scored whole-house
+                  climate. mode=envelope — exterior doors and windows (label exterior), which
+                  are open, and the offer setting; envelope_offer_enabled=true/false writes it
+                  (zenos.system.home_config_write). With it on, five minutes open while heating
+                  or cooling brings an announcement and a phone Yes/No to turn the units that
+                  serve that area off, and an offer to turn them back on once everything is
+                  closed. mode=tool_manifest — this tool's manifest
                   declaration. mode=help — this reference, name field not required.
         - conditions: "{{ _tm_mode == 'tool_manifest' }}"
           sequence:
@@ -303,10 +345,10 @@ script:
                     summary='Read or set thermostats and fans',
                     display_name='Climate Manager',
                     tier='dojotools',
-                    version='2.4.1',
+                    version='2.5.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools'],
-                    optional_labels=['climate', 'fan'],
+                    optional_labels=['climate', 'fan', 'exterior', 'hvac_air_handler'],
                     consumes=['entity_name_or_id'],
                     returns=['climate_state', 'fan_state', 'climate_summary'],
                     modes={
@@ -314,6 +356,7 @@ script:
                       'set': 'Change setpoint, mode, fan, swing, preset, humidity or power; needs zenos.actuation.climate_control',
                       'summary': 'Scored read-only whole-house climate: urgency, reasons, units, attention. The seed of the climate KFC (ambient tier); no name needed',
                       'kfc_manifest': 'The climate KFC definition (consumed by bootstrap_kfc)',
+                      'envelope': 'Exterior doors and windows (label exterior), which are open, and the offer to turn the HVAC off when one stays open; envelope_offer_enabled writes the setting (needs zenos.system.home_config_write)',
                       'tool_manifest': 'Return tool identity + capabilities',
                       'help': 'This reference; the bare call'
                     },
@@ -348,6 +391,17 @@ script:
                       'gates': ['mode=summary (interactive, stage i)', 'the Ninja seed of the climate component (stage s)', 'a live drawer mounted on mode=summary (stage l)'],
                       'live_ack_required_for': [],
                       'grant_via': "persona_editor mode=cert_req_grant cert_component=zenos.climate.read cert_stages=isl"
+                    }, {
+                      'cert': 'zenos.system.home_config_write',
+                      'display_name': 'House Settings',
+                      'description': "Turn the open-door HVAC offer on or off",
+                      'detail': 'Write path of mode=envelope (envelope_offer_enabled), a house-wide behavior setting stored in the household cabinet drawer climate_envelope. Reading the status needs nothing. The shutoff and the restore each also wait for a person to answer Yes on the phone.',
+                      'max_level': 1,
+                      'level': 1,
+                      'modes': ['envelope'],
+                      'gates': ['mode=envelope with envelope_offer_enabled (write only)'],
+                      'live_ack_required_for': [],
+                      'grant_via': "persona_editor mode=cert_req_grant cert_component=zenos.system.home_config_write"
                     }]
                   }) -}}
         - conditions: "{{ _tm_mode == 'kfc_manifest' }}"
@@ -432,7 +486,7 @@ script:
               result:
                 status: ok
                 tool: zen_dojotools_climate
-                version: "2.4.1"
+                version: "2.5.0"
                 mode: kfc_manifest
                 kfc: "{{ _kfc_out }}"
                 count: "{{ _kfc_out | length }}"
@@ -601,7 +655,18 @@ script:
                 {%- endfor -%}
                 {{ ns.a }}
           - variables:
-              _cs_reasons: "{{ ((_cs_attn | map(attribute='reason') | list) + (['no_climate_units'] if (_cs_units | count) == 0 else []) + (['freeze_forecast'] if (_cs_outdoor.get('freeze_expected') or false) else [])) | unique | list }}"
+              # The HVAC is paused for an open door or window (the envelope offer): the
+              # units it turned off that are still off, so an off unit has its reason.
+              _cs_env_paused: >-
+                {%- set cab = label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') -%}
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set d = (CABS.cabinet_drawer_value_mounted(cab, 'climate_envelope') | from_json({})) if cab != '' else {} -%}
+                {%- set so = d.get('shut_off', {}) if (d is mapping and d.get('shut_off') is mapping) else {} -%}
+                {%- set ns = namespace(o=[]) -%}
+                {%- for p in so.get('units', []) if p is sequence and p | count == 2 and states(p[0]) == 'off' -%}{%- set ns.o = ns.o + [p[0]] -%}{%- endfor -%}
+                {{ ns.o }}
+          - variables:
+              _cs_reasons: "{{ ((_cs_attn | map(attribute='reason') | list) + (['no_climate_units'] if (_cs_units | count) == 0 else []) + (['freeze_forecast'] if (_cs_outdoor.get('freeze_expected') or false) else []) + (['paused_for_envelope'] if (_cs_env_paused | count) > 0 else [])) | unique | list }}"
           - variables:
               # Scored for the ambient tier (Trapper Keeper): 0-3 stays in the ambient index,
               # 4-5 is promoted to a line in the attention list. So an error scores 4 or 5:
@@ -614,7 +679,7 @@ script:
                     (4 if ('main_thermostat_unavailable' in r or 'overheat' in r) else
                     (3 if 'thermostat_unavailable' in r else
                     (2 if ('conditioning_with_opening' in r or 'freeze_forecast' in r) else
-                    (1 if 'conditioning_while_away' in r else 0)))) -}}
+                    (1 if ('conditioning_while_away' in r or 'paused_for_envelope' in r) else 0)))) -}}
           - variables:
               result:
                 status: ok
@@ -625,12 +690,423 @@ script:
                 unit_count: "{{ _cs_units | count }}"
                 excluded: "{{ _cs_excluded }}"
                 outdoor: "{{ _cs_outdoor }}"
+                envelope_paused: "{{ _cs_env_paused }}"
                 home_mode: "{{ _cs_home_mode }}"
                 units: "{{ _cs_units[:8] }}"
                 attention: "{{ _cs_attn[:8] }}"
                 watch_entities: "{{ (_cs_attn | map(attribute='entity_id') | list | unique | list)[:12] }}"
                 suggested_act_event: null
                 caller_token: "{{ _token }}"
+
+      # ── envelope: offer to turn the HVAC off when the house is open ────────────
+      # The envelope is every door, window or opening sensor labeled exterior
+      # (binary_sensor, device_class door, window, opening or garage_door). When one
+      # has been open for five minutes while heating or cooling runs, the Climate
+      # Envelope Watcher calls envelope_check: it announces in the house and sends a
+      # Yes/No to the household's phones. A Yes turns off the units that serve the
+      # open area (the hvac_air_handler label the area and its thermostats share, else
+      # a thermostat in the same area, else every unit that is running) and saves the
+      # mode each was in. When every opening has been closed for two minutes it offers
+      # to put them back. Off by default (envelope_offer_enabled): the setting is the
+      # household's approval, and each shutoff and restore also waits for a person's
+      # Yes. mode=envelope reads the status; envelope_offer_enabled=true/false writes
+      # the setting (needs zenos.system.home_config_write).
+      - variables:
+          _ce_on_mode: "{{ result is not defined and _tm_mode in ['envelope', 'envelope_check'] }}"
+      - if: "{{ _ce_on_mode }}"
+        then:
+          - variables:
+              _ce_cab: "{{ label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') }}"
+              _ce_skip: "{{ (label_entities('spa_climate') + label_entities('zen_plant_hot_tub') + label_entities('zen_plant_thermal') + label_entities('zen_rm_ignore')) | unique | list }}"
+          - variables:
+              _ce_drawer: >-
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set d = (CABS.cabinet_drawer_value_mounted(_ce_cab, 'climate_envelope') | from_json({})) if _ce_cab != '' else {} -%}
+                {{ d if d is mapping else {} }}
+              _ce_envelope: >-
+                {%- set ns = namespace(o=[]) -%}
+                {%- for s in expand(label_entities('exterior')) if s.domain == 'binary_sensor' and s.attributes.get('device_class') in ['door', 'window', 'opening', 'garage_door'] -%}
+                  {%- set ns.o = ns.o + [{'entity_id': s.entity_id, 'name': s.name, 'area': area_id(s.entity_id) or '', 'open': s.state == 'on'}] -%}
+                {%- endfor -%}
+                {{ ns.o }}
+          - variables:
+              _ce_enabled: "{{ _ce_drawer.get('enabled', false) | bool(false) }}"
+              _ce_open: "{{ _ce_envelope | selectattr('open') | list }}"
+              _ce_saved: "{{ _ce_drawer.get('shut_off', {}) if _ce_drawer.get('shut_off') is mapping else {} }}"
+
+      # mode=envelope: status, and the setting write.
+      - if: "{{ _ce_on_mode and _tm_mode == 'envelope' }}"
+        then:
+          - variables:
+              _ce_write: "{{ envelope_offer_enabled is defined and envelope_offer_enabled not in [none, ''] }}"
+          - if: "{{ _ce_write }}"
+            then:
+              - action: script.zen_dojotools_identity
+                response_variable: _ce_id_raw
+                continue_on_error: true
+                data:
+                  mode: resolve_caller_identity
+                  required_cert: zenos.system.home_config_write
+                  required_cert_level: 1
+                  caller_token: "{{ _token }}"
+              - variables:
+                  _ce_id: >-
+                    {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                    {%- set _raw = OS.resolve_identity_fields(_ce_id_raw) -%}
+                    {{- (_raw | from_json) if _raw is string else _raw -}}
+              - if: "{{ not (_ce_id.authorized | default(false)) }}"
+                then:
+                  - variables:
+                      result:
+                        status: error
+                        mode: envelope
+                        error: cert_insufficient
+                        message: "zenos.system.home_config_write level 1 is needed to change envelope_offer_enabled. Reading the status needs nothing."
+                        can_request: "{{ _ce_id.policy_status | default('') == 'allowed' }}"
+                        request_via:
+                          tool: zen_dojotools_persona_editor
+                          mode: cert_req_grant
+                          cert_component: zenos.system.home_config_write
+                          cert_level: 1
+                        caller_token: "{{ _token }}"
+              - if: "{{ result is not defined and _ce_cab == '' }}"
+                then:
+                  - variables:
+                      result:
+                        status: error
+                        mode: envelope
+                        error: no_household_cabinet
+                        message: "No cabinet is labeled Zen Household Cabinet, so the setting has nowhere to live."
+                        caller_token: "{{ _token }}"
+              - if: "{{ result is not defined }}"
+                then:
+                  - action: script.zen_sutra_filecabinet
+                    continue_on_error: true
+                    data:
+                      mode: upsert
+                      write_mode: replace
+                      key: climate_envelope
+                      volume_entity_id: "{{ _ce_cab }}"
+                      value: >-
+                        {{ _ce_drawer | combine({'enabled': envelope_offer_enabled | bool, 'updated_at': now().isoformat()}) | tojson }}
+                    response_variable: _ce_fc
+          - if: "{{ result is not defined }}"
+            then:
+              - variables:
+                  result:
+                    status: ok
+                    mode: envelope
+                    enabled: "{{ (envelope_offer_enabled | bool) if _ce_write else _ce_enabled }}"
+                    written: "{{ (envelope_offer_enabled | bool) if _ce_write else none }}"
+                    envelope: "{{ _ce_envelope }}"
+                    open_now: "{{ _ce_open | map(attribute='entity_id') | list }}"
+                    shut_off: "{{ _ce_saved if _ce_saved else none }}"
+                    how_to: >-
+                      The envelope is every door, window or opening sensor labeled exterior
+                      (zen_dojotools_labels mode=tag label_list=[exterior] target_entities=[...]).
+                      Which units an opening turns off: the hvac_air_handler (or
+                      hvac_air_handler_<n>) label its area shares with thermostats, else a
+                      thermostat in the same area, else every unit running. With
+                      envelope_offer_enabled=true, five minutes open while heating or cooling
+                      brings an announcement and a Yes/No on the household's phones; a Yes turns
+                      those units off, and closing everything for two minutes brings an offer to
+                      turn them back on.
+                    caller_token: "{{ _token }}"
+
+      # mode=envelope_check: internal, the Climate Envelope Watcher only. A user or
+      # agent session could otherwise turn the HVAC off without the setter's cert.
+      - if: "{{ _ce_on_mode and _tm_mode == 'envelope_check' and ((context.user_id if context is defined else '') or '') != '' }}"
+        then:
+          - variables:
+              result:
+                status: error
+                mode: envelope_check
+                reason: "guarded: envelope_check is internal; only the Climate Envelope Watcher calls it. Use mode=envelope to read the status."
+                caller_token: "{{ _token }}"
+      - if: "{{ result is not defined and _ce_on_mode and _tm_mode == 'envelope_check' }}"
+        then:
+          - variables:
+              _ce_event: "{{ envelope_event | default('', true) | string | lower | trim }}"
+              # Quiet while the house sleeps: the same rule Postman's sleep gate uses (quiet
+              # hours on, or the home mode Night or Night-Late). No announcement and no push.
+              _ce_sleep: >-
+                {{ is_state(label_entities('zen_quiet_hours') | select('match', 'binary_sensor\\.') | list | first | default('none', true), 'on')
+                   or is_state(label_entities('zen_home_mode') | select('match', 'input_select\\.') | list | first | default('none', true), 'Night')
+                   or is_state(label_entities('zen_home_mode') | select('match', 'input_select\\.') | list | first | default('none', true), 'Night-Late') }}
+              # Outdoor temperature for the message, from the Weather tool when installed.
+          - action: script.zen_dojotools_weather
+            enabled: "{{ states('script.zen_dojotools_weather') in ['on', 'off'] }}"
+            continue_on_error: true
+            data:
+              mode: current
+            response_variable: _ce_wx
+          - variables:
+              _ce_outside: >-
+                {%- set r = _ce_wx.get('result', {}) if (_ce_wx is defined and _ce_wx is mapping) else {} -%}
+                {%- set n = r.get('now', {}) if (r is mapping and r.get('now') is mapping) else {} -%}
+                {%- set u = ((r.get('units', {}) or {}).get('temperature', '')) if r is mapping else '' -%}
+                {{ ('It is ' ~ (n.temperature | round(0) | int) ~ u ~ ' outside. ') if n.get('temperature') is number else '' }}
+
+          # Open five minutes: pick the units, then ask.
+          - if: "{{ _ce_event == 'open' }}"
+            then:
+              - variables:
+                  _ce_units: >-
+                    {%- set running = states.climate | rejectattr('entity_id', 'in', _ce_skip) | rejectattr('state', 'in', ['off', 'unavailable', 'unknown']) | list -%}
+                    {%- set areas = _ce_open | map(attribute='area') | reject('eq', '') | unique | list -%}
+                    {%- set ns = namespace(ah=[], o=[]) -%}
+                    {%- for a in areas -%}{%- set ns.ah = ns.ah + (labels(a) | select('match', '^hvac_air_handler(_[0-9]+)?$') | list) -%}{%- endfor -%}
+                    {%- for s in running -%}
+                      {%- if (labels(s.entity_id) | select('in', ns.ah) | list | count) > 0 or (area_id(s.entity_id) or '') in areas -%}
+                        {%- set ns.o = ns.o + [s] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                    {%- set picked = ns.o if ns.o | count > 0 else running -%}
+                    {{ picked | map(attribute='entity_id') | list }}
+                  _ce_what: >-
+                    {%- set ns = namespace(a=[], m=[]) -%}
+                    {%- for s in expand(_ce_units) -%}
+                      {%- set ns.a = ns.a + [s.attributes.get('hvac_action', '') | string] -%}{%- set ns.m = ns.m + [s.state] -%}
+                    {%- endfor -%}
+                    {{ 'the heat' if ('heating' in ns.a or (ns.m | select('eq', 'heat') | list | count > 0 and 'cooling' not in ns.a)) else ('the air conditioning' if ('cooling' in ns.a or 'cool' in ns.m) else 'the HVAC') }}
+                  _ce_names: "{{ (_ce_open | map(attribute='name') | list)[:3] | join(', ') }}"
+              - variables:
+                  _ce_go: "{{ _ce_enabled and not _ce_sleep and (_ce_open | count) > 0 and (_ce_units | count) > 0 and not _ce_saved }}"
+              - if: "{{ _ce_go }}"
+                then:
+                  - action: script.zen_dojotools_announce
+                    continue_on_error: true
+                    data:
+                      message: >-
+                        {{ _ce_names }} {{ 'has' if (_ce_open | count) == 1 else 'have' }} been open five minutes with {{ _ce_what }} on. {{ _ce_outside }}I sent a question to your phone about turning it off.
+                      urgency: 5
+                      caller_token: climate_envelope
+                  - action: script.zen_dojotools_postman
+                    continue_on_error: true
+                    response_variable: _ce_pm
+                    data:
+                      mode: resolve_and_dispatch
+                      title: "Open with {{ _ce_what }} on"
+                      message: >-
+                        {{ _ce_names }} {{ 'has' if (_ce_open | count) == 1 else 'have' }} been open five minutes with {{ _ce_what }} running. {{ _ce_outside }}Turn it off until it's closed?
+                      urgency: 6
+                      channel_hint: push
+                      response_type: yes_no
+                      response_timeout_s: 300
+                      ack_owner: climate
+                      # One tag per question (the minute it was sent), so a tap on an
+                      # older notification cannot answer this one.
+                      tag: "pm_climate_off_{{ (now().timestamp() // 60) | int }}"
+                      caller_token: climate_envelope_off
+                  - variables:
+                      _ce_ack: >-
+                        {%- set r = _ce_pm if (_ce_pm is defined and _ce_pm is mapping) else {} -%}
+                        {%- set r = r.get('result', r) if r.get('result') is mapping else r -%}
+                        {%- set r = r.get('result', r) if r.get('result') is mapping else r -%}
+                        {{ (r.get('ack_action', '') or '') | string | lower }}
+                      # Still open? A door closed while the question waited is not turned off.
+                      _ce_still_open: >-
+                        {%- set ns = namespace(n=0) -%}
+                        {%- for s in expand(label_entities('exterior')) if s.domain == 'binary_sensor' and s.state == 'on' and s.attributes.get('device_class') in ['door', 'window', 'opening', 'garage_door'] -%}{%- set ns.n = ns.n + 1 -%}{%- endfor -%}
+                        {{ ns.n > 0 }}
+                  - if: "{{ _ce_ack == 'yes' and _ce_still_open }}"
+                    then:
+                      - variables:
+                          # Each unit and the mode it was in, saved before it is turned off.
+                          _ce_record: >-
+                            {%- set ns = namespace(u=[]) -%}
+                            {%- for s in expand(_ce_units) -%}{%- set ns.u = ns.u + [[s.entity_id, s.state]] -%}{%- endfor -%}
+                            {{ {'at': now().isoformat(), 'openings': _ce_open | map(attribute='entity_id') | list, 'units': ns.u} }}
+                      - action: climate.set_hvac_mode
+                        continue_on_error: true
+                        target:
+                          entity_id: "{{ _ce_units }}"
+                        data:
+                          hvac_mode: "off"
+                      - action: script.zen_sutra_filecabinet
+                        continue_on_error: true
+                        data:
+                          mode: upsert
+                          write_mode: replace
+                          key: climate_envelope
+                          volume_entity_id: "{{ _ce_cab }}"
+                          value: "{{ _ce_drawer | combine({'shut_off': _ce_record}) | tojson }}"
+                      - action: script.zen_dojotools_announce
+                        continue_on_error: true
+                        data:
+                          message: "Turned {{ _ce_what }} off. When everything is closed I'll offer to turn it back on."
+                          urgency: 4
+                          caller_token: climate_envelope
+                      # One line in the agent's active context while the pause lasts, so a
+                      # "why is it cold" or "turn the heat on" is answered knowing why.
+                      # Cleared when the record is (restore, or any answer to the offer).
+                      - event: zen_event
+                        event_data:
+                          event:
+                            kind: priority_inject_write
+                            provider_id: climate_envelope
+                            summary: >-
+                              {{ _ce_what[:1] | upper ~ _ce_what[1:] }} paused: {{ _ce_names }} open since {{ now().strftime('%H:%M') }}, and the household said yes to turning it off. It goes back on with their yes once everything is closed (quietly if overnight).
+                            urgency: urgent
+                            expires_minutes: 1440
+                            entities: "{{ ((_ce_open | map(attribute='entity_id') | list)[:1] + _ce_units)[:3] }}"
+                            display: prompt
+              - variables:
+                  result:
+                    status: ok
+                    mode: envelope_check
+                    event: open
+                    result: >-
+                      {{ ('turned_off' if (_ce_ack | default('')) == 'yes' and (_ce_still_open | default(false)) else
+                          ('closed_before_answer' if (_ce_ack | default('')) == 'yes' else
+                          ('declined' if (_ce_ack | default('')) == 'no' else 'no_answer'))) if _ce_go else
+                         ('option_off' if not _ce_enabled else ('house_asleep' if _ce_sleep else ('already_off' if _ce_saved else ('nothing_running' if (_ce_units | count) == 0 else 'nothing_open')))) }}
+                    units: "{{ _ce_units }}"
+                    openings: "{{ _ce_open | map(attribute='entity_id') | list }}"
+                    caller_token: "{{ _token }}"
+
+          # Closed two minutes after a shutoff: offer to put it back.
+          - if: "{{ _ce_event == 'closed' }}"
+            then:
+              - variables:
+                  _ce_pairs: "{{ _ce_saved.get('units', []) if _ce_saved else [] }}"
+                  _ce_back: >-
+                    {%- set ns = namespace(o=[]) -%}
+                    {%- for p in _ce_pairs if p is sequence and p | count == 2 and states(p[0]) == 'off' -%}{%- set ns.o = ns.o + [p] -%}{%- endfor -%}
+                    {{ ns.o }}
+              - variables:
+                  _ce_rgo: "{{ (_ce_back | count) > 0 and (_ce_open | count) == 0 and not _ce_sleep }}"
+                  _ce_rwhat: >-
+                    {%- set ns = namespace(m=[]) -%}
+                    {%- for p in _ce_back -%}{%- set ns.m = ns.m + [p[1]] -%}{%- endfor -%}
+                    {{ 'the heat' if 'heat' in ns.m else ('the air conditioning' if 'cool' in ns.m else 'the HVAC') }}
+              - if: "{{ _ce_rgo }}"
+                then:
+                  - action: script.zen_dojotools_announce
+                    continue_on_error: true
+                    data:
+                      message: "Everything is closed. {{ _ce_outside }}I sent a question to your phone about turning {{ _ce_rwhat }} back on."
+                      urgency: 4
+                      caller_token: climate_envelope
+                  - action: script.zen_dojotools_postman
+                    continue_on_error: true
+                    response_variable: _ce_pm2
+                    data:
+                      mode: resolve_and_dispatch
+                      title: "Closed: turn {{ _ce_rwhat }} back on?"
+                      message: "Doors and windows are closed. {{ _ce_outside }}Turn {{ _ce_rwhat }} back on?"
+                      urgency: 6
+                      channel_hint: push
+                      response_type: yes_no
+                      response_timeout_s: 300
+                      ack_owner: climate
+                      tag: "pm_climate_on_{{ (now().timestamp() // 60) | int }}"
+                      caller_token: climate_envelope_on
+                  - variables:
+                      _ce_ack2: >-
+                        {%- set r = _ce_pm2 if (_ce_pm2 is defined and _ce_pm2 is mapping) else {} -%}
+                        {%- set r = r.get('result', r) if r.get('result') is mapping else r -%}
+                        {%- set r = r.get('result', r) if r.get('result') is mapping else r -%}
+                        {{ (r.get('ack_action', '') or '') | string | lower }}
+                  - if: "{{ _ce_ack2 == 'yes' }}"
+                    then:
+                      - repeat:
+                          for_each: "{{ _ce_back }}"
+                          sequence:
+                            - action: climate.set_hvac_mode
+                              continue_on_error: true
+                              target:
+                                entity_id: "{{ repeat.item[0] }}"
+                              data:
+                                hvac_mode: "{{ repeat.item[1] }}"
+              # While the house sleeps nothing is asked: the Yes was "off until it's
+              # closed", so closing it puts each unit back quietly (only units still off;
+              # one someone changed is left alone). Postman drops a message sent into the
+              # sleep gate, so the courtesy note is saved and sent when the house wakes.
+              - variables:
+                  _ce_quiet: "{{ (_ce_back | count) > 0 and (_ce_open | count) == 0 and _ce_sleep }}"
+              - if: "{{ _ce_quiet }}"
+                then:
+                  - repeat:
+                      for_each: "{{ _ce_back }}"
+                      sequence:
+                        - action: climate.set_hvac_mode
+                          continue_on_error: true
+                          target:
+                            entity_id: "{{ repeat.item[0] }}"
+                          data:
+                            hvac_mode: "{{ repeat.item[1] }}"
+              # The record is cleared after any answer, or none: it is one offer, not a nag.
+              - if: "{{ _ce_saved and (_ce_open | count) == 0 }}"
+                then:
+                  - action: script.zen_sutra_filecabinet
+                    continue_on_error: true
+                    data:
+                      mode: upsert
+                      write_mode: replace
+                      key: climate_envelope
+                      volume_entity_id: "{{ _ce_cab }}"
+                      value: >-
+                        {%- set note = ('Overnight, once the doors and windows were closed, I turned ' ~ _ce_rwhat ~ ' back on. It had been off while one was open.') if _ce_quiet else (_ce_drawer.get('pending_note', '') or '') -%}
+                        {{ _ce_drawer | combine({'shut_off': {}, 'pending_note': note}) | tojson }}
+                  - event: zen_event
+                    event_data:
+                      event:
+                        kind: priority_inject_clear
+                        provider_id: climate_envelope
+              - variables:
+                  result:
+                    status: ok
+                    mode: envelope_check
+                    event: closed
+                    result: >-
+                      {{ 'restored_quietly' if _ce_quiet else
+                         ((('restored' if (_ce_ack2 | default('')) == 'yes' else ('declined' if (_ce_ack2 | default('')) == 'no' else 'no_answer')) if _ce_rgo else
+                          ('nothing_to_restore' if (_ce_back | count) == 0 else 'still_open'))) }}
+                    restored: "{{ _ce_back if (_ce_quiet or (_ce_ack2 | default('')) == 'yes') else [] }}"
+                    caller_token: "{{ _token }}"
+
+          # The house woke (home mode left Night or Night-Late): send the note saved by
+          # a quiet overnight restore, then clear it.
+          - if: "{{ _ce_event == 'wake' }}"
+            then:
+              - variables:
+                  _ce_note: "{{ _ce_drawer.get('pending_note', '') or '' }}"
+              - if: "{{ _ce_note != '' and not _ce_sleep }}"
+                then:
+                  - action: script.zen_dojotools_postman
+                    continue_on_error: true
+                    data:
+                      mode: resolve_and_dispatch
+                      title: "HVAC back on overnight"
+                      message: "{{ _ce_note }}"
+                      urgency: 3
+                      channel_hint: push
+                      ack_owner: climate
+                      caller_token: climate_envelope_note
+                  - action: script.zen_sutra_filecabinet
+                    continue_on_error: true
+                    data:
+                      mode: upsert
+                      write_mode: replace
+                      key: climate_envelope
+                      volume_entity_id: "{{ _ce_cab }}"
+                      value: "{{ _ce_drawer | combine({'pending_note': ''}) | tojson }}"
+              - variables:
+                  result:
+                    status: ok
+                    mode: envelope_check
+                    event: wake
+                    result: "{{ ('note_sent' if not _ce_sleep else 'house_asleep') if _ce_note != '' else 'nothing_pending' }}"
+                    caller_token: "{{ _token }}"
+          - if: "{{ result is not defined }}"
+            then:
+              - variables:
+                  result:
+                    status: error
+                    mode: envelope_check
+                    reason: "guarded: envelope_event must be open, closed or wake"
+                    caller_token: "{{ _token }}"
 
       - if: >-
           {{ result is not defined and
@@ -1214,3 +1690,72 @@ script:
       - stop: set
         response_variable: result
 
+###############################################################################
+# Zen Climate Envelope Watcher
+# Calls zen_dojotools_climate mode=envelope_check when an exterior door, window or
+# opening (label exterior) has been open five minutes, and again when every one has
+# been closed two minutes. The script does nothing while envelope_offer_enabled is
+# off (the default), so this costs nothing until the household turns it on.
+# Queued, not single: the closed edge must still be handled after an open question
+# that is waiting up to five minutes for an answer.
+###############################################################################
+automation:
+  - id: zen_climate_envelope_watcher
+    alias: Zen Climate Envelope Watcher
+    description: >-
+      Offers to turn the HVAC off when an exterior door or window (label exterior)
+      stays open five minutes while heating or cooling, and to turn it back on once
+      everything is closed. Off unless zen_dojotools_climate mode=envelope
+      envelope_offer_enabled=true.
+    mode: queued
+    max: 3
+    triggers:
+      # expand(label_entities(...)) is used, not states() over a label result: that
+      # chain does not track reliably in a template trigger. It watches the sensors
+      # labeled exterior when the automation starts: a sensor labeled later is seen after
+      # the watcher is turned off and on, or a restart. A reload is not enough (it skips
+      # an automation whose config did not change). No now() tick on purpose (a scan
+      # every minute).
+      - trigger: template
+        value_template: >-
+          {%- set ns = namespace(n=0) -%}
+          {%- for s in expand(label_entities('exterior')) if s.domain == 'binary_sensor' and s.state == 'on' and s.attributes.get('device_class') in ['door', 'window', 'opening', 'garage_door'] -%}{%- set ns.n = ns.n + 1 -%}{%- endfor -%}
+          {{ ns.n > 0 }}
+        for: "00:05:00"
+        id: open
+      - trigger: template
+        value_template: >-
+          {%- set ns = namespace(n=0, all=0) -%}
+          {%- for s in expand(label_entities('exterior')) if s.domain == 'binary_sensor' and s.attributes.get('device_class') in ['door', 'window', 'opening', 'garage_door'] -%}
+            {%- set ns.all = ns.all + 1 -%}{%- if s.state == 'on' -%}{%- set ns.n = ns.n + 1 -%}{%- endif -%}
+          {%- endfor -%}
+          {{ ns.all > 0 and ns.n == 0 }}
+        for: "00:02:00"
+        id: closed
+      # The house woke: send the note saved by a quiet overnight restore. Two edges, the
+      # same rule as the sleep gate: the home mode leaving Night or Night-Late, and quiet
+      # hours ending. zen_home_mode is the singleton global sensor (same precedent as
+      # the Security Auto-Arm Watcher).
+      - trigger: state
+        entity_id: sensor.zen_home_mode
+        from:
+        - Night
+        - Night-Late
+        not_to:
+        - Night
+        - Night-Late
+        - unknown
+        - unavailable
+        id: wake
+      - trigger: template
+        value_template: >-
+          {{ is_state(label_entities('zen_quiet_hours') | select('match', 'binary_sensor\\.') | list | first | default('none', true), 'off') }}
+        id: wake
+    conditions: []
+    actions:
+      - action: script.zen_dojotools_climate
+        continue_on_error: true
+        data:
+          mode: envelope_check
+          envelope_event: "{{ trigger.id }}"
+          caller_token: climate_envelope_watcher

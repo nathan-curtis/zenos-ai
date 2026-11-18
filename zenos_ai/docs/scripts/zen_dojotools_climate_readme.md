@@ -1,4 +1,4 @@
-# Zen DojoTools Climate — v2.4.1
+# Zen DojoTools Climate — v2.5.0
 
 **Script:** `zen_dojotools_climate`
 **File:** `packages/zenos_ai/dojotools/dojotools_climate.yaml`
@@ -59,8 +59,32 @@ Reads every `climate` entity once and scores it in code, for the ambient tier (T
 | `conditioning_with_opening` | 2 | A unit is heating or cooling while a door or window in its area is open |
 | `freeze_forecast` | 2 | The Weather tool forecasts a freeze in the next 24 hours |
 | `conditioning_while_away` | 1 | A unit is heating or cooling while the home mode is Away |
+| `paused_for_envelope` | 1 | A unit the envelope offer turned off (household said yes) is still off; listed in `envelope_paused[]` |
 | `no_climate_units` | 0 | The house has no climate entity to score |
 
 `zenos.climate.read` (level 1, stages `i`, `s` and `l`: the summary seed and a live drawer mounted on it) is declared in `tool_manifest` with `seed_modes: summary@zenos.climate.read:1`. Grant it with `persona_editor mode=cert_req_grant cert_component=zenos.climate.read cert_stages=isl`. The `climate` KFC is defined by `mode=kfc_manifest` (ambient tier, `pipeline_tier: ambient`, subscriptions `hourly_trigger`, `ha_start`, `home_mode_updates`, `force_summary`).
 
 **Not scored.** Climate entities that are not room comfort are skipped and listed under `excluded`: anything labeled `spa_climate`, `zen_plant_hot_tub`, `zen_plant_thermal` or `zen_rm_ignore`. A hot tub held at 103 °F on purpose is not "overheating" (2.3.1; found on the first real house).
+
+## `mode=envelope`: the offer to turn the HVAC off when the house is open
+
+```json
+{ "mode": "envelope" }
+{ "mode": "envelope", "envelope_offer_enabled": true }
+```
+
+**The envelope** is every door, window or opening sensor labeled `exterior` (`binary_sensor`, device class `door`, `window`, `opening` or `garage_door`). Label the sensors with `zen_dojotools_labels mode=tag label_list=["exterior"] target_entities=[...]`. Leave the garage door unlabeled if it shouldn't count. Interior doors are never part of it. The watcher reads the labeled sensors when it starts. Labeling through `zen_dojotools_labels` (tag or untag) re-arms it for you (Labels 5.11.0). After labeling in the Home Assistant UI, turn the Zen Climate Envelope Watcher off and on, or restart: reloading automations is not enough, because a reload skips an automation whose config has not changed.
+
+**With `envelope_offer_enabled` on** (default off; writing it needs `zenos.system.home_config_write` level 1, reading needs nothing):
+
+1. An envelope opening is open for five minutes while heating or cooling runs. The house announces it (Announce tool) and sends a Yes/No to the household's phones (Postman, five minutes to answer). The message carries the outdoor temperature when the Weather tool is installed.
+2. **Yes** turns off the units that serve the open area and saves each unit's mode in the household drawer `climate_envelope`. If everything was closed while the question waited, nothing is turned off. **No** or no answer leaves the HVAC alone, and the offer isn't repeated until the envelope closes and opens again.
+3. Once every opening has been closed for two minutes, the house offers the same way to turn them back on. **Yes** puts each unit back in its saved mode, but only units still off (a unit someone changed in the meantime is left alone). The saved record is cleared after any answer.
+4. **Quiet while the house sleeps** (the same rule as Postman's sleep gate: quiet hours on, or the home mode Night or Night-Late). Nothing is announced or asked, and the open offer waits for the next time the envelope opens. A Yes meant "off until it's closed", so if everything closes while the house sleeps, each unit is put back in its saved mode quietly (only units still off). A courtesy note is saved and sent to the household's phones when the house wakes (the home mode leaves Night or Night-Late, or quiet hours end), because Postman drops a message sent into the sleep gate.
+5. **The agent knows.** While the HVAC is paused, a one-line Priority Inject entry (`provider_id: climate_envelope`, urgency `urgent`) sits in the agent's active context, saying what is open, since when, and that the household said yes. It is cleared when the units go back on or the record is cleared. `mode=summary` also gives the reason `paused_for_envelope`.
+
+**Which units an opening turns off:** the `hvac_air_handler` (or `hvac_air_handler_<n>`) label the opening's area shares with thermostats (see Room Manager `mode=hvac_coverage`). Without one, a thermostat in the same area. Without that, every unit that is running. Spa and thermal loads are never touched.
+
+Returns `enabled`, `envelope[]` (`entity_id`, `name`, `area`, `open`), `open_now[]`, `shut_off` (the saved units and modes while the HVAC is off for an opening, else `null`) and `how_to`.
+
+The trigger is the automation **Zen Climate Envelope Watcher**, in this package. It calls the internal `mode=envelope_check` (refused for any caller with a user, so an agent can't turn the HVAC off through it) and does nothing while the setting is off.
