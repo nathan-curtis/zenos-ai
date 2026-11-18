@@ -1,6 +1,17 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Security Manager
-# Version: 5.24.0
+# Version: 5.25.1
+# v5.25.1: the secure-stance handler has its own switch, cover_secure_close_enabled
+#   (default on), and acts only while cover_watch_enabled is on. 5.25.0 closed an open
+#   cover at the Night transition on a default install with the watch off. Off,
+#   a secure stance uses cover_day_policy and nothing closes overnight unless
+#   cover_night_close_enabled is on.
+# v5.25.0: secure-stance cover policy. cover_armed_policy (default ask_then_close) replaces
+#   cover_day_policy for a cover left open while the panel is armed (any mode) or the home
+#   mode is Away, Night or Night-Late: ask, and close if nobody says No in five minutes.
+#   While the house sleeps a closing policy closes quietly (note on waking), and the Night
+#   transition closes an open cover the same way, as cover_night_close_enabled does.
+#   auto_arm_config reads it, with secure_stance_now.
 # v5.24.0: the appliance sentry (#10703). appliance_sentry_enabled (default off) tells the
 #   household when an appliance labeled appliance AND appliance_sentry has been on
 #   appliance_sentry_minutes (default 10) with nobody home: zone.home at 0, the same rule
@@ -341,7 +352,11 @@ script:
           armed_away, see the lock_unlocked branch's own comment for why),
           cover_watch_enabled (bool, default false), cover_left_open_minutes
           (int, default 15), cover_day_policy (ask | ask_then_close | close |
-          notify, default ask), cover_night_close_enabled (bool, default
+          notify, default ask), cover_secure_close_enabled (bool, default
+          true: the secure-stance handler, acts only while cover_watch_enabled is
+          on), cover_armed_policy (same choices, default
+          ask_then_close: used instead of cover_day_policy while the panel is
+          armed or the home mode is Away, Night or Night-Late), cover_night_close_enabled (bool, default
           false), cover_wind_close_enabled (bool, default false),
           cover_wind_policy (default ask_then_close), cover_wind_threshold
           (number, for a wind_speed sensor labeled cover_wind), appliance_sentry_enabled
@@ -555,7 +570,7 @@ script:
                     summary='Alarm panel, perimeter, and auto-arm',
                     display_name='Security Manager',
                     tier='dojotools',
-                    version='5.24.0',
+                    version='5.25.1',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools', 'zen_kfc_provider'],
                     optional_labels=['security_manager', 'alarm', 'secure_on_arm', 'exterior', 'cover_wind', 'appliance', 'appliance_sentry'],
@@ -982,7 +997,7 @@ script:
               result:
                 status: ok
                 tool: zen_dojotools_security_manager
-                version: "5.24.0"
+                version: "5.25.1"
                 mode: kfc_manifest
                 kfc: "{{ _kfc_out }}"
                 count: "{{ _kfc_out | length }}"
@@ -1911,6 +1926,18 @@ script:
                                 cover_day_policy:
                                   value: "{{ _sm_val.get('_auto_arm_config', {}).get('cover_day_policy', 'ask') }}"
                                   means: "What happens while the house is awake: ask (announce and ask on the phone, close only on a Yes; default), ask_then_close (close unless someone says No within five minutes; the door's own obstruction sensing is its job), close (close and say so), notify (only say so)."
+                                cover_secure_close_enabled:
+                                  value: "{{ _sm_val.get('_auto_arm_config', {}).get('cover_secure_close_enabled', true) | bool(true) }}"
+                                  means: "The secure-stance close handler. Default on, and it only acts while cover_watch_enabled is on. On: in a secure stance cover_armed_policy replaces cover_day_policy, and a cover left open while the house sleeps, or still open at the Night transition, closes quietly. Off: a secure stance uses cover_day_policy, and nothing closes overnight unless cover_night_close_enabled is on."
+                                cover_armed_policy:
+                                  value: "{{ _sm_val.get('_auto_arm_config', {}).get('cover_armed_policy', 'ask_then_close') }}"
+                                  means: "With cover_secure_close_enabled on, replaces cover_day_policy in a secure stance: the alarm panel armed (any mode), or the home mode Away, Night or Night-Late. Default ask_then_close (ask, and close if nobody says No within five minutes); set ask to keep Yes-only. While the house sleeps, ask_then_close and close close quietly, with a note on waking, and so does the Night transition."
+                                secure_stance_now:
+                                  value: >-
+                                    {%- set p = label_entities('alarm_panel') | select('match', 'alarm_control_panel\\.') | list | first | default('none', true) -%}
+                                    {%- set hm = label_entities('zen_home_mode') | select('match', 'input_select\\.') | list | first | default('none', true) -%}
+                                    {{ states(p).startswith('armed_') or states(hm) in ['Away', 'Night', 'Night-Late'] }}
+                                  means: "Whether the house is in a secure stance right now, so cover_armed_policy applies."
                                 cover_night_close_enabled:
                                   value: "{{ _sm_val.get('_auto_arm_config', {}).get('cover_night_close_enabled', false) | bool(false) }}"
                                   means: "Close watched covers quietly when the home mode turns Night, or when one is left open while the house sleeps; a note goes out when the house wakes. Default off."
@@ -2206,11 +2233,29 @@ script:
                             _cv_wind_on: "{{ _aa_cfg.get('cover_wind_close_enabled', false) | bool(false) }}"
                             _cv_minutes: "{{ [_aa_cfg.get('cover_left_open_minutes', 15) | int(15), 1] | max }}"
                             _cv_day: "{{ _aa_cfg.get('cover_day_policy', 'ask') if _aa_cfg.get('cover_day_policy', 'ask') in ['ask', 'ask_then_close', 'close', 'notify'] else 'ask' }}"
+                            _cv_armed_pol: "{{ _aa_cfg.get('cover_armed_policy', 'ask_then_close') if _aa_cfg.get('cover_armed_policy', 'ask_then_close') in ['ask', 'ask_then_close', 'close', 'notify'] else 'ask_then_close' }}"
                             _cv_wind_pol: "{{ _aa_cfg.get('cover_wind_policy', 'ask_then_close') if _aa_cfg.get('cover_wind_policy', 'ask_then_close') in ['ask', 'ask_then_close', 'close', 'notify'] else 'ask_then_close' }}"
                             _cv_ack: "{{ cover_ack if (cover_ack is defined and cover_ack is mapping) else {} }}"
+                            # Secure stance: the panel is armed (any armed_ state), or the home
+                            # mode is Away, Night or Night-Late. cover_armed_policy then replaces
+                            # cover_day_policy for a cover left open.
+                            _cv_secure: >-
+                              {%- set p = label_entities('alarm_panel') | select('match', 'alarm_control_panel\\.') | list | first | default('none', true) -%}
+                              {%- set hm = label_entities('zen_home_mode') | select('match', 'input_select\\.') | list | first | default('none', true) -%}
+                              {{ states(p).startswith('armed_') or states(hm) in ['Away', 'Night', 'Night-Late'] }}
                         - variables:
                             _cv_open: "{{ expand(_cv_ids) | selectattr('state', 'in', ['open', 'opening']) | map(attribute='entity_id') | list }}"
                             _cv_ctx: "{{ _cv_ack.get('ack_context', '') | string }}"
+                            # The secure-stance handler has its own switch
+                            # (cover_secure_close_enabled, default on) and only ever acts while
+                            # the cover watch is on: with the watch off, nothing it decides
+                            # closes a cover, including at the Night transition.
+                            _cv_secure_on: "{{ _cv_watch and (_aa_cfg.get('cover_secure_close_enabled', true) | bool(true)) }}"
+                        - variables:
+                            _cv_left: "{{ _cv_armed_pol if (_cv_secure and _cv_secure_on) else _cv_day }}"
+                            # A secure stance whose policy closes on its own closes quietly
+                            # while the house sleeps, as Night close does.
+                            _cv_secure_closes: "{{ _cv_secure_on and _cv_secure and _cv_armed_pol in ['ask_then_close', 'close'] }}"
                         - variables:
                             _cv_names: >-
                               {%- set n = expand(_cv_open) | map(attribute='name') | list -%}
@@ -2225,20 +2270,20 @@ script:
                               {%- set t = _aa_trigger -%}
                               {%- if t == 'cover_left_open' -%}
                                 {%- if not _cv_watch or (_cv_open | count) == 0 -%}none
-                                {%- elif _cv_sleep -%}{{ 'close' if _cv_night_on else 'none' }}
-                                {%- else -%}{{ m.get(_cv_day, 'ask') }}{%- endif -%}
+                                {%- elif _cv_sleep -%}{{ 'close' if (_cv_night_on or _cv_secure_closes) else 'none' }}
+                                {%- else -%}{{ m.get(_cv_left, 'ask') }}{%- endif -%}
                               {%- elif t == 'cover_wind' -%}
                                 {%- if not _cv_wind_on or (_cv_open | count) == 0 -%}none
                                 {%- elif _cv_sleep -%}{{ 'close' if _cv_wind_pol in ['ask_then_close', 'close'] else 'none' }}
                                 {%- else -%}{{ m.get(_cv_wind_pol, 'ask') }}{%- endif -%}
-                              {%- elif t == 'cover_night' -%}{{ 'close' if (_cv_night_on and (_cv_open | count) > 0) else 'none' }}
+                              {%- elif t == 'cover_night' -%}{{ 'close' if ((_cv_night_on or _cv_secure_closes) and (_cv_open | count) > 0) else 'none' }}
                               {%- elif t == 'cover_ack' and _cv_ctx.startswith('cover_') and (_cv_open | count) > 0 -%}
                                 {%- set a = _cv_ack.get('ack_action', '') | string | lower -%}
                                 {{ 'close' if (a == 'yes' or (a == '' and (_cv_ack.get('ack_timed_out', false) | bool(false)) and not (_cv_ack.get('no_channel', false) | bool(false)) and _cv_ctx.endswith(':ask_then_close'))) else 'none' }}
                               {%- else -%}none{%- endif -%}
                             _cv_why: >-
                               {{ 'wind' if (_aa_trigger == 'cover_wind' or _cv_ctx.startswith('cover_wind')) else ('night' if (_aa_trigger == 'cover_night' or _cv_sleep) else 'left_open') }}
-                            _cv_policy: "{{ _cv_wind_pol if (_aa_trigger == 'cover_wind') else _cv_day }}"
+                            _cv_policy: "{{ _cv_wind_pol if (_aa_trigger == 'cover_wind') else _cv_left }}"
                         - variables:
                             _cv_say: >-
                               {%- if _cv_why == 'wind' -%}{{ _cv_names }} {{ 'is' if (_cv_open | count) == 1 else 'are' }} open in damaging wind
@@ -3614,7 +3659,7 @@ script:
                         arm_mode: "away | home | night | vacation. Required for action=arm."
                         panel: "alarm_control_panel entity_id override. Omit to auto-discover via label:alarm_panel."
                         policy_patch: "JSON string, event_type -> policy overrides. Required for set_alert_policy. Event types: alarm_triggered, alarm_pending, alarm_arm_away, alarm_arm_home, alarm_arm_night, alarm_disarm, panel_fault, smoke_co, door_open_armed, door_open_night, garage_open_armed, lock_unlocked_armed, lock_unlocked_night, lock_changed, person_detected_armed. Per-entry keys: urgency (1-10), notify (bool), channel_hint, title."
-                        auto_arm_patch: "JSON string for auto_arm_config, partial merge. See auto_arm_config field docs for the full key list (auto_arm_enabled, vac_arm_override_enabled, notify_occupied_while_away, dusk_lights_enabled, dusk_offset_min, dawn_offset_min, arrival_lights_enabled, arrival_lights_minutes, arrival_lights_dark_elevation, arrival_lights_residents, night_arm_enabled, mode_away_arm_enabled, entertaining_blocks_night_arm, alarm_drives_home_mode_enabled, disarm_occupies_arrival_area_enabled, lock_disarm_enabled, cover_watch_enabled, cover_left_open_minutes, cover_day_policy, cover_night_close_enabled, cover_wind_close_enabled, cover_wind_policy, cover_wind_threshold, appliance_sentry_enabled, appliance_sentry_minutes)."
+                        auto_arm_patch: "JSON string for auto_arm_config, partial merge. See auto_arm_config field docs for the full key list (auto_arm_enabled, vac_arm_override_enabled, notify_occupied_while_away, dusk_lights_enabled, dusk_offset_min, dawn_offset_min, arrival_lights_enabled, arrival_lights_minutes, arrival_lights_dark_elevation, arrival_lights_residents, night_arm_enabled, mode_away_arm_enabled, entertaining_blocks_night_arm, alarm_drives_home_mode_enabled, disarm_occupies_arrival_area_enabled, lock_disarm_enabled, cover_watch_enabled, cover_left_open_minutes, cover_day_policy, cover_secure_close_enabled, cover_armed_policy, cover_night_close_enabled, cover_wind_close_enabled, cover_wind_policy, cover_wind_threshold, appliance_sentry_enabled, appliance_sentry_minutes)."
                         auto_arm_trigger: "Internal -- which event fired auto_arm_check (occupancy|vac_started|vac_docked|override_expired|and the panel, lock and home-mode triggers). Set by the companion automation, not for direct agent calls."
                       cert_gates:
                         read_tier: "read_state, query, readiness, override_list, activity, lens, get_policy -- always open, no cert."
@@ -4009,7 +4054,8 @@ automation:
       # Exterior covers (cover_watch_enabled, default off): every cover labeled
       # secure_on_arm, and every cover labeled exterior with device class garage, gate
       # or door. Left open cover_left_open_minutes (default 15): ask, close or tell, by
-      # cover_day_policy. The handler does nothing while the setting is off. Like every
+      # cover_day_policy, or cover_armed_policy in a secure stance (panel armed, or home
+      # mode Away, Night or Night-Late). The handler does nothing while the setting is off. Like every
       # label template trigger here, a cover labeled after this automation starts is
       # seen once it is turned off and on, or after a restart (#10716).
       - trigger: template
@@ -4034,7 +4080,8 @@ automation:
           {%- endfor -%}
           {{ ns.all > 0 and ns.n == 0 }}
         id: cover_closed
-      # cover_night_close_enabled: close silently when the home mode turns Night.
+      # cover_night_close_enabled, or a cover_armed_policy that closes on its own: close
+      # silently when the home mode turns Night.
       - trigger: state
         entity_id: sensor.zen_home_mode
         to: "Night"
