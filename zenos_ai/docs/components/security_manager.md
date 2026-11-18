@@ -1,8 +1,8 @@
 # ZenOS-AI Security Manager
 
-**Version:** 5.21.0
+**Version:** 5.23.1
 
-> **2026.12.0 (5.10.0 to 5.21.0): the foundation, vacuum sync and lighting.** Four new reads, no cert: `readiness`, `override_list`, `activity` and `lens`. A record for temporary overrides and an activity ledger, with internal actions that only automations can call. A second automation, the Zen Security Sentry, ends overrides on time. The first behavior built on it is vacuum sync, off by default: with `vac_arm_override_enabled` on, the panel goes from Away to Home while the vacuum cleans and back to Away at the dock. An optional notice when a room reads occupied while armed Away, security lighting at dusk and dawn, and arrival lights after dark, each off by default. `auto_arm_config` with no patch now reads the settings. See [Readiness, overrides and activity](#readiness-overrides-and-activity) and [Occupied while away](#occupied-while-away).
+> **2026.12.0 (5.10.0 to 5.23.1): the foundation, vacuum sync, lighting and exterior covers.** Four new reads, no cert: `readiness`, `override_list`, `activity` and `lens`. A record for temporary overrides and an activity ledger, with internal actions that only automations can call. A second automation, the Zen Security Sentry, ends overrides on time. The first behavior built on it is vacuum sync, off by default: with `vac_arm_override_enabled` on, the panel goes from Away to Home while the vacuum cleans and back to Away at the dock. An optional notice when a room reads occupied while armed Away, security lighting at dusk and dawn, and arrival lights after dark, each off by default. While an override is in force the agent knows it (one Priority Inject line). Exterior covers (garage doors and gates) left open, at Night, or in damaging wind can be offered a close, closed, or reported, by setting, each off by default. `auto_arm_config` with no patch now reads the settings. See [Readiness, overrides and activity](#readiness-overrides-and-activity), [Occupied while away](#occupied-while-away) and [Exterior covers](#exterior-covers-5230).
 
 > **2026.11.0 (5.9.1, 5.9.2):** `auto_arm_check` is refused from a user or agent session; only the auto-arm automations call it. A `zone.home` that is unknown or unavailable is never an empty house: the count reads -1, nothing arms and the arrival path doesn't run, and the Night-Late and Away watchers ignore a change from unknown or unavailable (a template reload).
 
@@ -76,6 +76,8 @@ The `read_state` response includes a `lens` field describing the handoff to the 
 
 A temporary override is a change the system makes to the panel on its own for a while, kept as a record (one per kind) in the household `security_manager` drawer, so it survives a reload or restart: what it left, what it moved to, why, when it began and ends, and a ceiling from its start (default 180 minutes) its end can never pass. `override_list` reads them. Only automations make and end them, and each step (begin, extend, clamp, end, expiry) writes a line to the activity ledger.
 
+While an override is in force the agent knows it: `override_set` writes one Priority Inject line to its active context (provider `security_override_<kind>`, urgency `urgent`, expiring with the override), for example "Security is armed home instead of armed away for vacuum sync, since 10:02. It goes back by about 10:45." An extension rewrites it; `override_end` and the Sentry's sweep clear it (5.22.0).
+
 **Spook is required.** The Zen Security Sentry ends overrides on time, and it runs only when Spook's trigger platforms work. Without it, `override_set` and turning on `vac_arm_override_enabled` answer `spook_required`; turning that setting off always works. `lens` says when an override has outlived its time.
 
 ### The activity ledger
@@ -84,7 +86,7 @@ What security did on its own, and what it declined to do, is a short list in the
 
 ### The Zen Security Sentry
 
-A second automation, kept apart from the Auto-Arm Watcher so a missing or changed Spook can't switch the watcher off. It runs every minute while an override exists, ends any that have expired (one ledger line each), and fires a `zen_event` of kind `security_override_expired` so the behavior that owns the override can put the panel back. For an expired override it never touches the panel itself; for vacuum sync it also reconciles a dock that was never reported (see [Vacuum sync](#vacuum-sync)). The health report names both watchers and raises a CRITICAL when one is unavailable.
+A second automation, kept apart from the Auto-Arm Watcher so a missing or changed Spook can't switch the watcher off. It runs every minute while an override exists, ends any that have expired (one ledger line each), and fires a `zen_event` of kind `security_override_expired` so the behavior that owns the override can put the panel back. For an expired override it never touches the panel itself; for vacuum sync it also reconciles a dock that was never reported (see [Vacuum sync](#vacuum-sync)). The health report names both watchers and raises a CRITICAL when one is unavailable. Security Manager finds the Sentry by its automation id, so renaming its entity doesn't make it read as off (5.23.1).
 
 ### Vacuum sync
 
@@ -109,6 +111,22 @@ A reload or restart during a run cannot strand the panel at Home: each minute th
 Only the landing lights that were off are turned on, and the record of exactly those is kept in the household cabinet (`_security_arrival`). They are turned off again after `arrival_lights_minutes` (default 10), so lights that were already on, such as dusk-to-dawn porch lights, are never turned off by it. A second arrival inside the window extends the time. The off step acts on any record that has run out, whatever the setting, and again after a restart, so a light it turned on is never stranded. Each change writes a ledger line (`arrival_lights`) naming the resident. The read shows the settings under `arrival_settings` with the labeled lights and trackers.
 
 It prepares only. It never touches the alarm panel, and presence never disarms it.
+
+### Exterior covers (5.23.0)
+
+The garage family, by label. **Watched covers** are every cover labeled `secure_on_arm` (the covers the house already closes when it arms Away) and every cover labeled `exterior` with device class `garage`, `gate` or `door`. All settings are in `auto_arm_config` and all are off by default. A cover's own obstruction sensing is the door's job; the policies below are the household's call.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `cover_watch_enabled` | off | Act when a watched cover is left open `cover_left_open_minutes` (default 15). |
+| `cover_day_policy` | `ask` | While the house is awake: `ask` (announce and ask on the phone, close only on a Yes), `ask_then_close` (close unless someone says No within five minutes), `close` (close and say so), `notify` (only say so). |
+| `cover_night_close_enabled` | off | Close quietly when the home mode turns Night, or when one is left open while the house sleeps. A note goes out when the house wakes. |
+| `cover_wind_close_enabled` | off | Act on damaging wind lasting five minutes with a watched cover open, by `cover_wind_policy` (default `ask_then_close`). |
+| `cover_wind_threshold` | 50 mph / 80 | For a `wind_speed` sensor labeled `cover_wind`. |
+
+**Wind source, in order:** a `binary_sensor` labeled `cover_wind` (on means close), a `wind_speed` sensor labeled `cover_wind` against `cover_wind_threshold`, else the weather entity's gust or wind speed against the damaging threshold for its unit.
+
+**How it runs:** triggers on the Auto-Arm Watcher (`cover_left_open`, `cover_closed`, `cover_night`, `cover_wake`, `cover_wind`, `cover_ack`). A question goes out through the dispatcher **without waiting**, because the watcher is queued and must never hold a security event behind a five-minute question; its answer comes back as a `postman_ack` (`ack_owner: security_manager`), and the policy rides in its `ack_context`. While the house sleeps (Postman's sleep rule) nothing is asked: a close is logged and told on waking. Every close writes a ledger line; while a watched cover stays open past its time the agent has a Priority Inject line (`security_cover_open`), cleared when every watched cover is closed. `auto_arm_config` (no patch) shows `cover_settings` with the watched covers and the wind source. A cover labeled through `zen_dojotools_labels` is picked up at once (the tool re-arms the watcher, Labels 5.11.0); one labeled in the Home Assistant UI is seen once the watcher is turned off and on, or after a restart (#10716).
 
 ### Who runs as whom
 

@@ -1,6 +1,22 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Postman
-# Version: 5.4.0
+# Version: 5.6.0
+# v5.6.0: delivery check (#10715). When a tap is wanted, every push of the call shares one
+#   correlation id and a listener starts before the pushes go out (they wait 300 ms), so
+#   the dispatcher's return is never missed. No return within 5 s and no TTS means
+#   nothing went out: Postman logs the targets, does not wait for a tap, and answers
+#   status no_channel (push_confirmed false). postman_ack carries no_channel, so a caller
+#   can tell "nobody was asked" from "nobody answered". The result carries console_override
+#   (the cert_admin_console_bypass flag, read through ID.console_override(), reported
+#   and never acted on), and the no_channel log line says when it is on: live approvals
+#   still pass without a phone.
+# v5.5.0: a push target whose notify service does not exist no longer ends the whole
+#   call. Every notify call (push, the TTS audio push, direct_dispatch) runs in a run of
+#   its own (internal mode push_send, sent through the dispatcher as a dojotool_call,
+#   since a script cannot call itself, and guarded by the
+#   caller's context id), so the call that sent it still waits for the tap, sends TTS
+#   and writes its log. continue_on_error does not catch a missing service (a fresh
+#   install has no notify.admin_devices). max is 10.
 # v5.4.0: declares its act (tool_manifest act: mode resolve_and_dispatch, no args),
 #   which a background act now needs next to its emit cert. Its hand route in the
 #   dispatcher still wins.
@@ -57,7 +73,7 @@ script:
   zen_dojotools_postman:
     alias: Zen DojoTools Postman
     mode: parallel
-    max: 5
+    max: 10
     icon: mdi:envelope-outline
     description: >-
       Unified household communications layer. Resolves intent against the
@@ -467,6 +483,33 @@ script:
           _user_cab:      "{{ states('sensor.zen_default_user_cabinet_resolved') }}"
           _family_cab:    "{{ states('sensor.zen_default_family_cabinet_resolved') }}"
           _kata_cab:      "{{ states('sensor.zen_kata_cabinet_resolved') }}"
+
+      # ── push_send (internal): one notify call in a run of its own ─────────
+      # Postman sends every push here through the dispatcher (dojotool_call), so a notify
+      # service that does not exist (no phone set up yet, a renamed target) ends
+      # only this run; the call that started it still waits for the tap, sends TTS
+      # and writes its log. continue_on_error does not catch a missing service.
+      # Only Postman can start it: push_ctx must be the run's own context id, which
+      # a caller cannot know before the call is made. It sits before the onboarding
+      # gate on purpose: a cert request's approval push travels through here.
+      - if: "{{ _mode == 'push_send' }}"
+        then:
+          - variables:
+              _ps_ok: >-
+                {{ (push_ctx | default('', true) | string) != ''
+                   and (push_ctx | string) in [context.id | string, (context.parent_id or '') | string]
+                   and (push_slug | default('', true) | string | regex_match('^[a-z0-9_]+$')) }}
+          - if: "{{ _ps_ok }}"
+            then:
+              - action: "notify.{{ push_slug }}"
+                data: "{{ push_data if push_data is mapping else {} }}"
+          - variables:
+              _ps_result:
+                status: "{{ 'sent' if _ps_ok else 'error' }}"
+                mode: push_send
+                reason: "{{ '' if _ps_ok else 'guarded: push_send is internal to Postman' }}"
+          - stop: push_send
+            response_variable: _ps_result
 
       # ── 0b. Kata-input fallback + SP1 user cabinet resolution ────────────
       - variables:
@@ -1087,66 +1130,114 @@ script:
                 - repeat:
                     for_each: "{{ _tts_push_targets }}"
                     sequence:
-                      - if: "{{ _phone_audio_url != '' }}"
-                        then:
-                          - action: "notify.{{ repeat.item }}"
-                            data:
-                              message: "{{ _message }}"
-                              data:
-                                audio: "{{ _phone_audio_url }}"
-                        else:
-                          - action: "notify.{{ repeat.item }}"
-                            data:
-                              message: TTS
-                              data:
-                                tts_text: "{{ _message }}"
+                      # Each push goes through the dispatcher (a script cannot call
+                      # itself): a missing notify service ends only that run.
+                      - event: zen_event
+                        event_data:
+                          event:
+                            kind: dojotool_call
+                            tool: zen_dojotools_postman
+                            version: "1"
+                            correlation_id: "{{ context.id }}_ttspush_{{ repeat.index }}"
+                            payload:
+                              mode: push_send
+                              push_slug: "{{ repeat.item }}"
+                              push_ctx: "{{ context.id }}"
+                              push_data: >-
+                                {{ {'message': _message, 'data': {'audio': _phone_audio_url}} if _phone_audio_url != ''
+                                   else {'message': 'TTS', 'data': {'tts_text': _message}} }}
 
             # ── 8. Dispatch per channel (push + teams) ──────────────────────
             # TTS handled separately in step 8.3 — pulled out of loop so voice
             # ack result is accessible to the step 8.5 push-ack wait.
-            - repeat:
-                for_each: "{{ _final_channels_list | reject('equalto', 'tts') | list }}"
-                sequence:
-                  - choose:
-                      - conditions: "{{ repeat.item == 'push' }}"
+            # Delivery check (#10715): every push of this call shares one correlation
+            # id, and when a tap is wanted a listener branch starts BEFORE the send
+            # branch (which waits 300 ms), so the first dispatcher return cannot be
+            # missed. A push to a notify service that does not exist ends its dispatcher
+            # run and never returns. No return in 5 s and no TTS: nothing went out, so
+            # step 8.5 does not wait for a tap that cannot come.
+            - variables:
+                _push_wanted: "{{ 'push' in _final_channels_list and _response_type not in ['', 'none'] }}"
+                # The console override (cert_admin_console_bypass) stands in for every live
+                # human approval (identity request_live_ack). Reported here, never acted on.
+                _console_override: >-
+                  {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                  {{- ID.console_override() | trim == 'true' -}}
+                _push_ok: false
+            - parallel:
+                - sequence:
+                    - if: "{{ _push_wanted }}"
+                      then:
+                        - wait_for_trigger:
+                            - trigger: event
+                              event_type: zen_event
+                              event_data:
+                                event:
+                                  kind: dojotool_return
+                                  correlation_id: "{{ context.id }}_push"
+                          timeout:
+                            seconds: 5
+                          continue_on_timeout: true
+                        - variables:
+                            _push_ok: "{{ wait.trigger is not none }}"
+                - sequence:
+                    - if: "{{ _push_wanted }}"
+                      then:
+                        - delay:
+                            milliseconds: 300
+                    - repeat:
+                        for_each: "{{ _final_channels_list | reject('equalto', 'tts') | list }}"
                         sequence:
-                          - repeat:
-                              for_each: >-
-                                {{ _push_targets if _push_targets is iterable and _push_targets is not string
-                                   else (_push_targets | from_json if _push_targets is string else ['Admin Devices']) }}
-                              sequence:
-                                - variables:
-                                    _notify_slug: >-
-                                      {%- set m = {
-                                        'Admin Devices':              'admin_devices',
-                                        'Family Devices':             'family_devices',
-                                        'Family Devices (Verbose)':   'family_devices_verbose',
-                                        'Default User Phone':         'default_user',
-                                        'Secondary User Phone':       'secondary_user'
-                                      } -%}
-                                      {{- m.get(repeat.item, repeat.item | lower | replace(' ', '_')) -}}
-                                - action: "notify.{{ _notify_slug }}"
-                                  data: >-
-                                    {%- set nd = _notif_data if _notif_data is mapping and _notif_data | length > 0 else {} -%}
-                                    {%- set base = {'message': _message} -%}
-                                    {%- if _title != '' -%}{%- set base = base | combine({'title': _title}) -%}{%- endif -%}
-                                    {%- if nd | length > 0 -%}{%- set base = base | combine({'data': nd}) -%}{%- endif -%}
-                                    {{ base }}
-                      - conditions: "{{ repeat.item == 'teams' }}"
-                        sequence:
-                          - action: script.zen_dojotools_teams
-                            data:
-                              action_type:  send
-                              message:      "{{ _message }}"
-                              caller_token: "{{ _caller_token }}"
-                    default:
-                      - event: zen_event
-                        event_data:
-                          event:
-                            kind:         postman_unknown_channel
-                            channel:      "{{ repeat.item }}"
-                            urgency:      "{{ _urgency }}"
-                            caller_token: "{{ _caller_token }}"
+                          - choose:
+                              - conditions: "{{ repeat.item == 'push' }}"
+                                sequence:
+                                  - repeat:
+                                      for_each: >-
+                                        {{ _push_targets if _push_targets is iterable and _push_targets is not string
+                                           else (_push_targets | from_json if _push_targets is string else ['Admin Devices']) }}
+                                      sequence:
+                                        - variables:
+                                            _notify_slug: >-
+                                              {%- set m = {
+                                                'Admin Devices':              'admin_devices',
+                                                'Family Devices':             'family_devices',
+                                                'Family Devices (Verbose)':   'family_devices_verbose',
+                                                'Default User Phone':         'default_user',
+                                                'Secondary User Phone':       'secondary_user'
+                                              } -%}
+                                              {{- m.get(repeat.item, repeat.item | lower | replace(' ', '_')) -}}
+                                        - event: zen_event
+                                          event_data:
+                                            event:
+                                              kind: dojotool_call
+                                              tool: zen_dojotools_postman
+                                              version: "1"
+                                              correlation_id: "{{ context.id }}_push"
+                                              payload:
+                                                mode: push_send
+                                                push_slug: "{{ _notify_slug }}"
+                                                push_ctx: "{{ context.id }}"
+                                                push_data: >-
+                                                  {%- set nd = _notif_data if _notif_data is mapping and _notif_data | length > 0 else {} -%}
+                                                  {%- set base = {'message': _message} -%}
+                                                  {%- if _title != '' -%}{%- set base = base | combine({'title': _title}) -%}{%- endif -%}
+                                                  {%- if nd | length > 0 -%}{%- set base = base | combine({'data': nd}) -%}{%- endif -%}
+                                                  {{ base }}
+                              - conditions: "{{ repeat.item == 'teams' }}"
+                                sequence:
+                                  - action: script.zen_dojotools_teams
+                                    data:
+                                      action_type:  send
+                                      message:      "{{ _message }}"
+                                      caller_token: "{{ _caller_token }}"
+                            default:
+                              - event: zen_event
+                                event_data:
+                                  event:
+                                    kind:         postman_unknown_channel
+                                    channel:      "{{ repeat.item }}"
+                                    urgency:      "{{ _urgency }}"
+                                    caller_token: "{{ _caller_token }}"
 
             # ── 8.3. TTS channel — dispatch via event bus ────────────────────
             # Fire dojotool_call for zen_dojotools_announce and return instantly.
@@ -1184,7 +1275,19 @@ script:
             # announce dispatcher) — whichever fires first wins.
             # If TTS fires first with empty ack (announced, no voice answer)
             # and push is also active, re-arm for push.
-            - if: "{{ _response_type not in ['', 'none'] and (_pm_tag != '' or _tts_cid != '') }}"
+            # Nothing went out (no push came back, no TTS): no tap can come, so do not
+            # wait for one. Logged with the targets; the result says no_channel.
+            - variables:
+                _push_none: "{{ _push_wanted and not _push_ok and _tts_cid == '' }}"
+            - if: "{{ _push_none }}"
+              then:
+                - action: system_log.write
+                  data:
+                    level: warning
+                    logger: zen_dojotools_postman
+                    message: >-
+                      Postman: no push target accepted the message (notify.{{ (_push_targets if _push_targets is iterable and _push_targets is not string else ['Admin Devices']) | map('lower') | map('replace', ' ', '_') | join(', notify.') }}), so it did not wait for a tap. Check that those notify services exist.{{ " The console override is on: live approvals (cert grants, live acks) still pass without a phone." if _console_override else "" }}
+            - if: "{{ _response_type not in ['', 'none'] and (_pm_tag != '' or _tts_cid != '') and not _push_none }}"
               then:
                 - wait_for_trigger:
                     - trigger: event
@@ -1330,6 +1433,7 @@ script:
                       pm_tag:        "{{ _pm_tag }}"
                       ack_action:    "{{ _ack_action }}"
                       ack_timed_out: "{{ _ack_timed_out }}"
+                      no_channel:    "{{ _push_none | default(false) }}"
                       ack_owner:     "{{ _ack_owner }}"
                       ack_context:   "{{ _ack_context }}"
                       ack_depth:     "{{ _ack_depth }}"
@@ -1398,12 +1502,14 @@ script:
                 _final_response: >-
                   {{
                     {
-                      "status":       "dispatched",
+                      "status":       "no_channel" if _push_none else "dispatched",
                       "tier":         _urgency_tier,
                       "channels":     _final_channels_list,
                       "pm_tag":       _pm_tag,
                       "ack_action":   _ack_action,
                       "ack_timed_out": _ack_timed_out,
+                      "push_confirmed": _push_ok if _push_wanted else none,
+                      "console_override": _console_override,
                       "audio_url":    _audio_url,
                       "caller_token": _caller_token
                     }
@@ -1530,53 +1636,31 @@ script:
                   {{ ns.d }}
 
             # ── Dispatch loop ──────────────────────────────────────────────
+            # Admin Devices always goes; the others only when the hours gate allows.
+            # Each push runs on its own (push_send), so a missing notify service ends
+            # only that one and the log below is still written.
             - repeat:
                 for_each: "{{ _dd_targets }}"
                 sequence:
-                  - choose:
-                    - conditions: "{{ repeat.item == 'Admin Devices' }}"
-                      sequence:
-                        - action: notify.admin_devices
-                          data:
-                            title: "{{ _title }}"
-                            message: "{{ _message }}"
-                            data: "{{ _dd_data }}"
-                    - conditions:
-                      - condition: template
-                        value_template: "{{ repeat.item == 'Family Devices' and _dd_gate_ok }}"
-                      sequence:
-                        - action: notify.family_devices
-                          data:
-                            title: "{{ _title }}"
-                            message: "{{ _message }}"
-                            data: "{{ _dd_data }}"
-                    - conditions:
-                      - condition: template
-                        value_template: "{{ repeat.item == 'Family Devices (Verbose)' and _dd_gate_ok }}"
-                      sequence:
-                        - action: notify.family_devices_verbose
-                          data:
-                            title: "{{ _title }}"
-                            message: "{{ _message }}"
-                            data: "{{ _dd_data }}"
-                    - conditions:
-                      - condition: template
-                        value_template: "{{ repeat.item == 'Default User Phone' and _dd_gate_ok }}"
-                      sequence:
-                        - action: notify.default_user
-                          data:
-                            title: "{{ _title }}"
-                            message: "{{ _message }}"
-                            data: "{{ _dd_data }}"
-                    - conditions:
-                      - condition: template
-                        value_template: "{{ repeat.item == 'Secondary User Phone' and _dd_gate_ok }}"
-                      sequence:
-                        - action: notify.secondary_user
-                          data:
-                            title: "{{ _title }}"
-                            message: "{{ _message }}"
-                            data: "{{ _dd_data }}"
+                  - variables:
+                      _dd_slug: >-
+                        {{ {'Admin Devices': 'admin_devices', 'Family Devices': 'family_devices',
+                            'Family Devices (Verbose)': 'family_devices_verbose',
+                            'Default User Phone': 'default_user', 'Secondary User Phone': 'secondary_user'}.get(repeat.item, '') }}
+                  - if: "{{ _dd_slug != '' and (repeat.item == 'Admin Devices' or _dd_gate_ok) }}"
+                    then:
+                      - event: zen_event
+                        event_data:
+                          event:
+                            kind: dojotool_call
+                            tool: zen_dojotools_postman
+                            version: "1"
+                            correlation_id: "{{ context.id }}_dd_{{ _dd_slug }}"
+                            payload:
+                              mode: push_send
+                              push_slug: "{{ _dd_slug }}"
+                              push_ctx: "{{ context.id }}"
+                              push_data: "{{ {'title': _title, 'message': _message, 'data': _dd_data} }}"
 
             # ── Log the dispatch ───────────────────────────────────────────
             - action: script.zen_sutra_filecabinet
@@ -2003,7 +2087,7 @@ script:
                         "branch_fields": "Any resolve_and_dispatch field: message, title, urgency, open_dashboard, dashboard_path_override, response_type, on_ack (nested), tag, breakthrough, channel_hint",
                         "depth_limit": "Max 3 chain levels. Depth counter auto-managed — never pass ack_depth manually.",
                         "example": "{\"yes\": {\"message\": \"Opening the agent's dashboard.\", \"open_dashboard\": true, \"urgency\": 3}, \"timeout\": {\"message\": \"No response — ignoring.\"}}",
-                        "postman_ack_event": "zen_event(kind: postman_ack) fires after EVERY response_type wait — subscribe independently without blocking caller. Carries: pm_tag, ack_action, ack_timed_out, caller_token, ack_depth."
+                        "postman_ack_event": "zen_event(kind: postman_ack) fires after EVERY response_type wait — subscribe independently without blocking caller. Carries: pm_tag, ack_action, ack_timed_out, no_channel (true when no push went out and there was no TTS, so nobody was asked), ack_owner, ack_context, caller_token, ack_depth."
                       },
                       "subscribe_independently": "Other automations can also listen for zen_event(kind: postman_response) and filter by tag without blocking the caller."
                     },
@@ -2212,7 +2296,7 @@ script:
                 summary='Send a message to the household by the right channel',
                 display_name='Postman',
                 tier='dojotools',
-                version='5.4.0',
+                version='5.6.0',
                 health=_postman_health,
                 required_labels=['dojotools','zen_home_mode','zen_quiet_hours','zen_work_hours'],
                 optional_labels=['zen_postman','zen_channel_push','zen_default_household_cabinet','zen_default_user_cabinet','zen_default_family_cabinet','zen_kata_cabinet'],

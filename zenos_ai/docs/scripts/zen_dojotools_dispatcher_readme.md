@@ -1,4 +1,4 @@
-# Zen DojoTool Dispatcher — v5.5.1
+# Zen DojoTool Dispatcher — v5.5.2
 
 > **2026.11.0:** The declared-act route. A tool with no hand-written route is called if its `tool_manifest` declares an `act`: the dispatcher reads the declaration itself and calls only that mode, with only the declared args (enum values checked) plus `kata_input`. The payload never picks the mode, and a hand-written route always wins. See [Declared acts](../kung_fu/building_a_kfc.md#declared-acts).
 

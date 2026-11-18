@@ -1,6 +1,6 @@
 # ZenOS-AI SpaMaster
 
-**Version:** 1.2.0
+**Version:** 5.6.0. 5.6.0 (#10698): `zenos.actuation.spa_control` also covers `log` when the entry carries a salt boost, a cover close or a setpoint (those actuate), `setup`, and every `consumables` action except `status`. 5.5.x: the name fallbacks scan only their own domain; the chemistry history baseline query runs. 5.5.0: name outputs carry `entity_name` and `device_name`. 5.4.x: cert names in the `zenos.*` namespace. 5.3.0: onboarding gate (an agent without `zenos.agent.basic` gets help and `tool_manifest` only).
 **Script:** `zen_dojotools_spamaster`
 
 ---
@@ -165,7 +165,7 @@ All four fields (`baseline_7d`, `threshold_provenance`, `freshness`, `excursion_
 
 Before this date, jets/lights/water-temperature/cover actuation had zero auth of any kind — the same shape of gap `zenos.actuation.climate_control` closed earlier the same day, surfaced by the audit that also found ZenZork's raw lock/cover end-run (see the ZenZork readme's Identity Gate note).
 
-New `zenos.actuation.spa_control` certification, cert-only tier (no live-ack requirement — same shape as `zenos.actuation.lighting_control`/`zenos.actuation.climate_control`; spa equipment isn't treated as exterior-security-grade). Gates every real setter mode: `scene`, `lights`, `jets`, `temperature`, `cover`. `discover`/`status`/`chemistry`/`log`/`help`/`consumables`/`setup`/`audio` all stay open — `audio` specifically is out of scope for this cert (it's media_player volume/source control, not spa hardware). `cert_scope` deny hard-blocks a specific target the same way every other gated tool in this arc does. Grant via `zen_dojotools_persona_editor mode=cert_req_grant cert_component=zenos.actuation.spa_control`. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
+New `zenos.actuation.spa_control` certification, cert-only tier (no live-ack requirement — same shape as `zenos.actuation.lighting_control`/`zenos.actuation.climate_control`; spa equipment isn't treated as exterior-security-grade). Gates every real setter mode: `scene`, `lights`, `jets`, `temperature`, `cover`. Since 5.6.0 (#10698) it also gates `setup`, every `consumables` action except `status`, and a `log` entry that actuates (a salt boost, a cover close or a setpoint); a plain log entry stays open. `discover`, `status`, `chemistry`, `help`, `consumables status` and `audio` stay open: `audio` is out of scope for this cert (it's media_player volume/source control, not spa hardware). `cert_scope` deny hard-blocks a specific target the same way every other gated tool in this arc does. Grant via `zen_dojotools_persona_editor mode=cert_req_grant cert_component=zenos.actuation.spa_control`. See the [Security & Certification System operator manual](../getting_started/security_certification_manual.md).
 
 ---
 

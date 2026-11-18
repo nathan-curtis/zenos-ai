@@ -87,7 +87,7 @@ Interactive profile surface for ZenOS-AI identity profiles. Reads and writes AI 
 
 ---
 
-## 4. Zen DojoTools Labels — v5.10.0
+## 4. Zen DojoTools Labels — v5.11.0
 **File:** [`zen_dojotools_labels_readme.md`](zen_dojotools_labels_readme.md)
 
 Core primitive for label CRUD and entity tagging. Backbone of the label index that powers HyperIndex, KFC components, and cabinet resolution. MCP-exposed — write operations are confirm-gated. All mutating actions emit `zen_event(kind: label_mutation)` and auto-rebuild the compact index. `mode` is now the primary selector (project-wide standardization) — `action_type` remains a deprecated backward-compatible alias.
@@ -234,14 +234,14 @@ Friday's visual surface. Wraps HA camera entities with LLM vision analysis, hous
 
 ---
 
-## 22. Zen DojoTools Postman — v5.3.0
+## 22. Zen DojoTools Postman — v5.6.0
 **File:** [`zen_dojotools_postman_readme.md`](zen_dojotools_postman_readme.md)
 
 Unified household communications layer. Supersedes `zen_dojotools_notification_router` (script retired; the dispatcher's legacy-name compat arms for it were removed in 2026.7.1 — old callers now get a structured `unknown_tool` fault instead of referencing a nonexistent script). Resolves urgency + target against the authority stack (house ceiling → family floor → user preference) and dispatches to push/TTS/Teams. Supports image attachments, actionable response buttons with push-ack wait, phone TTS audio attachment, `kata_input` pipeline derivation, `breakthrough` gate bypass, full Android `notification_data` passthrough, and `open_dashboard` tap navigation. `zen_postman_response_router` automation bridges `mobile_app_notification_action` → `zen_event(kind: postman_response)` for ack correlation. `author_policy` seeds `postman_profile` drawers. Full `resolve` dry-run audit before sending. **`direct_dispatch`** (v5.1.0) — authority-stack bypass, straight to `notify.*`; requires `override: true` or the call is blocked and logged.
 
 ---
 
-## 22b. Zen DojoTool Dispatcher — v5.4.8
+## 22b. Zen DojoTool Dispatcher — v5.5.2
 **File:** [`zen_dojotools_dispatcher_readme.md`](zen_dojotools_dispatcher_readme.md)
 
 Event-driven inter-tool communication layer — fires `zen_event(kind: dojotool_call)`, routes through a single registered `choose` arm per tool, fires correlated `dojotool_return`. Unregistered tools get a structured `unknown_tool` fault instead of a hard crash. Single-automation architecture since v5.2.0 (2026.6.0) — the old two-tier dispatcher/tool-router split and its `dojotool_route` event are gone. v5.3.0 (2026.7.1) removed the dead `zen_dojotools_notification_router` compat arm (no backing script existed) and added `zen_stack_battery`.

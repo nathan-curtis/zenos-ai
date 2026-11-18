@@ -1,6 +1,6 @@
 # ZenOS-AI Plant Manager
 
-**Version:** 5.11.2 — 5.11.2: `managed` attributes a product-linked chore only to the machine that owns that product. 5.8.0 added `leak_auto_shutoff_enable` mode + `zen_plant_leak_watch` automation (see below); `label_suggest` gained real water/leak/shutoff classification (was electrical-only)
+**Version:** 5.13.3. 5.13.3: `hvac_guidance` names how to say which areas an air handler serves (the unit's root label on those areas and its thermostats, read by Room Manager `mode=hvac_coverage`). 5.13.2: name outputs carry `entity_name` and `device_name` next to `friendly_name`. 5.13.0 and 5.13.1: cert names moved to the `zenos.*` namespace, with a plain approval description per cert. 5.12.0: onboarding gate (an agent without `zenos.agent.basic` gets help and `tool_manifest` only). 5.11.2: `managed` attributes a product-linked chore only to the machine that owns that product. 5.8.0 added `leak_auto_shutoff_enable` and the `zen_plant_leak_watch` automation (see below).
 **Script:** `zen_dojotools_plant`
 
 > **Wiring a whole-panel/circuit-level energy monitor?** See the Plant
