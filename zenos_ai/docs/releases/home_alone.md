@@ -89,6 +89,8 @@
 
 ## Changed
 
+- **With the cover watch on, a cover left open while the house is secure is closed unless someone says No.** "Secure" means the panel is armed, or the home mode is Away, Night or Night-Late. That replaces `cover_day_policy` then, even one set to `ask`, and a cover left open while the house sleeps closes quietly. Turn it off with `cover_secure_close_enabled: false`, or keep Yes-only with `cover_armed_policy: ask`. With the cover watch off, nothing closes.
+
 ---
 
 ## Fixed
