@@ -140,6 +140,7 @@ Every certification has a short plain `description`, written for the phone appro
 | `zenos.room.behavior_control` | Change how rooms react on their own |
 | `zenos.room.control_override` | Take a room out of Paused |
 | `zenos.security.camera_scan` | Scan the cameras on a schedule on its own (exterior always, interior only when away) |
+| `zenos.security.read` | Read the house's security picture for the background summary |
 | `zenos.spatial.household_config_edit` | Set your home's compass direction and doorways |
 | `zenos.spatial.room_topology_edit` | Change your home's rooms and floors; level 2 also deletes |
 | `zenos.system.cabinet_admin` | Make protected system changes (asks you each time); level 2 also changes cabinet labels |
@@ -148,6 +149,7 @@ Every certification has a short plain `description`, written for the phone appro
 | `zenos.system.reload_restart` | Restart or reload Home Assistant |
 | `zenos.weather.read` | Read the weather and forecast for the background summary |
 | `zenos.service.admin` | Change the service desk (Zammad) configuration (level 2, interactive stage) |
+| `zenos.service.read` | Read the open work in the service desk for the background summary |
 
 `cert_list` is the source of truth: it carries each certification's `max_level` (the highest level any tool actually checks) and its `detail`.
 
@@ -340,9 +342,11 @@ A `deny` scope entry (Section 6) short-circuits before the live-ack step ever ru
 | Cert | What it reads |
 |---|---|
 | `zenos.climate.read` | Climate's `summary`: every thermostat, its mode and temperature, open doors and windows around it |
+| `zenos.security.read` | Security Manager's `summary`: the panel, who is home, the secure stance, what is open, jammed or unlocked, garage doors left open, appliances on with nobody home, overrides |
+| `zenos.service.read` | Service Desk's `summary`: how many tickets are open and new, which are past their escalation time, high-priority ones nobody owns, reminders come due; numbers and titles, no message bodies |
 | `zenos.finance.read` | Finance summaries: budget, bills, net worth, rollup |
 | `zenos.health.read` | The medication summary (`taskmaster_meds`) |
-| `zenos.presence.read` | Room Manager's `home_overview`, which the Security Manager summary reads |
+| `zenos.presence.read` | Room Manager's `summary` and `home_overview` (the room_manager background summary; Security Manager seeds from its own `summary` since 5.26.0) |
 | `zenos.weather.read` | Weather's `summary`: current conditions and the next day or two scored for freeze, heat, storm and wind |
 
 **The switch is `seed_cert_mode`,** read from the system cabinet and set from a console session, like the FileCabinet lock:
