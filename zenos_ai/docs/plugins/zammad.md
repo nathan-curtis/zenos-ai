@@ -1,6 +1,6 @@
 # ZenOS-AI Zammad (Radar) Plugin
 
-**Version:** 0.5.6 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
+**Version:** 0.6.1 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
 **Package:** `packages/zenos_ai/plugins/zammad/zammad.yaml`
 **MCP-facing script:** `zen_dojotools_servicedesk`
 **Lens Bus stack provider:** `zen_stack_radar`
@@ -34,6 +34,8 @@ Use `mode=help` for the full field catalog. Key modes:
 | `ticket_get` | Fetch a ticket including all articles, tags, and anchor context. |
 | `ticket_find` | Search tickets by query string. |
 | `ticket_list` | List tickets by state (open/closed/all). |
+| `summary` | (0.6.0) One scored, read-only answer about the open work, from one search for new, open and pending-reminder tickets (up to 100): `urgency` 0 to 5, `action_required` (3 or more), `reasons[]` highest first (`escalated` 4, `servicedesk_unreachable` 3, `high_priority_new` 2 (a high-priority ticket still new), `reminder_due` 2, `new_tickets` 1, `stale_open` 1 for open and untouched 30 days), `attention[]` with ticket numbers and titles (no bodies), and `counts`. The seed of the `servicedesk` KFC. Asking needs no cert; the background summary needs `zenos.service.read`. |
+| `kfc_manifest` | (0.6.0) The `servicedesk` KFC definition (ambient tier, seeded by `summary`, cert `zenos.service.read` level 1), consumed by `zen_dojotools_manifest mode=bootstrap_kfc`. |
 | `ticket_search` | Structured Radar worklist search — filters by queue, state, owner, tags, and priority. |
 | `ticket_update` | Update ticket fields including group/queue move, org/customer reassignment, and pending time. |
 | `batch_update` | Apply the same updates to multiple tickets in one call. |
@@ -160,6 +162,8 @@ A successful configure call connects to Zammad, writes the URL to `integrations_
 
 | Version | Change |
 |---------|--------|
+| v0.6.1 (2026.12.0) | `summary` drops the owner check (a household desk has no ticket owners, so it nagged every hour): `high_priority_new` (2) flags a high-priority ticket only while it is still new. |
+| v0.6.0 (2026.12.0) | `summary`: a scored, read-only answer about the open work (KF6, #10702), and the `servicedesk` KFC through `kfc_manifest`, seeded by it. New read cert `zenos.service.read` (level 1, stages i, s, l). |
 | v0.5.6 (2026.11.1) | `configure` writes are gated: saving the service desk url needs the new cert `zenos.service.admin` level 2 (stage i), declared in `tool_manifest`, on top of the live ack. `inspect` stays open. |
 | v0.5.5 (2026.11.1) | `configure` no longer sends the stored API token to a URL nobody approved. A url that isn't the stored one (a change, or the first url on a fresh install) needs a fresh live ack from a person. Before, a caller could point the integration at a host it controls and receive the token. |
 | v0.5.4 (2026.11.0) | Lens fixes. `tickets_by_anchor` uses the `query/page/per_page` search, reads either reply shape, and returns `evidence[]` (`ticket_evidence`). `zen_stack_radar` carries the bus's top-level anchors and answers `by_anchor` as `{status, count, evidence}`. An anchor is attributed by tag only, so Radar finds tickets tagged with an area or label slug. |

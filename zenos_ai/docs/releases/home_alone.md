@@ -79,7 +79,10 @@
 - **Spook is required for temporary overrides.** On Home Assistant 2026.11, Spook 5.6 to 5.10 can't load.
 - **Climate has its own file**, `dojotools_climate.yaml`, out of the Utilities bundle.
 - **The weather source is the entity labeled `main_weather`.** `zen_weather` is still read.
-- **New read certs:** `zenos.autovac.status`, `zenos.weather.read` and Climate's read cert. Without them, those components leave the prompt.
+- **Grant the new read certs.** Each background summary below needs its cert, or it stops:
+  - `zenos.security.read`: the security summary, which now seeds from Security Manager's own `summary`. It replaces what the security kata used to read, so an upgraded install loses its security summary until this is granted. It's in the `zenos_agent_advanced` bundle.
+  - `zenos.autovac.status`, `zenos.weather.read`, `zenos.climate.read`: the Autovac, Weather and Climate components.
+  - `zenos.service.read`: the new `servicedesk` summary (Zammad plugin).
 - **Autovac:** a bare call answers help; the pre-run briefing push and run notices are off on a fresh setup and kept on for an upgraded one; reload automations, wait, then reload scripts.
 - **Restart, or run `zen_dojotools_systemtools mode=zen_resolver_refresh`, after upgrading.** Room timers now expire through Home Assistant's `timer.finished` trigger on their labels, and a TV sleep timer gets its new `tv_sleep_timer` label at the next resync. Until then, the TV sleep timer doesn't start.
 - **Two new automations:** the Zen Security Sentry and the Zen Climate Envelope Watcher.

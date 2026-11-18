@@ -1,7 +1,19 @@
 ###############################################################################
 # ZenOS-AI Plugin: Zammad — Fulfillment (Service Desk / Help Tickets)
 # Codename: Radar
-# Version: 0.5.6
+# Version: 0.6.1
+# v0.6.1: summary drops the owner check: tickets have no owner in a household desk, so
+#   high_priority_unassigned (3) held the summary at action_required every hour.
+#   high_priority_new (2) flags a high-priority ticket only while it is still new
+#   (not looked at yet); escalation (4) and stale_open still catch one left too long.
+#   counts.unassigned stays, for information.
+# v0.6.0: mode=summary (#10702, KF6): one scored, read-only answer about the open work
+#   from a single search for new, open and pending-reminder tickets (up to 100): urgency
+#   0-5, action_required at 3, reasons[] (escalated 4, servicedesk_unreachable 3,
+#   high_priority_unassigned 3, reminder_due 2, new_tickets 1, stale_open 1: open and
+#   untouched 30 days), attention[] with ticket numbers and titles (no bodies), counts.
+#   mode=kfc_manifest declares the servicedesk KFC (ambient tier, seeded by summary,
+#   cert zenos.service.read). New read cert zenos.service.read (level 1, stages isl).
 # v0.5.6: configure writes are gated (#10697 part 2): saving the service desk url
 #   needs zenos.service.admin level 2 (interactive stage i), a new cert declared in
 #   tool_manifest, on top of the live ack for a url that is not the stored one.
@@ -139,6 +151,7 @@ script:
             - ticket_get
             - ticket_find
             - ticket_list
+            - summary
             - ticket_search
             - ticket_update
             - ticket_close
@@ -161,6 +174,7 @@ script:
             - ticket_link
             - ticket_unlink
             - tool_manifest
+            - kfc_manifest
             - batch_update
             - object_attribute_create
             - radar_setup
@@ -207,6 +221,10 @@ script:
             intent: Search tickets by query string.
             needs: [input_json.query]
             optional: [input_json.limit (default 10), input_json.page (default 1)]
+          summary:
+            intent: One scored answer about the open work (read-only). urgency 0-5, action_required at 3, reasons (escalated, servicedesk_unreachable, high_priority_new, reminder_due, new_tickets, stale_open), attention with ticket numbers and titles, counts. The seed of the servicedesk KFC; asking needs no cert, the background summary needs zenos.service.read.
+          kfc_manifest:
+            intent: The servicedesk KFC definition, consumed by zen_dojotools_manifest mode=bootstrap_kfc.
           ticket_list:
             intent: List tickets. Optional state_filter (open/closed/all, default open).
             optional: [input_json.state_filter, input_json.limit (default 25), input_json.page (default 1)]
@@ -403,7 +421,7 @@ script:
               message: "{{ _sd_help_message }}"
               tool: Zen DojoTools Fulfillment
               codename: Radar
-              version: "0.5.6"
+              version: "0.6.1"
               configured_url: "{{ _base_url }}"
               cases: "{{ cases_help }}"
               caller_token: "{{ caller_token_norm }}"
@@ -421,7 +439,7 @@ script:
                 summary='Help desk tickets (Radar)',
                 display_name='Service Desk / Zammad',
                 tier='dojotools',
-                version='0.5.6',
+                version='0.6.1',
                 health=_health,
                 required_labels=['zammad'],
                 optional_labels=['zammad', 'service_desk', 'tickets', 'fulfillment'],
@@ -431,7 +449,8 @@ script:
                 content_policy='redacted_by_default',
                 risk_class='read_redacted',
                 security_act={'model': 'rwxda', 'required': 'r', 'allowed': ['r'], 'denied': ['w', 'x', 'd', 'a'], 'note': 'Lens provider returns redacted ticket/work evidence only; ticket mutation stays on explicit Service Desk cases.'},
-                modes={'lookup': 'tickets_by_anchor', 'manifest': 'tool_manifest'},
+                modes={'lookup': 'tickets_by_anchor', 'manifest': 'tool_manifest', 'summary': 'one scored answer about the open work: urgency 0-5, reasons, attention, counts (read; the seed of the servicedesk KFC, background cert zenos.service.read)', 'kfc_manifest': 'the servicedesk KFC definition (consumed by bootstrap_kfc)'},
+                seed_modes=['summary@zenos.service.read:1'],
                 limitations=['Lookup requires Zammad tickets tagged with stable HA or ZenOS anchor slugs.', 'Lens output is redacted and does not include raw article bodies.', 'Mutating ticket cases are outside the lens bus.'],
                 evidence_shape={'documents': {'id': 'Zammad ticket id.', 'title': 'Redacted ticket title.', 'summary': 'Operational ticket evidence.', 'stack': 'provider/source/evidence metadata.', 'anchor_contexts': 'Matched typed anchors.', 'servicedesk': 'Ticket metadata safe for enrichment.'}},
                 icon='mdi:ticket-outline',
@@ -442,7 +461,21 @@ script:
 
                 caller_token=caller_token_norm
               ) | from_json | combine({
+                'kfc_manifest': true,
+                'kfc_components': ['servicedesk'],
                 'certs_required': [{
+                  'cert': 'zenos.service.read',
+                  'display_name': 'Service Desk Read',
+                  'description': "Read the open work in the service desk for the background summary",
+                  'detail': 'The servicedesk summary seeds through mode=summary (how many tickets are open and new, which are past their escalation time, high-priority ones still new, reminders that have come due; ticket numbers and titles, no message bodies). Granted with the Ninja seed stage (s), the background summary may read it; without it the summary stops and its last kata leaves the prompt. Asking in conversation does not need it.',
+                  'max_level': 1,
+                  'level': 1,
+                  'modes': ['summary'],
+                  'st_ok': 'isl',
+                  'gates': ['mode=summary (interactive, stage i)', 'the Ninja seed of the servicedesk component (stage s)', 'a live drawer mounted on mode=summary (stage l)'],
+                  'live_ack_required_for': [],
+                  'grant_via': "persona_editor mode=cert_req_grant cert_component=zenos.service.read cert_stages=isl"
+                }, {
                   'cert': 'zenos.service.admin',
                   'display_name': 'Service Desk Admin',
                   'description': "Change the service desk (Zammad) configuration",
@@ -463,6 +496,188 @@ script:
         sequence:
         - variables:
             _sd_answered: true
+      # ── summary (KF6, #10702): one scored, read-only answer about the open work ──
+      # One search for new, open and pending-reminder tickets (up to 100), scored in
+      # code: urgency 0-5, action_required at 3, reasons[] highest first, attention[]
+      # with ticket numbers and titles. Zammad's default state, priority and owner ids
+      # (new 1, open 2, pending reminder 3; high priority 3; owner 1 is nobody). The
+      # seed of the servicedesk KFC (cert zenos.service.read, background only: asking
+      # in conversation needs no cert).
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "summary" }}'
+        sequence:
+        - action: script.zen_sutra_zammad
+          response_variable: _su_raw
+          continue_on_error: true
+          data:
+            action_type: get
+            base_url: "{{ _base_url }}"
+            request_timeout: "{{ _request_timeout }}"
+            endpoint: "tickets/search?query={{ ('state.name:new OR state.name:open OR state.name:\"pending reminder\"' | urlencode) | replace('%20', '+') }}&page=1&per_page=100"
+        - variables:
+            _su_http: "{{ _su_raw.get('http_status', 0) | int(0) if _su_raw is mapping else 0 }}"
+            _su_content: "{{ _su_raw.get('result', {}).get('content', {}) if _su_raw is mapping else {} }}"
+        - variables:
+            _su_tickets: >-
+              {%- set c = _su_content -%}
+              {%- if c is mapping -%}
+                {%- set a = c.get('assets', {}).get('Ticket', {}) -%}
+                {{ (a.values() | list) if a is mapping else [] }}
+              {%- elif c is sequence and c is not string -%}
+                {{ c | select('mapping') | list }}
+              {%- else -%}[]{%- endif -%}
+            _su_now: "{{ now().timestamp() }}"
+        - variables:
+            _su_rows: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for t in _su_tickets -%}
+                {%- set st = t.get('state_id', 0) | int(0) -%}
+                {%- set esc = (t.get('escalation_at') | string | as_datetime) if t.get('escalation_at') else none -%}
+                {%- set pend = (t.get('pending_time') | string | as_datetime) if t.get('pending_time') else none -%}
+                {%- set upd = (t.get('updated_at') | string | as_datetime) if t.get('updated_at') else none -%}
+                {%- set ns.out = ns.out + [{
+                  'number': t.get('number', '') | string,
+                  'title': (t.get('title', '') | string)[:80],
+                  'state': {1: 'new', 2: 'open', 3: 'pending_reminder'}.get(st, 'other'),
+                  'high': (t.get('priority_id', 2) | int(2)) >= 3,
+                  'unassigned': (t.get('owner_id', 1) | int(1)) <= 1,
+                  'escalated': esc is not none and esc.timestamp() < (_su_now | float(0)),
+                  'reminder_due': st == 3 and pend is not none and pend.timestamp() <= (_su_now | float(0)),
+                  'stale_days': (((_su_now | float(0)) - upd.timestamp()) / 86400) | round(0) | int if upd is not none else 0
+                }] -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        - variables:
+            _su_ok: "{{ _su_http >= 200 and _su_http < 300 }}"
+            _su_scored: >-
+              {%- set ns = namespace(rows=[]) -%}
+              {%- if not (_su_http >= 200 and _su_http < 300) -%}
+                {%- set ns.rows = ns.rows + [[3, 'servicedesk_unreachable', []]] -%}
+              {%- else -%}
+                {%- set esc = _su_rows | selectattr('escalated') | list -%}
+                {%- set hi_new = _su_rows | selectattr('high') | selectattr('state', 'eq', 'new') | list -%}
+                {%- set due = _su_rows | selectattr('reminder_due') | list -%}
+                {%- set new = _su_rows | selectattr('state', 'eq', 'new') | list -%}
+                {%- set stale = _su_rows | selectattr('state', 'eq', 'open') | selectattr('stale_days', 'ge', 30) | list -%}
+                {%- if esc | count > 0 -%}{%- set ns.rows = ns.rows + [[4, 'escalated', esc]] -%}{%- endif -%}
+                {%- if hi_new | count > 0 -%}{%- set ns.rows = ns.rows + [[2, 'high_priority_new', hi_new]] -%}{%- endif -%}
+                {%- if due | count > 0 -%}{%- set ns.rows = ns.rows + [[2, 'reminder_due', due]] -%}{%- endif -%}
+                {%- if new | count > 0 -%}{%- set ns.rows = ns.rows + [[1, 'new_tickets', new]] -%}{%- endif -%}
+                {%- if stale | count > 0 -%}{%- set ns.rows = ns.rows + [[1, 'stale_open', stale]] -%}{%- endif -%}
+              {%- endif -%}
+              {{ ns.rows }}
+        - variables:
+            _su_urgency: "{{ (_su_scored | map(attribute=0) | max) if _su_scored | count > 0 else 0 }}"
+            _su_attention: >-
+              {%- set ns = namespace(out=[], seen=[]) -%}
+              {%- for r in _su_scored | sort(attribute=0, reverse=true) -%}
+                {%- for t in r[2] if t.number not in ns.seen and ns.out | count < 8 -%}
+                  {%- set ns.seen = ns.seen + [t.number] -%}
+                  {%- set ns.out = ns.out + [{'reason': r[1], 'number': t.number, 'title': t.title}] -%}
+                {%- endfor -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        - variables:
+            result:
+              status: "{{ 'ok' if _su_ok else 'error' }}"
+              tool: Zen DojoTools Fulfillment
+              case: summary
+              urgency: "{{ _su_urgency | int(0) }}"
+              action_required: "{{ (_su_urgency | int(0)) >= 3 }}"
+              reasons: "{{ _su_scored | sort(attribute=0, reverse=true) | map(attribute=1) | list }}"
+              attention: "{{ _su_attention }}"
+              counts:
+                open_total: "{{ _su_rows | count }}"
+                new: "{{ _su_rows | selectattr('state', 'eq', 'new') | list | count }}"
+                open: "{{ _su_rows | selectattr('state', 'eq', 'open') | list | count }}"
+                pending_reminder: "{{ _su_rows | selectattr('state', 'eq', 'pending_reminder') | list | count }}"
+                unassigned: "{{ _su_rows | selectattr('unassigned') | list | count }}"
+                high_priority: "{{ _su_rows | selectattr('high') | list | count }}"
+                escalated: "{{ _su_rows | selectattr('escalated') | list | count }}"
+                reminder_due: "{{ _su_rows | selectattr('reminder_due') | list | count }}"
+              capped: "{{ (_su_rows | count) >= 100 }}"
+              http_status: "{{ _su_http }}"
+              caller_token: "{{ caller_token_norm }}"
+      # ── kfc_manifest: the servicedesk KFC definition (consumed by bootstrap_kfc) ──
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "kfc_manifest" }}'
+        sequence:
+        - variables:
+            result:
+              status: ok
+              tool: zen_dojotools_servicedesk
+              version: "0.6.1"
+              mode: kfc_manifest
+              count: 1
+              caller_token: "{{ caller_token_norm }}"
+              kfc:
+                - kata_key: servicedesk
+                  friendly_name: Service Desk
+                  label: zammad
+                  component_summary: >-
+                    The household's open work in the service desk: new tickets, ones past
+                    their escalation time, high-priority ones still new, reminders that
+                    have come due, and open tickets gone quiet. Consult for "what's on my
+                    plate" or any ticket question.
+                  component_instructions: >-
+                    SCOPE: The service desk (Zammad). Tool: zen_dojotools_servicedesk.
+                      Ambient tier: you are read through the ambient index; keep it to one
+                      line unless something needs a person.
+
+                    DATA ACCESS:
+                      The seed is zen_dojotools_servicedesk mode=summary (scored, read-only).
+                      Use its fields; do not invent tickets. Fields: urgency (0-5),
+                      action_required (urgency 3 or more), reasons[] (highest first:
+                      escalated, servicedesk_unreachable, high_priority_new,
+                      reminder_due, new_tickets, stale_open), attention[]{reason, number,
+                      title}, counts{open_total, new, open, pending_reminder, unassigned,
+                      high_priority, escalated, reminder_due}, capped (100 or more open).
+                      A reason of servicedesk_unreachable means Zammad did not answer: say
+                      so, do not guess a count.
+                      Detail on demand: zen_dojotools_servicedesk mode=ticket_get
+                      input_json={"ticket_id": <number>}.
+
+                    WHAT TO SURFACE:
+                      1. Escalated tickets and high-priority tickets still new, by number
+                         and title.
+                      2. Otherwise one line: how many are open and how many are new.
+                      3. Reminders that have come due, in one short clause.
+
+                    OUTPUT FORMAT:
+                      Nominal: "12 open tickets, 2 new." One line.
+                      Attention: "Ticket 10712 is past its escalation time: Climate KF6."
+
+                    TONE: Plain and brief, like a note on a desk.
+                  trigger_subscriptions:
+                    - hourly_trigger
+                    - ha_start
+                    - force_summary
+                  pipeline_tier: ambient
+                  drift_threshold: 5
+                  emission_cooldown_minutes: 60
+                  delay_seconds: 0
+                  suggested_act_event: null
+                  seed:
+                    tool: zen_dojotools_servicedesk
+                    params:
+                      mode: summary
+                  master_switch: ""
+                  index_call:
+                    domain_inspect_domains: []
+                    domain_inspect_limit: 25
+                    expand_entities: false
+                    filter_json: {}
+                    label_1: zammad
+                    label_2: ""
+                    operator: AND
+                    output_fields: ""
+                  meta:
+                    enabled: true
+                    requires:
+                      cert: zenos.service.read
+                      level: 1
       - conditions:
         - condition: template
           value_template: '{{ case_norm == "configure" }}'
