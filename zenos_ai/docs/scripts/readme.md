@@ -150,7 +150,7 @@ General-purpose collection: `calculator`, `dice_roller`, `announce` (TTS by area
 
 ---
 
-## 11a. Zen DojoTools Climate — v2.4.1
+## 11a. Zen DojoTools Climate — v2.5.1
 **File:** [`zen_dojotools_climate_readme.md`](zen_dojotools_climate_readme.md)
 
 GET+SET for `climate` and `fan` entities with topology context (open doors and windows, area sensors, HVAC bleed portals, natural vent advisory); setters need `zenos.actuation.climate_control`. Moved out of the Utilities bundle into its own file in 2026.12.0.

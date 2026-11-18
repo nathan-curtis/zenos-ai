@@ -81,6 +81,7 @@
 - **The weather source is the entity labeled `main_weather`.** `zen_weather` is still read.
 - **New read certs:** `zenos.autovac.status`, `zenos.weather.read` and Climate's read cert. Without them, those components leave the prompt.
 - **Autovac:** a bare call answers help; the pre-run briefing push and run notices are off on a fresh setup and kept on for an upgraded one; reload automations, wait, then reload scripts.
+- **Restart, or run `zen_dojotools_systemtools mode=zen_resolver_refresh`, after upgrading.** Room timers now expire through Home Assistant's `timer.finished` trigger on their labels, and a TV sleep timer gets its new `tv_sleep_timer` label at the next resync. Until then, the TV sleep timer doesn't start.
 - **Two new automations:** the Zen Security Sentry and the Zen Climate Envelope Watcher.
 - **Includes 2026.11.1**, with its security fixes.
 

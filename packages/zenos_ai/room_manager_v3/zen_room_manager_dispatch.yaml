@@ -1,6 +1,12 @@
 ###############################################################################
-# ZenOS Room Manager v3 -- Consolidated Dispatcher (2026-08-07, rev 12)
+# ZenOS Room Manager v3 -- Consolidated Dispatcher (2026-08-07, rev 13)
 #
+# REV 13 (#10705): timer expiry is the timer.finished purpose trigger on the
+#   labels room_timer, nightlight_timer, control_burnout and tv_sleep_timer,
+#   not the timer.finished event for every timer. TV sleep timers get the new
+#   tv_sleep_timer label from self_label_resync (timer.<room>_tv_sleep_timer)
+#   and are matched by label, with the room from their area label, in both
+#   the start and the expiry path.
 # REV 12: the UI override listener writes the canonical
 #   room_control/<room> key and validates against the effective value
 #   (#10660); control burnout resync, its trigger and its expiry read
@@ -70,9 +76,10 @@
 # from rev 1's per-automation single-instance queuing, traded for one entity
 # instead of eleven — flagged here, not hidden.
 #
-# NO NEW LABELS: 'control_burnout' and 'vent_fan' are pre-existing
-# labels, reused as-is. Timer/duration helpers for TV Sleep and Vent Fan are
-# found by NAMING CONVENTION (timer.<room>_tv_sleep_timer,
+# LABELS: 'control_burnout' and 'vent_fan' are pre-existing labels, reused
+# as-is; 'tv_sleep_timer' (rev 13) is applied by self_label_resync from the
+# timer's name, then everything matches it by label. Duration helpers for
+# TV Sleep and Vent Fan are still found by NAMING CONVENTION (
 # input_number.<room>_fan_delay_minutes, etc.) — that convention already
 # existed hardcoded per-room in the original blueprints, just generalized
 # globally here. A room missing the helper is a safe no-op.
@@ -985,6 +992,11 @@ script:
                               # nothing left to auto-discover or tag.
                               - label: room_timer
                                 ent: "timer.{{ _room }}_room_timer"
+                              # TV sleep timer (rev 13): labeled here so the
+                              # timer.finished purpose trigger and its handler find
+                              # it by label instead of by name.
+                              - label: tv_sleep_timer
+                                ent: "timer.{{ _room }}_tv_sleep_timer"
                               # checking_timer label rule REMOVED — the
                               # timer.<room>_checking_timer entities
                               # themselves are gone, nothing left to tag.
@@ -1229,9 +1241,16 @@ automation:
           {%- endfor -%}
           {{ ns.found }}
       # ── timer expiry (routes internally by which label/pattern owns it) ─
+      # Purpose trigger on the four timer owners' labels (#10705): it fires only
+      # for those timers, not for every timer in the house.
       - id: timer_finished
-        trigger: event
-        event_type: timer.finished
+        trigger: timer.finished
+        target:
+          label_id:
+            - room_timer
+            - nightlight_timer
+            - control_burnout
+            - tv_sleep_timer
       # ── REFLEX scene resolve + vent fan (same event, both consume it) ──
       - id: reflex_event
         trigger: event
@@ -1426,8 +1445,8 @@ automation:
                   - variables:
                       _room_ents: "{{ label_entities(_room) }}"
                       _room_state_ent: "{{ (label_entities('zen_room_state') | intersect(_room_ents) | list | first) | default('', true) }}"
-                      _tv_sleep_timer: "timer.{{ _room }}_tv_sleep_timer"
-                      _tv_sleep_timer_exists: "{{ ('timer.' ~ _room ~ '_tv_sleep_timer') in (states.timer | map(attribute='entity_id') | list) }}"
+                      _tv_sleep_timer: "{{ (label_entities('tv_sleep_timer') | intersect(_room_ents) | list | first) | default('', true) }}"
+                      _tv_sleep_timer_exists: "{{ _tv_sleep_timer != '' }}"
                       _tv_sleep_minutes_ent: "input_number.{{ _room }}_tv_sleep_minutes"
                       _tv_sleep_minutes_exists: "{{ ('input_number.' ~ _room ~ '_tv_sleep_minutes') in (states.input_number | map(attribute='entity_id') | list) }}"
                   - if: "{{ _room_state_ent != '' and states(_room_state_ent) == 'asleep' and _tv_sleep_timer_exists }}"
@@ -1475,10 +1494,10 @@ automation:
           - conditions: "{{ trigger.id == 'timer_finished' }}"
             sequence:
               # Room Timer Expiry -> Occupied Handoff (only from 'engaged')
-              - if: "{{ _roomstate_enabled and trigger.event.data.entity_id in label_entities('room_timer') }}"
+              - if: "{{ _roomstate_enabled and trigger.entity_id in label_entities('room_timer') }}"
                 then:
                   - variables:
-                      _ent_labels: "{{ labels(trigger.event.data.entity_id) }}"
+                      _ent_labels: "{{ labels(trigger.entity_id) }}"
                       _room: >-
                         {%- set ns = namespace(found='') -%}
                         {%- for l in _ent_labels -%}
@@ -1525,7 +1544,7 @@ automation:
                               value: "{{ ('occupied') | tojson }}"
                           - action: timer.start
                             target:
-                              entity_id: "{{ trigger.event.data.entity_id }}"
+                              entity_id: "{{ trigger.entity_id }}"
                             data:
                               duration: >-
                                 {{ '00:%02d:00' | format(states(_occupied_minutes) | int) if _occupied_minutes != '' and states(_occupied_minutes) not in ['unknown','unavailable'] else '00:10:00' }}
@@ -1553,7 +1572,7 @@ automation:
                               value: "{{ ('occupied') | tojson }}"
                           - action: timer.start
                             target:
-                              entity_id: "{{ trigger.event.data.entity_id }}"
+                              entity_id: "{{ trigger.entity_id }}"
                             data:
                               duration: >-
                                 {{ '00:%02d:00' | format(states(_occupied_minutes) | int) if _occupied_minutes != '' and states(_occupied_minutes) not in ['unknown','unavailable'] else '00:10:00' }}
@@ -1564,12 +1583,12 @@ automation:
                       # expiry re-fires the template and the self-latch
                       # clears itself via _wasp_timer_finished_now.
               # REFLEX Nightlight Timer Expiry -> re-fire asleep scene
-              - if: "{{ _reflex_enabled and trigger.event.data.entity_id in label_entities('nightlight_timer') }}"
+              - if: "{{ _reflex_enabled and trigger.entity_id in label_entities('nightlight_timer') }}"
                 then:
                   - variables:
                       _room: >-
                         {%- set ns = namespace(found='') -%}
-                        {%- for l in labels(trigger.event.data.entity_id) -%}
+                        {%- for l in labels(trigger.entity_id) -%}
                           {%- if ns.found == '' and area_name(l) is not none -%}
                             {%- set ns.found = l -%}
                           {%- endif -%}
@@ -1619,12 +1638,12 @@ automation:
                                 room: "{{ _room }}"
                                 would_fire_scene: "{{ _scene | trim }}"
               # Control Burnout — 'Automation' override not released in time
-              - if: "{{ trigger.event.data.entity_id in label_entities('control_burnout') }}"
+              - if: "{{ trigger.entity_id in label_entities('control_burnout') }}"
                 then:
                   - variables:
                       _room: >-
                         {%- set ns = namespace(found='') -%}
-                        {%- for l in labels(trigger.event.data.entity_id) -%}
+                        {%- for l in labels(trigger.entity_id) -%}
                           {%- if ns.found == '' and area_name(l) is not none -%}
                             {%- set ns.found = l -%}
                           {%- endif -%}
@@ -1663,11 +1682,20 @@ automation:
                             data:
                               option: "Auto"
               # TV Sleep Timer expiry -> turn off TV, hand off to asleep timer
-              - if: "{{ trigger.event.data.entity_id | regex_match('^timer\\..+_tv_sleep_timer$') }}"
+              # Matched by the tv_sleep_timer label (self_label_resync applies it);
+              # the room is the timer's area label, as for every other owner here.
+              - if: "{{ trigger.entity_id in label_entities('tv_sleep_timer') }}"
                 then:
                   - variables:
-                      _room: "{{ trigger.event.data.entity_id | replace('timer.', '') | replace('_tv_sleep_timer', '') }}"
-                  - if: "{{ area_name(_room) is not none }}"
+                      _room: >-
+                        {%- set ns = namespace(found='') -%}
+                        {%- for l in labels(trigger.entity_id) -%}
+                          {%- if ns.found == '' and area_name(l) is not none -%}
+                            {%- set ns.found = l -%}
+                          {%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.found }}
+                  - if: "{{ _room != '' }}"
                     then:
                       - variables:
                           _room_ents: "{{ label_entities(_room) }}"
