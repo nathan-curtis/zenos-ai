@@ -1,4 +1,4 @@
-# Zen DojoTools Climate — v2.5.0
+# Zen DojoTools Climate — v2.5.1
 
 **Script:** `zen_dojotools_climate`
 **File:** `packages/zenos_ai/dojotools/dojotools_climate.yaml`
@@ -79,9 +79,9 @@ Reads every `climate` entity once and scores it in code, for the ambient tier (T
 
 1. An envelope opening is open for five minutes while heating or cooling runs. The house announces it (Announce tool) and sends a Yes/No to the household's phones (Postman, five minutes to answer). The message carries the outdoor temperature when the Weather tool is installed.
 2. **Yes** turns off the units that serve the open area and saves each unit's mode in the household drawer `climate_envelope`. If everything was closed while the question waited, nothing is turned off. **No** or no answer leaves the HVAC alone, and the offer isn't repeated until the envelope closes and opens again.
-3. Once every opening has been closed for two minutes, the house offers the same way to turn them back on. **Yes** puts each unit back in its saved mode, but only units still off (a unit someone changed in the meantime is left alone). The saved record is cleared after any answer.
+3. Once every opening has been closed for two minutes, the house offers the same way to turn them back on. **Yes** puts each unit back in its saved mode, but only units still off (a unit someone changed in the meantime is left alone). About fifteen seconds later each restored unit is read back, and one that did not land in its saved mode is set once more (some integrations, such as Nexia/Trane, answer the first `auto` after a permanent off with a `heat_cool` hold). The saved record is cleared after any answer.
 4. **Quiet while the house sleeps** (the same rule as Postman's sleep gate: quiet hours on, or the home mode Night or Night-Late). Nothing is announced or asked, and the open offer waits for the next time the envelope opens. A Yes meant "off until it's closed", so if everything closes while the house sleeps, each unit is put back in its saved mode quietly (only units still off). A courtesy note is saved and sent to the household's phones when the house wakes (the home mode leaves Night or Night-Late, or quiet hours end), because Postman drops a message sent into the sleep gate.
-5. **The agent knows.** While the HVAC is paused, a one-line Priority Inject entry (`provider_id: climate_envelope`, urgency `urgent`) sits in the agent's active context, saying what is open, since when, and that the household said yes. It is cleared when the units go back on or the record is cleared. `mode=summary` also gives the reason `paused_for_envelope`.
+5. **The agent knows.** While the HVAC is paused, a one-line Priority Inject entry (`provider_id: climate_envelope`, urgency `urgent`) sits in the agent's active context, saying what is open, since when it opened, and that the household said yes. It is cleared when the units go back on or the record is cleared. `mode=summary` also gives the reason `paused_for_envelope`.
 
 **Which units an opening turns off:** the `hvac_air_handler` (or `hvac_air_handler_<n>`) label the opening's area shares with thermostats (see Room Manager `mode=hvac_coverage`). Without one, a thermostat in the same area. Without that, every unit that is running. Spa and thermal loads are never touched.
 

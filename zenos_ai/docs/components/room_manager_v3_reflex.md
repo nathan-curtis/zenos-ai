@@ -224,7 +224,7 @@ never requires touching either file.
 
 | Entity | Convention | Feature |
 |---|---|---|
-| `timer.<room>_tv_sleep_timer` | fixed | TV Sleep Timer |
+| `timer.<room>_tv_sleep_timer` | fixed; `self_label_resync` gives it the `tv_sleep_timer` label, which its expiry fires from | TV Sleep Timer |
 | `input_number.<room>_tv_sleep_minutes` | fixed | TV Sleep Timer duration |
 | `input_number.<room>_fan_delay_minutes` | fixed | Vent Fan on-delay |
 | `input_number.<room>_fan_min_runtime_seconds` | fixed | Vent Fan min-runtime before off |
