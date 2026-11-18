@@ -56,7 +56,7 @@
 <!-- Climate 2.3.0 to 2.5.x: scored summary and component, air-handler coverage (Room Manager 5.20.0), the envelope offer. -->
 
 ### On the twelfth day: the weather
-<!-- Weather 1.0.x, Taskmaster 0.10.0 almanac hazards. -->
+<!-- Weather 1.0.x, Taskmaster 0.10.0 almanac hazards. Built on TheFes' Weather Forecast tool: credit TheFes in the verse. -->
 
 <!-- Not yet placed: the appliance sentry (Security Manager 5.24.0); the house watches itself (SystemTools 5.5.0, Postman 5.5.0/5.6.0, Labels 5.11.x); the locks coordinator (not built yet). -->
 
@@ -91,6 +91,12 @@
 ---
 
 ## Fixed
+
+---
+
+## Thanks
+
+The Weather tool grows out of TheFes' Weather Forecast tool, which ZenOS ran as the house forecast script, keeping its fields. TheFes also wrote the Music Assistant LLM tool, and the trigger-based template sensors that hold data in their attributes, the pattern every ZenOS cabinet is built on. Thank you.
 
 ---
 
