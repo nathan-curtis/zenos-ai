@@ -1,6 +1,12 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Security Manager
-# Version: 5.23.1
+# Version: 5.24.0
+# v5.24.0: the appliance sentry (#10703). appliance_sentry_enabled (default off) tells the
+#   household when an appliance labeled appliance AND appliance_sentry has been on
+#   appliance_sentry_minutes (default 10) with nobody home: zone.home at 0, the same rule
+#   auto-arm uses (unknown never counts as empty). Inform only: a notice, a ledger line,
+#   and a Priority Inject line (security_appliance_away) until it is off or someone is
+#   home. Two template triggers on the Auto-Arm Watcher (appliance_away, its clear edge).
 # v5.23.1: a cover question that reached nobody (Postman no_channel: no phone took it)
 #   never closes the cover under ask_then_close; only a real five-minute timeout does.
 #   The Zen Security Sentry is found by its automation id (zen_security_sentry),
@@ -338,7 +344,10 @@ script:
           notify, default ask), cover_night_close_enabled (bool, default
           false), cover_wind_close_enabled (bool, default false),
           cover_wind_policy (default ask_then_close), cover_wind_threshold
-          (number, for a wind_speed sensor labeled cover_wind).
+          (number, for a wind_speed sensor labeled cover_wind), appliance_sentry_enabled
+          (bool, default false: tell the household when an appliance labeled appliance
+          AND appliance_sentry is on appliance_sentry_minutes with nobody home),
+          appliance_sentry_minutes (int, default 10).
           All default off/unset: auto_arm_enabled stays off until
           Node-RED's equivalent flows are decommissioned.
         required: false
@@ -546,10 +555,10 @@ script:
                     summary='Alarm panel, perimeter, and auto-arm',
                     display_name='Security Manager',
                     tier='dojotools',
-                    version='5.23.1',
+                    version='5.24.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools', 'zen_kfc_provider'],
-                    optional_labels=['security_manager', 'alarm', 'secure_on_arm', 'exterior', 'cover_wind'],
+                    optional_labels=['security_manager', 'alarm', 'secure_on_arm', 'exterior', 'cover_wind', 'appliance', 'appliance_sentry'],
                     consumes=['lock_or_alarm'],
                     returns=['security_state'],
                     icon='mdi:shield-lock',
@@ -973,7 +982,7 @@ script:
               result:
                 status: ok
                 tool: zen_dojotools_security_manager
-                version: "5.23.1"
+                version: "5.24.0"
                 mode: kfc_manifest
                 kfc: "{{ _kfc_out }}"
                 count: "{{ _kfc_out | length }}"
@@ -1923,6 +1932,14 @@ script:
                                   {%- set ns = namespace(o=[]) -%}
                                   {%- for s in expand(sa + label_entities('exterior')) if s.domain == 'cover' and (s.entity_id in sa or s.attributes.get('device_class') in ['garage', 'gate', 'door']) and s.entity_id not in ns.o -%}{%- set ns.o = ns.o + [s.entity_id] -%}{%- endfor -%}
                                   {{ ns.o }}
+                              appliance_settings:
+                                appliance_sentry_enabled:
+                                  value: "{{ _sm_val.get('_auto_arm_config', {}).get('appliance_sentry_enabled', false) | bool(false) }}"
+                                  means: "Tell the household when an appliance labeled both appliance and appliance_sentry has been on appliance_sentry_minutes with nobody home (zone.home at 0, the same rule auto-arm uses). Inform only: the house does not switch it off. Default off."
+                                appliance_sentry_minutes:
+                                  value: "{{ _sm_val.get('_auto_arm_config', {}).get('appliance_sentry_minutes', 10) | int(10) }}"
+                                  means: "Minutes an appliance may stay on with nobody home before the household is told. Default 10."
+                                watched_appliances: "{{ label_entities('appliance') | select('in', label_entities('appliance_sentry')) | list }}"
                               note: "Settings not listed are at their default, which is off. Pass auto_arm_patch (JSON) to change them; that needs the zenos.actuation.security_control cert. vac_arm_override_enabled also needs the Zen Security Sentry running (sentry_state on), which needs Spook."
                   default:
                     - action: script.zen_dojotools_identity
@@ -2101,6 +2118,67 @@ script:
                               action: auto_arm_check
                               result: "{{ 'notified' if _ro_go else ('option_off' if not _ro_on else 'not_applicable') }}"
                               rooms: "{{ _ro_rooms }}"
+                    # Appliance sentry (#10703): inform only. A labeled appliance (appliance
+                    # AND appliance_sentry) has been on appliance_sentry_minutes with nobody
+                    # home. Notice, ledger line, and the agent's line until it is off or
+                    # someone is home (appliance_away_clear).
+                    - conditions: "{{ _aa_trigger in ['appliance_away', 'appliance_away_clear'] }}"
+                      sequence:
+                        - variables:
+                            _ap_on_setting: "{{ _aa_cfg.get('appliance_sentry_enabled', false) | bool(false) }}"
+                            _ap_running: >-
+                              {%- set ns = namespace(o=[]) -%}
+                              {%- for s in expand(label_entities('appliance')) if s.state == 'on' and s.entity_id in label_entities('appliance_sentry') -%}{%- set ns.o = ns.o + [s.entity_id] -%}{%- endfor -%}
+                              {{ ns.o }}
+                            _ap_empty: "{{ (states('zone.home') | int(-1)) == 0 }}"
+                            _ap_minutes: "{{ [_aa_cfg.get('appliance_sentry_minutes', 10) | int(10), 1] | max }}"
+                        - variables:
+                            _ap_names: >-
+                              {%- set n = expand(_ap_running) | map(attribute='name') | list -%}
+                              {{ (n[:-1] | join(', ') ~ ' and ' ~ n[-1]) if n | count > 1 else (n | first | default('')) }}
+                            _ap_go: "{{ _aa_trigger == 'appliance_away' and _ap_on_setting and _ap_empty and (_ap_running | count) > 0 }}"
+                        - if: "{{ _ap_go }}"
+                          then:
+                            - action: script.zen_dojotools_security_manager
+                              continue_on_error: true
+                              data:
+                                action: ledger_add
+                                ledger_kind: appliance_away
+                                ledger_source: appliance_sentry
+                                ledger_summary: "{{ _ap_names }} {{ 'has' if (_ap_running | count) == 1 else 'have' }} been on for {{ _ap_minutes }} minute{{ '' if (_ap_minutes | int) == 1 else 's' }} with nobody home. The household was told."
+                            - action: script.zen_dojotools_postman
+                              continue_on_error: true
+                              data:
+                                mode: resolve_and_dispatch
+                                title: "On with nobody home: {{ _ap_names }}"
+                                message: "{{ _ap_names }} {{ 'has' if (_ap_running | count) == 1 else 'have' }} been on for {{ _ap_minutes }} minute{{ '' if (_ap_minutes | int) == 1 else 's' }} and nobody is home."
+                                urgency: 7
+                                channel_hint: push
+                                caller_token: security_manager_appliance_sentry
+                            - event: zen_event
+                              event_data:
+                                event:
+                                  kind: priority_inject_write
+                                  provider_id: security_appliance_away
+                                  summary: "{{ _ap_names }} {{ 'has' if (_ap_running | count) == 1 else 'have' }} been on since at least {{ (now() - timedelta(minutes=_ap_minutes | int)).strftime('%H:%M') }} with nobody home. The household was told; the house cannot switch it off."
+                                  urgency: urgent
+                                  expires_minutes: 1440
+                                  entities: "{{ _ap_running[:3] }}"
+                                  display: prompt
+                        - if: "{{ _aa_trigger == 'appliance_away_clear' }}"
+                          then:
+                            - event: zen_event
+                              event_data:
+                                event:
+                                  kind: priority_inject_clear
+                                  provider_id: security_appliance_away
+                        - variables:
+                            result:
+                              status: ok
+                              action: auto_arm_check
+                              trigger: "{{ _aa_trigger }}"
+                              result: "{{ 'told' if _ap_go else ('cleared' if _aa_trigger == 'appliance_away_clear' else ('option_off' if not _ap_on_setting else 'not_applicable')) }}"
+                              appliances: "{{ _ap_running }}"
                     # Exterior covers (cover_watch_enabled, cover_night_close_enabled,
                     # cover_wind_close_enabled: all default off). Watched: every cover
                     # labeled secure_on_arm, and every cover labeled exterior with device
@@ -3536,7 +3614,7 @@ script:
                         arm_mode: "away | home | night | vacation. Required for action=arm."
                         panel: "alarm_control_panel entity_id override. Omit to auto-discover via label:alarm_panel."
                         policy_patch: "JSON string, event_type -> policy overrides. Required for set_alert_policy. Event types: alarm_triggered, alarm_pending, alarm_arm_away, alarm_arm_home, alarm_arm_night, alarm_disarm, panel_fault, smoke_co, door_open_armed, door_open_night, garage_open_armed, lock_unlocked_armed, lock_unlocked_night, lock_changed, person_detected_armed. Per-entry keys: urgency (1-10), notify (bool), channel_hint, title."
-                        auto_arm_patch: "JSON string for auto_arm_config, partial merge. See auto_arm_config field docs for the full key list (auto_arm_enabled, vac_arm_override_enabled, notify_occupied_while_away, dusk_lights_enabled, dusk_offset_min, dawn_offset_min, arrival_lights_enabled, arrival_lights_minutes, arrival_lights_dark_elevation, arrival_lights_residents, night_arm_enabled, mode_away_arm_enabled, entertaining_blocks_night_arm, alarm_drives_home_mode_enabled, disarm_occupies_arrival_area_enabled, lock_disarm_enabled, cover_watch_enabled, cover_left_open_minutes, cover_day_policy, cover_night_close_enabled, cover_wind_close_enabled, cover_wind_policy, cover_wind_threshold)."
+                        auto_arm_patch: "JSON string for auto_arm_config, partial merge. See auto_arm_config field docs for the full key list (auto_arm_enabled, vac_arm_override_enabled, notify_occupied_while_away, dusk_lights_enabled, dusk_offset_min, dawn_offset_min, arrival_lights_enabled, arrival_lights_minutes, arrival_lights_dark_elevation, arrival_lights_residents, night_arm_enabled, mode_away_arm_enabled, entertaining_blocks_night_arm, alarm_drives_home_mode_enabled, disarm_occupies_arrival_area_enabled, lock_disarm_enabled, cover_watch_enabled, cover_left_open_minutes, cover_day_policy, cover_night_close_enabled, cover_wind_close_enabled, cover_wind_policy, cover_wind_threshold, appliance_sentry_enabled, appliance_sentry_minutes)."
                         auto_arm_trigger: "Internal -- which event fired auto_arm_check (occupancy|vac_started|vac_docked|override_expired|and the panel, lock and home-mode triggers). Set by the companion automation, not for direct agent calls."
                       cert_gates:
                         read_tier: "read_state, query, readiness, override_list, activity, lens, get_policy -- always open, no cert."
@@ -4011,6 +4089,28 @@ automation:
           {{ ns.n > 0 and windy }}
         for: "00:05:00"
         id: cover_wind
+      # Appliance sentry (appliance_sentry_enabled, default off, #10703): an appliance
+      # labeled appliance AND appliance_sentry is on while nobody is home (zone.home at
+      # 0, the same rule auto-arm uses; unknown never counts as empty), for
+      # appliance_sentry_minutes (default 10). Inform only: the house cannot switch a
+      # range off. The clear edge removes the agent's line.
+      - trigger: template
+        value_template: >-
+          {%- set ns = namespace(n=0) -%}
+          {%- for s in expand(label_entities('appliance')) if s.state == 'on' and s.entity_id in label_entities('appliance_sentry') -%}{%- set ns.n = ns.n + 1 -%}{%- endfor -%}
+          {{ ns.n > 0 and (states('zone.home') | int(-1)) == 0 }}
+        for:
+          minutes: >-
+            {%- set sm = (state_attr(states('sensor.zen_default_household_cabinet_resolved'), 'variables') or {}).get('security_manager', {}) -%}
+            {%- set c = ((sm.get('value', sm) if sm is mapping else {}).get('_auto_arm_config', {})) -%}
+            {{ [c.get('appliance_sentry_minutes', 10) | int(10), 1] | max }}
+        id: appliance_away
+      - trigger: template
+        value_template: >-
+          {%- set ns = namespace(n=0) -%}
+          {%- for s in expand(label_entities('appliance')) if s.state == 'on' and s.entity_id in label_entities('appliance_sentry') -%}{%- set ns.n = ns.n + 1 -%}{%- endfor -%}
+          {{ ns.n == 0 or (states('zone.home') | int(0)) > 0 }}
+        id: appliance_away_clear
       # The answer to a cover question (sent without waiting: this automation is
       # queued and must not hold a security event behind a five-minute question).
       - trigger: event
