@@ -1,6 +1,6 @@
 # ZenOS-AI AlertManager
 
-**Version:** 5.7.0
+**Version:** 5.7.1
 
 > **2026.11.1 (5.7.0):** the `alert_manager` component is off on a fresh install. It sends notifications, so turning it on is where the emit cert `zenos.comms.dispatch` is asked for: `zen_dojotools_scribe mode=enable key=alert_manager artifact_class=kfc`. An upgraded install keeps whatever it stores.
 **File:** `dojotools/dojotools_alertmanager.yaml`
@@ -99,7 +99,7 @@ event_data:
     alert_key: unique_slug        # required — used as dedup key and cabinet key
     message: "Human-readable description"   # optional, defaults to alert_key
     severity: warn                # optional — info | warn | error, defaults to warn
-    notify_target: persistent     # optional — persistent | mobile | postman
+    notify_target: persistent     # optional — persistent | postman | zen_display | any notify service name; comma-separate to compose
 ```
 
 ### Postman-specific fields
@@ -346,7 +346,7 @@ Agent-accessible CRUD interface for AlertManager. Friday can query active alerts
 | `alert_key` | `fire`, `clear` | string | Alert dedup key — must match the key used at fire time. |
 | `message` | `fire` | string | Human-readable description of the alert condition. |
 | `severity` | `fire` | string | `info` \| `warn` \| `error`. Default: `warn`. |
-| `notify_target` | `fire` | string | `persistent` \| `mobile` \| `postman` \| `zen_display`, or a comma-separated combination (e.g. `postman,zen_display`). Default: `persistent`. |
+| `notify_target` | `fire` | string | `persistent` \| `postman` \| `zen_display` \| any notify service name (e.g. `mobile_app_x`), or a comma-separated combination (e.g. `postman,zen_display`). Default: `persistent`. |
 | `clear_after_minutes` | `fire` | number | TTL in minutes. Default: 1440 (24h). Pass `0` for no auto-expiry. |
 | `channel_hint` | `fire` (postman) | string | `push` \| `tts` \| `teams` — used when `notify_target: postman`. |
 | `image_entity` | `fire` (postman) | string | Camera or image entity to attach a snapshot. Used when `notify_target: postman`. |

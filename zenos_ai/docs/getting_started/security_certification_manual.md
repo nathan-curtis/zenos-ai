@@ -150,6 +150,7 @@ Every certification has a short plain `description`, written for the phone appro
 | `zenos.weather.read` | Read the weather and forecast for the background summary |
 | `zenos.service.admin` | Change the service desk (Zammad) configuration (level 2, interactive stage) |
 | `zenos.service.read` | Read the open work in the service desk for the background summary |
+| `zenos.spa.read` | Read the hot tub's water and chemistry for the background summary |
 
 `cert_list` is the source of truth: it carries each certification's `max_level` (the highest level any tool actually checks) and its `detail`.
 
@@ -174,9 +175,9 @@ A narrower grant held at the same or a lower level than the broader one it sits 
 
 **Standard bundles.** A bundle grant gives every member the same level, so the level you grant decides what's included.
 
-- `zenos_agent_basic`: the backstage pass and everyday control (lights, scenes, covers, climate, water heater, displays, media playback, helper edits, timers, todo delete). Requested when Flynn's OOBE starts.
+- `zenos_agent_basic`: the backstage pass and everyday control (lights, scenes, covers, climate, water heater, displays, media playback, helper edits, timers, todo delete) and the weather and spa reads, `zenos.weather.read` (Weather 1.0.4) and `zenos.spa.read` (Spa Master 5.7.0). Requested when Flynn's OOBE starts.
 - `zenos_agent_steward`: running the house model, granted at level 1. Room Manager topology and behavior (`zenos.spatial.room_topology_edit`, `zenos.room.behavior_control`), label create/update (`zenos.registry.label_lifecycle_control`), registry cosmetics and area assignment (`zenos.registry.lifecycle_control`), Grocy schema and locations (`zenos.knowledge.inventory_schema_edit`), house settings (`zenos.system.home_config_write`), profiles (`zenos.identity.profile_write`), zones (`zenos.helper.zones_edit`) and alert policy (`zenos.alerts.policy_edit`). At level 1 it cannot delete areas, labels, registry objects or Grocy structure.
-- `zenos_agent_advanced`: physical security. `zenos.actuation.lock_control`, `zenos.actuation.security_control`, `zenos.room.control_override` (clearing a room out of Paused) and `zenos.alerts.camera_policy_edit`. The bundle grants the ability only: every live acknowledgement these certifications require still goes to a phone.
+- `zenos_agent_advanced`: physical security. `zenos.actuation.lock_control`, `zenos.actuation.security_control`, `zenos.room.control_override` (clearing a room out of Paused) and `zenos.alerts.camera_policy_edit`, plus the read certs that background summaries of the house need: `zenos.security.read` (Security Manager 5.26.2), `zenos.autovac.status`, `zenos.media.print_status`, and `zenos.service.read` when the Zammad plugin is installed (0.6.2; a house without it never sees it in the bundle). The bundle grants the ability only: every live acknowledgement these certifications require still goes to a phone.
 - `zenos_agent_parity` (2026.11.0): one approval that keeps an upgraded install running as before. `cert_audit` builds it from what actually runs: the read certs your enabled summaries need, plus the emit cert of any act still carried by the 11 act bridge. Granted with stages `ise` by default, and each member gets only the stages its tool allows. See [Read certs](#66-read-certs-and-parity).
 - `zenos_agent_autonomous` (2026.11.0): every cert whose tool allows the Ninja emit stage: `zenos.comms.dispatch`, `zenos.security.camera_scan` and `zenos.pipeline.chain`. It is derived, not hand-kept, so a tool that later allows that stage joins on its own. Granting it adds the interactive and Ninja emit stages (`ie`), so the agent can send the summarizer's routine notifications in the background. See [Stages](#64-stages).
 - Admin certifications (cabinets, reload/restart, infrastructure, finance, registry purge, plant auto-shutoff, KFC publish, PII whitelist) are never bundled.
@@ -344,6 +345,7 @@ A `deny` scope entry (Section 6) short-circuits before the live-ack step ever ru
 | `zenos.climate.read` | Climate's `summary`: every thermostat, its mode and temperature, open doors and windows around it |
 | `zenos.security.read` | Security Manager's `summary`: the panel, who is home, the secure stance, what is open, jammed or unlocked, garage doors left open, appliances on with nobody home, overrides |
 | `zenos.service.read` | Service Desk's `summary`: how many tickets are open and new, which are past their escalation time, high-priority ones nobody owns, reminders come due; numbers and titles, no message bodies |
+| `zenos.spa.read` | Spa Master's `summary`: water temperature against its range, chlorine, pH, ORP and salt against the profile, the cartridge, the cover |
 | `zenos.finance.read` | Finance summaries: budget, bills, net worth, rollup |
 | `zenos.health.read` | The medication summary (`taskmaster_meds`) |
 | `zenos.presence.read` | Room Manager's `summary` and `home_overview` (the room_manager background summary; Security Manager seeds from its own `summary` since 5.26.0) |

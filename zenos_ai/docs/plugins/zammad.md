@@ -1,6 +1,6 @@
 # ZenOS-AI Zammad (Radar) Plugin
 
-**Version:** 0.6.1 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
+**Version:** 0.6.2 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
 **Package:** `packages/zenos_ai/plugins/zammad/zammad.yaml`
 **MCP-facing script:** `zen_dojotools_servicedesk`
 **Lens Bus stack provider:** `zen_stack_radar`
@@ -162,6 +162,7 @@ A successful configure call connects to Zammad, writes the URL to `integrations_
 
 | Version | Change |
 |---------|--------|
+| v0.6.2 (2026.12.0) | `zenos.service.read` is in the `zenos_agent_advanced` bundle, with the other background-summary read certs. Only an install with this plugin has it there. |
 | v0.6.1 (2026.12.0) | `summary` drops the owner check (a household desk has no ticket owners, so it nagged every hour): `high_priority_new` (2) flags a high-priority ticket only while it is still new. |
 | v0.6.0 (2026.12.0) | `summary`: a scored, read-only answer about the open work (KF6, #10702), and the `servicedesk` KFC through `kfc_manifest`, seeded by it. New read cert `zenos.service.read` (level 1, stages i, s, l). |
 | v0.5.6 (2026.11.1) | `configure` writes are gated: saving the service desk url needs the new cert `zenos.service.admin` level 2 (stage i), declared in `tool_manifest`, on top of the live ack. `inspect` stays open. |
