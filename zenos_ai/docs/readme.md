@@ -1,6 +1,6 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Current stable:** 2026.11.1 'This Is Spinal Tap' | **Previous:** 2026.11.0 'This Is Spinal Tap' | **Legacy line:** 2026.9.1 'Steel Magnolia' and 2026.8.1 'Chef' | **License:** MIT
+> **Public beta:** 2026.12.0 'Home Alone' (Beta 1) | **Current stable:** 2026.11.0 'This Is Spinal Tap' (2026.11.1 patch in beta) | **Previous:** 2026.10.2 'Tron' | **Legacy line:** 2026.9.1 'Steel Magnolia' and 2026.8.1 'Chef' | **License:** MIT
 >
 > *Public releases follow Home Assistant's `YYYY.M.patch` convention: `2026.11.0` is the November release. A new month resets to `.0`.*
 
@@ -14,6 +14,7 @@
 
 | Release | Notes |
 |---|---|
+| 2026.12.0 'Home Alone' (beta) | [Release notes](releases/home_alone.md) · [Read this before upgrading](releases/home_alone.md#read-this-before-upgrading) |
 | 2026.11.0 'This Is Spinal Tap' | [Release notes](releases/spinal_tap.md) · [Read this before upgrading](releases/spinal_tap.md#read-this-before-upgrading) |
 | 2026.10 'Tron' (10.0, 10.1, 10.2) | [Release notes](releases/tron.md) |
 | 2026.9 'Steel Magnolia' (9.0, 9.1) | [Release notes](releases/steel_magnolia.md) |
