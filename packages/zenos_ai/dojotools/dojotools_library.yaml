@@ -1,6 +1,17 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Library
-# Version: 6.15.5
+# Version: 6.16.1
+# v6.16.1: a failed import is action-required (failed_imports, 3) for 7 days; after that
+#   it is old_failed_import (1), still listed by file name. summary carries
+#   failed[] with each file, when, and Paperless's reason.
+# v6.16.0: mode=summary (#10702, KF6): one scored, read-only answer about the documents,
+#   from two Paperless reads (the inbox count, imports that failed and nobody
+#   acknowledged): urgency 0-5, action_required at 3, reasons failed_imports 3,
+#   paperless_unreachable 2, inbox_backlog 2 (25 or more), inbox_waiting 1, not_configured
+#   and no_paperless 0;
+#   counts and file names only, never content. mode=kfc_manifest declares the first
+#   library KFC (ambient, hourly, seeded by summary). New read cert zenos.library.read
+#   (level 1, stages isl; no bundle: file names can be personal).
 # v6.15.5: stacks_configure inspect no longer writes. The
 #   read-and-write steps after the action choose ran for every action, so an inspect
 #   (or a bad-url error) rewrote the stored Paperless entry with an empty url. They now
@@ -180,6 +191,8 @@ script:
             - move
             - get
             - intake_pending
+            - summary
+            - kfc_manifest
             - configure_status
             - list
             - by_anchor
@@ -298,6 +311,8 @@ script:
           stacks_configure:
             intent: Inspect Paperless config state. Gate 1 is read-only.
             reads: household cabinet integrations_config.paperless_ngx
+          summary:
+            intent: "One scored answer about the documents (read-only): urgency 0-5, action_required at 3, reasons (failed_imports 3, paperless_unreachable 2, inbox_backlog 2 at 25+, inbox_waiting 1), counts and failed file names, never content. The seed of the library KFC; asking needs no cert, the background summary needs zenos.library.read."
           stacks_search:
             intent: Full-text search Paperless documents.
             needs: [query OR input_json.query]
@@ -499,6 +514,174 @@ script:
     - if: "{{ result is not defined }}"
       then:
       - choose:
+        # ── summary (KF6, #10702): one scored, read-only answer about the documents ──
+        # Two Paperless reads through its broker: the inbox count and imports that
+        # failed and nobody acknowledged. urgency 0-5, action_required at 3, reasons[]
+        # highest first. Counts and file names only, never document content. The seed
+        # of the library KFC (cert zenos.library.read, background only).
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm == "summary" }}'
+          sequence:
+          - action: script.zen_sutra_paperless
+            enabled: "{{ states('script.zen_sutra_paperless') in ['on', 'off'] }}"
+            continue_on_error: true
+            response_variable: _su_inbox
+            data:
+              action_type: get
+              endpoint: /api/documents/?is_in_inbox=true&page_size=1
+          - action: script.zen_sutra_paperless
+            enabled: "{{ states('script.zen_sutra_paperless') in ['on', 'off'] }}"
+            continue_on_error: true
+            response_variable: _su_tasks
+            data:
+              action_type: get
+              endpoint: /api/tasks/?status=FAILURE&acknowledged=false
+          - variables:
+              _su_installed: "{{ states('script.zen_sutra_paperless') in ['on', 'off'] }}"
+              _su_ok: "{{ _su_inbox is defined and _su_inbox is mapping and _su_inbox.get('status') == 'success' }}"
+              _su_inbox_n: >-
+                {%- set c = _su_inbox.get('result', {}).get('content', {}) if (_su_inbox is defined and _su_inbox is mapping) else {} -%}
+                {{ (c.get('count', 0) | int(0)) if c is mapping else 0 }}
+              _su_failed: >-
+                {%- set c = _su_tasks.get('result', {}).get('content', []) if (_su_tasks is defined and _su_tasks is mapping) else [] -%}
+                {%- set rows = c if (c is sequence and c is not string) else (c.get('results', []) if c is mapping else []) -%}
+                {%- set ns = namespace(out=[]) -%}
+                {%- for t in rows if t is mapping -%}
+                  {%- set w = t.get('date_done') or t.get('date_created') or '' -%}
+                  {%- set wd = as_datetime(w) if w else none -%}
+                  {%- set ns.out = ns.out + [{'file': (t.get('task_file_name') or '') | string, 'when': w,
+                       'reason': ((t.get('result') or '') | string)[:160],
+                       'recent': wd is none or (now().timestamp() - wd.timestamp()) < 604800}] -%}
+                {%- endfor -%}
+                {{ ns.out }}
+          - variables:
+              _su_scored: >-
+                {%- set ns = namespace(rows=[]) -%}
+                {%- if not _su_installed -%}
+                  {%- set ns.rows = ns.rows + [[0, 'no_paperless', 'The Paperless plugin is not installed.']] -%}
+                {%- elif (_su_inbox.get('status', '') if (_su_inbox is defined and _su_inbox is mapping) else '') == 'not_configured' -%}
+                  {%- set ns.rows = ns.rows + [[0, 'not_configured', 'Paperless is not set up (Library stacks_configure with its URL).']] -%}
+                {%- elif not _su_ok -%}
+                  {%- set ns.rows = ns.rows + [[2, 'paperless_unreachable', (_su_inbox.get('availability', {}).get('human', 'Paperless did not answer.') if (_su_inbox is defined and _su_inbox is mapping) else 'Paperless did not answer.')]] -%}
+                {%- else -%}
+                  {#- A failure is action-required for 7 days; after that it is an old
+                      record still worth a line. -#}
+                  {%- set fr = _su_failed | selectattr('recent') | list -%}
+                  {%- set fo = _su_failed | rejectattr('recent') | list -%}
+                  {%- if fr | count > 0 -%}
+                    {%- set ns.rows = ns.rows + [[3, 'failed_imports', (fr | count) ~ ' document(s) failed to import in the last 7 days and nobody has looked: ' ~ (fr | map(attribute='file') | join(', ')) ~ '.']] -%}
+                  {%- endif -%}
+                  {%- if fo | count > 0 -%}
+                    {%- set ns.rows = ns.rows + [[1, 'old_failed_import', (fo | count) ~ ' older failed import(s), never acknowledged: ' ~ (fo | map(attribute='file') | join(', ')) ~ '.']] -%}
+                  {%- endif -%}
+                  {%- if (_su_inbox_n | int(0)) >= 25 -%}
+                    {%- set ns.rows = ns.rows + [[2, 'inbox_backlog', _su_inbox_n ~ ' documents are waiting in the inbox.']] -%}
+                  {%- elif (_su_inbox_n | int(0)) > 0 -%}
+                    {%- set ns.rows = ns.rows + [[1, 'inbox_waiting', _su_inbox_n ~ ' document(s) waiting in the inbox.']] -%}
+                  {%- endif -%}
+                {%- endif -%}
+                {{ ns.rows }}
+          - variables:
+              _su_urgency: "{{ (_su_scored | map(attribute=0) | max) if _su_scored | count > 0 else 0 }}"
+          - variables:
+              result:
+                status: ok
+                mode: summary
+                section: stacks
+                urgency: "{{ _su_urgency | int(0) }}"
+                action_required: "{{ (_su_urgency | int(0)) >= 3 }}"
+                reasons: "{{ _su_scored | sort(attribute=0, reverse=true) | map(attribute=1) | list }}"
+                attention: >-
+                  {%- set ns = namespace(out=[]) -%}
+                  {%- for r in _su_scored | sort(attribute=0, reverse=true) if r[0] > 0 -%}
+                    {%- set ns.out = ns.out + [{'reason': r[1], 'detail': r[2]}] -%}
+                  {%- endfor -%}
+                  {{ ns.out }}
+                counts:
+                  inbox: "{{ _su_inbox_n | int(0) }}"
+                  failed_imports: "{{ _su_failed | count }}"
+                failed_files: "{{ (_su_failed | map(attribute='file') | list)[:5] }}"
+                failed: "{{ _su_failed[:5] }}"
+                caller_token: "{{ caller_token | default('') }}"
+        # ── kfc_manifest: the library KFC definition (consumed by bootstrap_kfc) ──
+        - conditions:
+          - condition: template
+            value_template: '{{ mode_norm == "kfc_manifest" }}'
+          sequence:
+          - variables:
+              result:
+                status: ok
+                tool: zen_dojotools_library
+                version: "6.16.1"
+                mode: kfc_manifest
+                count: 1
+                caller_token: "{{ caller_token | default('') }}"
+                kfc:
+                  - kata_key: library
+                    friendly_name: Library
+                    label: library
+                    component_summary: >-
+                      The household's documents in Paperless: imports that failed and
+                      nobody looked at, and how many documents are waiting in the inbox.
+                      Consult for "anything to file" or any document question.
+                    component_instructions: >-
+                      SCOPE: Documents (Paperless) through Library. Tool: zen_dojotools_library.
+                        Ambient tier: keep it to one line unless a document failed to import.
+
+                      DATA ACCESS:
+                        The seed is zen_dojotools_library mode=summary (scored, read-only).
+                        Use its fields; do not invent documents. Fields: urgency (0-5),
+                        action_required (urgency 3 or more), reasons[] (highest first:
+                        failed_imports 3 (last 7 days), paperless_unreachable 2,
+                        inbox_backlog 2 (25 or
+                        more), inbox_waiting 1, old_failed_import 1, not_configured 0,
+                        no_paperless 0), failed[]{file, when, reason, recent},
+                        attention[]{reason, detail},
+                        counts{inbox, failed_imports}, failed_files[] (file names only).
+                        It never carries document content. paperless_unreachable means
+                        Paperless did not answer: say so, do not guess a count.
+                        Detail on demand: zen_dojotools_library section=stacks
+                        mode=stacks_search or stacks_task_status.
+
+                      WHAT TO SURFACE:
+                        1. Failed imports, with the file names.
+                        2. Otherwise one line: how many documents wait in the inbox, or
+                           nothing when it is empty.
+
+                      OUTPUT FORMAT:
+                        Nominal: "3 documents in the Paperless inbox." One line.
+                        Attention: "2 scans failed to import: receipt_0412.pdf, w2.pdf."
+
+                      TONE: Plain and brief, like a note on the filing tray.
+                    trigger_subscriptions:
+                      - hourly_trigger
+                      - ha_start
+                      - force_summary
+                    pipeline_tier: ambient
+                    drift_threshold: 5
+                    emission_cooldown_minutes: 60
+                    delay_seconds: 0
+                    suggested_act_event: null
+                    seed:
+                      tool: zen_dojotools_library
+                      params:
+                        mode: summary
+                    master_switch: ""
+                    index_call:
+                      domain_inspect_domains: []
+                      domain_inspect_limit: 25
+                      expand_entities: false
+                      filter_json: {}
+                      label_1: library
+                      label_2: ""
+                      operator: AND
+                      output_fields: ""
+                    meta:
+                      enabled: true
+                      requires:
+                        cert: zenos.library.read
+                        level: 1
         - conditions:
           - condition: template
             value_template: '{{ mode_norm == "tool_manifest" }}'
@@ -525,7 +708,7 @@ script:
                   summary='Documents, tickets, wiki, and the physical item catalog',
                   display_name='Library — Knowledge Broker and Lens Owner',
                   tier='dojotools',
-                  version='6.15.5',
+                  version='6.16.1',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['dojotools'],
                   optional_labels=['library', 'documents', 'paperless', 'radar'],
@@ -554,12 +737,22 @@ script:
                   lens_provider=true,
                   mcp_exposed=true,
                   self_repair=['relabel', 'rereg_lens'],
+                  seed_modes=['summary@zenos.library.read:1'],
 
                   caller_token=caller_token_norm
                 ) | from_json | combine({
                   'register_mode': 'register',
                   'provider_key': 'library_catalog',
+                  'kfc_manifest': true,
+                  'kfc_components': ['library'],
                   'certs_required': [
+                    {'cert': 'zenos.library.read', 'display_name': 'Library Read',
+                     'description': "Read what is waiting in the document inbox for the background summary",
+                     'detail': 'The library summary seeds through mode=summary (the Paperless inbox count and imports that failed and nobody acknowledged: counts and file names, never document content). Granted with the Ninja seed stage (s), the background summary may read it; without it the summary stops and its last kata leaves the prompt. Asking in conversation does not need it.',
+                     'max_level': 1, 'level': 1, 'modes': ['summary'], 'st_ok': 'isl',
+                     'gates': ['mode=summary (interactive, stage i)', 'the Ninja seed of the library component (stage s)', 'a live drawer mounted on mode=summary (stage l)'],
+                     'live_ack_required_for': [],
+                     'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.library.read cert_stages=isl'},
                     {'cert': 'zenos.knowledge.stacks_edit', 'display_name': 'Library Stacks Edit',
                      'description': "Edit and file your scanned documents", 'detail': '2026-09-10, household: steel-mag pattern -- Paperless document writes (correspondent/tag/type/storage-path create+update, document update/tag/delete/restore, note_add, bulk_edit, flag_for_review).',
                      'max_level': 1, 'gates': ['mode=stacks_document_update/stacks_document_tag/stacks_document_delete/stacks_document_restore/stacks_note_add/stacks_bulk_edit/stacks_correspondent_create/stacks_correspondent_update/stacks_tag_create/stacks_document_type_create/stacks_storage_path_create/stacks_flag_for_review'],
@@ -582,7 +775,7 @@ script:
               result:
                 status: info
                 tool: zen_dojotools_library
-                version: "6.15.5"
+                version: "6.16.1"
                 mode: help
                 description: >-
                   Two departments in one tool. section=stacks: knowledge broker and Lens owner: 

@@ -1,6 +1,14 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Zen Spa
-# Version: 5.7.2
+# Version: 5.8.0
+# v5.8.0: summary judges chemistry against its day (a trend check, not a single reading):
+#   one Recorder history read (the one chemistry include_history uses)
+#   gives each of chlorine, pH, ORP and salt a 24h mean and a 6-hour direction. Out of
+#   range now but the 24h mean in range and not moving away = <metric>_blip (1), likely
+#   one reading; out of range with the day agreeing keeps its score and says the mean and
+#   direction. chlorine_falling (1): in range but falling toward the floor (under 1.5x the
+#   minimum). chemistry.trends_24h carries {mean, dir, buckets}. No history (new install,
+#   no chemistry sensors) = scored on the reading alone, as before.
 # v5.7.2: summary on a spa with fewer sensors: with no water-temperature sensor it reads
 #   the controller climate entity's current_temperature, so the temperature rules still
 #   run. No cover entity, no chemistry sensors: those rules simply do not apply (a
@@ -515,7 +523,7 @@ script:
                 summary='Hot tub control and water chemistry',
                 display_name='Spa Master',
                 tier='dojotools',
-                version='5.7.2',
+                version='5.8.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['spa', 'hot_tub_manager'],
@@ -566,7 +574,7 @@ script:
           _result:
             status: ok
             tool: zen_dojotools_spamaster
-            version: "5.7.2"
+            version: "5.8.0"
             mode: kfc_manifest
             count: 1
             caller_token: "{{ caller_token | default('', true) }}"
@@ -589,12 +597,15 @@ script:
                     Use its fields; do not invent readings. Fields: urgency (0-5),
                     action_required (urgency 3 or more), reasons[] (highest first:
                     too_hot, freeze_risk, spa_offline, chlorine_low, not_heating,
+                    chlorine_falling, <metric>_blip (one odd reading against an in-range day),
                     cover_open_nobody_home, below_range,
                     chlorine_high, ph_out_of_range, orp_low, cartridge_due,
                     salt_out_of_range, cover_open, chemistry_unreadable, not_configured),
                     attention[]{reason, detail}, device_online, temperature{current_f,
                     target_f, heater, range_f}, chemistry{readings{temp, chlorine, ph,
-                    orp, salt, cartridge_hours}, profile, targets}, cover.
+                    orp, salt, cartridge_hours}, trends_24h{metric: {mean, dir, buckets}},
+                    profile, targets}, cover. A _blip reason means the reading looks off
+                    but the day says otherwise: say it may be one reading, not a problem.
                     A reading missing from readings could not be read: say so, do not
                     guess. not_configured means no spa is set up.
                     Detail on demand: zen_dojotools_spamaster mode=status.
@@ -1319,9 +1330,60 @@ script:
           _su_cover: "{{ states(_e_cover) if (_e_cover | default('', true)) != '' else 'none' }}"
           _su_tmin: "{{ _temp_cfg.get('min_f', 80) | float(80) }}"
           _su_tmax: "{{ _temp_cfg.get('max_f', 104) | float(104) }}"
+      # 24-hour chemistry history (the same Recorder read chemistry include_history
+      # uses), so one odd reading is judged against the day: mean and 6-hour trend.
+      - if: "{{ (_e_iq_chl | default('', true)) != '' }}"
+        then:
+          - action: script.zen_dojotools_inspect
+            response_variable: _su_hist
+            continue_on_error: true
+            data:
+              entity_id: "{{ [_e_iq_chl, _e_iq_ph, _e_iq_orp, _e_iq_salt] | reject('eq', '') | list }}"
+              output_fields: "+history,-device,-volume,-timestamps"
+      - variables:
+          # {metric: {mean, dir (rising|falling|flat), buckets}} where Recorder has an hour or more.
+          _su_tr: >-
+            {%- set rows = (_su_hist.get('result', {}).get('results', []) if (_su_hist is defined and _su_hist is mapping) else []) -%}
+            {%- set ns = namespace(d={}) -%}
+            {%- for m, e in {'chlorine': _e_iq_chl, 'ph': _e_iq_ph, 'orp': _e_iq_orp, 'salt': _e_iq_salt}.items() if (e | default('', true)) != '' -%}
+              {%- for r in rows if r is mapping and r.get('entity_id') == e -%}
+                {%- set h = r.get('history', {}) if r.get('history') is mapping else {} -%}
+                {%- set b = h.get('last_24h', []) if h.get('eligible', false) else [] -%}
+                {%- set means = b | map(attribute='mean') | select('number') | list -%}
+                {%- if means | count >= 2 -%}
+                  {%- set win = means[-6:] -%}
+                  {%- set slope = (win[-1] - win[0]) / ((win | count) - 1) -%}
+                  {%- set floor = 0.02 * ((means | max) - (means | min) + 0.001) -%}
+                  {%- set ns.d = dict(ns.d, **{m: {'mean': ((means | sum) / (means | count)) | round(3), 'dir': ('rising' if slope > floor else ('falling' if slope < -floor else 'flat')), 'buckets': means | count}}) -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endfor -%}
+            {{ ns.d }}
       - variables:
           # [score, reason, detail]
           _su_scored: >-
+            {#- One chemistry reading judged against its day:
+                out of range now, but the 24h mean is in range
+                and the trend is not moving away = a single reading (blip, 1). Out of
+                range with the day agreeing = the full score, with the mean and trend. -#}
+            {%- macro chem(m, v, lo, hi, score, reason, label, unit) -%}
+              {%- set t = _su_tr.get(m) if _su_tr is mapping else none -%}
+              {%- set low = lo is not none and v < lo -%}
+              {%- set high = hi is not none and v > hi -%}
+              {%- set side = (' below ' ~ lo) if low else (' above ' ~ hi) -%}
+              {%- if not (low or high) -%}[]
+              {%- elif t is mapping and t.get('mean') is number -%}
+                {%- set mean_in = (lo is none or t.mean >= lo) and (hi is none or t.mean <= hi) -%}
+                {%- set away = (low and t.dir == 'falling') or (high and t.dir == 'rising') -%}
+                {%- if mean_in and not away -%}
+                  {{ [1, m ~ '_blip', label ~ ' ' ~ v ~ unit ~ side ~ ', but the 24h mean ' ~ t.mean ~ ' is in range and it is ' ~ t.dir ~ ': likely one reading.'] | tojson }}
+                {%- else -%}
+                  {{ [score, reason, label ~ ' ' ~ v ~ unit ~ side ~ ' (24h mean ' ~ t.mean ~ ', ' ~ t.dir ~ ').'] | tojson }}
+                {%- endif -%}
+              {%- else -%}
+                {{ [score, reason, label ~ ' ' ~ v ~ unit ~ side ~ '.'] | tojson }}
+              {%- endif -%}
+            {%- endmacro -%}
             {%- set n = _su_n -%}
             {%- set ns = namespace(rows=[]) -%}
             {%- if _e_climate == '' -%}
@@ -1339,22 +1401,33 @@ script:
                   {%- set ns.rows = ns.rows + [[2, 'below_range', 'Water is ' ~ n.temp ~ 'F, below the ' ~ _su_tmin ~ 'F floor.']] -%}
                 {%- endif -%}
               {%- endif -%}
-              {%- if 'chlorine' in n and n.chlorine < (_chem.get('chlorine_min', 1) | float(1)) -%}
-                {%- set ns.rows = ns.rows + [[3, 'chlorine_low', 'Chlorine ' ~ n.chlorine ~ ' ppm, below ' ~ _chem.get('chlorine_min', 1) ~ '.']] -%}
-              {%- elif 'chlorine' in n and n.chlorine > (_chem.get('chlorine_max', 5) | float(5)) -%}
-                {%- set ns.rows = ns.rows + [[2, 'chlorine_high', 'Chlorine ' ~ n.chlorine ~ ' ppm, above ' ~ _chem.get('chlorine_max', 5) ~ '.']] -%}
+              {%- set cmin = _chem.get('chlorine_min', 1) | float(1) -%}
+              {%- set cmax = _chem.get('chlorine_max', 5) | float(5) -%}
+              {%- if 'chlorine' in n -%}
+                {%- for r in [chem('chlorine', n.chlorine, cmin, none, 3, 'chlorine_low', 'Chlorine', ' ppm') | from_json([]),
+                              chem('chlorine', n.chlorine, none, cmax, 2, 'chlorine_high', 'Chlorine', ' ppm') | from_json([])] if r | count > 0 -%}
+                  {%- set ns.rows = ns.rows + [r] -%}
+                {%- endfor -%}
+                {#- In range but falling toward the floor: an early nudge. -#}
+                {%- set tc = _su_tr.get('chlorine') if _su_tr is mapping else none -%}
+                {%- if n.chlorine >= cmin and n.chlorine < cmin * 1.5 and tc is mapping and tc.get('dir') == 'falling' -%}
+                  {%- set ns.rows = ns.rows + [[1, 'chlorine_falling', 'Chlorine ' ~ n.chlorine ~ ' ppm and falling toward ' ~ cmin ~ ' (24h mean ' ~ tc.mean ~ ').']] -%}
+                {%- endif -%}
               {%- endif -%}
-              {%- if 'ph' in n and (n.ph < (_chem.get('ph_min', 7.2) | float(7.2)) or n.ph > (_chem.get('ph_max', 7.8) | float(7.8))) -%}
-                {%- set ns.rows = ns.rows + [[2, 'ph_out_of_range', 'pH ' ~ n.ph ~ ', target ' ~ _chem.get('ph_min', 7.2) ~ ' to ' ~ _chem.get('ph_max', 7.8) ~ '.']] -%}
+              {%- if 'ph' in n -%}
+                {%- set r = chem('ph', n.ph, _chem.get('ph_min', 7.2) | float(7.2), _chem.get('ph_max', 7.8) | float(7.8), 2, 'ph_out_of_range', 'pH', '') | from_json([]) -%}
+                {%- if r | count > 0 -%}{%- set ns.rows = ns.rows + [r] -%}{%- endif -%}
               {%- endif -%}
-              {%- if 'orp' in n and n.orp < (_chem.get('orp_min', 600) | float(600)) -%}
-                {%- set ns.rows = ns.rows + [[2, 'orp_low', 'ORP ' ~ n.orp ~ ' mV, below ' ~ _chem.get('orp_min', 600) ~ '.']] -%}
+              {%- if 'orp' in n -%}
+                {%- set r = chem('orp', n.orp, _chem.get('orp_min', 600) | float(600), none, 2, 'orp_low', 'ORP', ' mV') | from_json([]) -%}
+                {%- if r | count > 0 -%}{%- set ns.rows = ns.rows + [r] -%}{%- endif -%}
               {%- endif -%}
               {%- if 'cartridge_hours' in n and n.cartridge_hours < 72 -%}
                 {%- set ns.rows = ns.rows + [[2, 'cartridge_due', 'Sanitizer cartridge has ' ~ (n.cartridge_hours | round(0) | int) ~ ' hours left.']] -%}
               {%- endif -%}
-              {%- if 'salt' in n and (n.salt < (_chem.get('salt_min', 1500) | float(1500)) or n.salt > (_chem.get('salt_max', 2000) | float(2000))) -%}
-                {%- set ns.rows = ns.rows + [[1, 'salt_out_of_range', 'Salt ' ~ n.salt ~ ' ppm, target ' ~ _chem.get('salt_min', 1500) ~ ' to ' ~ _chem.get('salt_max', 2000) ~ '.']] -%}
+              {%- if 'salt' in n -%}
+                {%- set r = chem('salt', n.salt, _chem.get('salt_min', 1500) | float(1500), _chem.get('salt_max', 2000) | float(2000), 1, 'salt_out_of_range', 'Salt', ' ppm') | from_json([]) -%}
+                {%- if r | count > 0 -%}{%- set ns.rows = ns.rows + [r] -%}{%- endif -%}
               {%- endif -%}
               {#- A heater that
                   should be working, and an open cover with nobody home. -#}
@@ -1395,6 +1468,7 @@ script:
               range_f: "{{ [_su_tmin, _su_tmax] }}"
             chemistry:
               readings: "{{ _su_n }}"
+              trends_24h: "{{ _su_tr }}"
               profile: "{{ _profile_name }}"
               targets:
                 chlorine_ppm: "{{ [_chem.get('chlorine_min', 1), _chem.get('chlorine_max', 5)] }}"

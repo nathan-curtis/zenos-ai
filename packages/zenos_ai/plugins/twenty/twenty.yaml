@@ -1,6 +1,19 @@
 ###############################################################################
 # ZenOS-AI Plugin: Twenty CRM
-# Version: 1.15.4 (#10697): configure asks a person before sending the token to a new URL. Before that: 1.15.2 says "the agent" in its help and descriptions, not a persona name.
+# Version: 1.16.2
+# v1.16.2: summary on an install where Twenty is not configured scores not_configured (0),
+#   not crm_unreachable (2), so a house without the CRM is not nagged.
+# v1.16.1: an unreleased stay scores checkout_not_released (3) only within 48 hours of
+#   its checkout; after that it is stale_unreleased (1), an old record to tidy, so a
+#   months-old record does not hold the summary at action_required.
+# v1.16.0: mode=summary (#10702, KF6): one scored, read-only answer about guests from one
+#   read of up to 100 stays (inline; the script is queued): urgency 0-5, action_required
+#   at 3, reasons (checkout_not_released 3: past checkout and never released, so the
+#   turnover never went out; crm_unreachable 2; arriving_within_24h 2;
+#   departing_within_24h 1; guests_staying 1), attention with rooms and dates, no names.
+#   The rolodex KFC seeds from it (was seed null with only force_summary, so it never
+#   ran), runs hourly, ambient, and requires the new read cert zenos.rolodex.read
+#   (level 1, stages isl). The stay modes other tools call are unchanged.
 # v1.15.4: configure writes are gated (#10697 part 2): any configure with config_json
 #   (url or labels) needs zenos.system.home_config_write level 1. Inspect stays open.
 # v1.15.3: configure no longer sends the stored bearer token to a URL nobody approved
@@ -14,6 +27,7 @@
 #   next to the legacy friendly_name (kept while HA still sets it), and
 #   composed names are built from those parts, so they survive HA dropping
 #   friendly_name. entity_name() is used only where HA has it (2026.4+).
+#   Help and descriptions say "the agent", not a persona name.
 # Version: 1.15.0: onboarding gate (zen_os_1 entry_gate) on zen_dojotools_rolodex:
 #   an agent without zenos.agent.basic gets help and tool_manifest only;
 #   anything else answers onboarding_required and writes one zen_entry_gate
@@ -706,6 +720,7 @@ script:
             - stay_create
             - stay_get
             - stays_active_list
+            - summary
             - stay_release
             - stay_delete
             - stay_amenity_add
@@ -958,7 +973,7 @@ script:
         response_variable: final_response
     - variables:
         tool_name: Zen DojoTools Rolodex
-        tool_version: 1.15.0
+        tool_version: 1.16.2
         crm_schema_version: '1.6.0'
         case_norm: '{{ mode | default("help") | string | trim | lower }}'
         item_norm: '{{ item | default("") | string | trim }}'
@@ -1138,6 +1153,10 @@ script:
             needs: []
             optional: [area_id, limit]
             example: "{'mode':'stays_active_list','area_id':'guest_room'}"
+          summary:
+            intent: "One scored answer about guests (read-only): urgency 0-5, action_required at 3, reasons (checkout_not_released 3 within 48 hours of checkout, crm_unreachable 2, arriving_within_24h 2, departing_within_24h 1, guests_staying 1, stale_unreleased 1 after 48 hours), attention with rooms and dates (no names), counts. The seed of the rolodex KFC; asking needs no cert, the background summary needs zenos.rolodex.read."
+            needs: []
+            example: "{'mode':'summary'}"
           stay_release:
             intent: "Checkout + turnover dispatch. Idempotent (already-released stays are a no-op). Sets status=RELEASED, spawns a Taskmaster chore (upgraded to deep-clean for allergen guests or stays >=3 nights), and spawns a hot tub recheck chore if the amenity was active during the stay. Never auto-creates a Radar ticket — housekeeping escalates manually if something's actually broken."
             needs: [item_id (stay UUID)]
@@ -1413,7 +1432,7 @@ script:
                 summary='Contacts, companies, and property tasks',
                 display_name='Rolodex — Contact & Company CRM',
                 tier='dojotools',
-                version='1.15.4',
+                version='1.16.2',
                 health=_health,
                 required_labels=['crm', 'zen_kfc_provider'],
                 optional_labels=['crm', 'contacts', 'companies', 'vendors'],
@@ -1422,14 +1441,27 @@ script:
                 failure_policy='soft',
                 content_policy='redacted_by_default',
                 risk_class='read_redacted',
-                modes={'lookup': 'contact_find', 'manifest': 'tool_manifest', 'kfc_manifest': 'Return KFC component definitions'},
+                modes={'lookup': 'contact_find', 'manifest': 'tool_manifest', 'kfc_manifest': 'Return KFC component definitions', 'summary': 'one scored answer about guests: urgency 0-5, reasons, rooms and dates, counts (read; the seed of the rolodex KFC, background cert zenos.rolodex.read)'},
+                seed_modes=['summary@zenos.rolodex.read:1'],
                 icon='mdi:contacts',
                 color='indigo',
                 stripe=3,
                 impact='soft',
                 mcp_exposed=true,
                 caller_token=caller_token | default('')
-              ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['rolodex']}) -}}
+              ) | from_json | combine({'kfc_manifest': true, 'kfc_components': ['rolodex'], 'certs_required': [{
+                  'cert': 'zenos.rolodex.read',
+                  'display_name': 'Guests Read',
+                  'description': "Read who is staying, arriving and leaving for the background summary",
+                  'detail': 'The rolodex summary seeds through mode=summary (stays now, arrivals and departures in the next 24 hours, stays past checkout never released: rooms and dates, no names or prefs). Granted with the Ninja seed stage (s), the background summary may read it; without it the summary stops and its last kata leaves the prompt. Asking in conversation does not need it.',
+                  'max_level': 1,
+                  'level': 1,
+                  'modes': ['summary'],
+                  'st_ok': 'isl',
+                  'gates': ['mode=summary (interactive, stage i)', 'the Ninja seed of the rolodex component (stage s)', 'a live drawer mounted on mode=summary (stage l)'],
+                  'live_ack_required_for': [],
+                  'grant_via': "persona_editor mode=cert_req_grant cert_component=zenos.rolodex.read cert_stages=isl"
+                }]}) -}}
         - stop: rolodex tool manifest
           response_variable: result
 
@@ -1445,8 +1477,23 @@ script:
             - kata_key: rolodex
               friendly_name: Rolodex — Guests & Vendors
               label: rolodex
-              component_summary: ""
+              component_summary: >-
+                Guests: who is staying, who arrives or leaves in the next day, and stays past
+                their checkout that were never released (turnover not sent). Vendors and
+                contacts on demand. Consult for any guest, stay or vendor question.
               component_instructions: >-
+                SEED (zen_dojotools_rolodex mode=summary, scored in code, read-only): urgency
+                  (0-5), action_required (3 or more), reasons[] highest first
+                  (checkout_not_released 3, crm_unreachable 2, arriving_within_24h 2,
+                  departing_within_24h 1, guests_staying 1, stale_unreleased 1: past checkout
+                  more than 48 hours, an old record to tidy), attention[]{reason, room, stay_id,
+                  check_in, check_out}, counts{staying, arriving_24h, departing_24h,
+                  not_released, stale_unreleased}. It carries rooms and dates, not names: for who and their
+                  prefs, mode=active_stay_prefs area_id=<room>. crm_unreachable means Twenty
+                  did not answer: say so, do not guess. Nothing open: one line, or nothing.
+                  checkout_not_released: the stay's checkout passed and it was never
+                  released, so the turnover chores never went out; offer mode=stay_release.
+
                 SCOPE: Guest stays, vendor/contact CRM, appointments — Twenty CRM via Rolodex.
                   Guests: zen_dojotools_rolodex mode=stays_list / stays_create — a stay is a
                   calendar event on the crm_stays calendar, tagged to a contact (item_id) and a
@@ -1493,12 +1540,18 @@ script:
                 TONE: Front-of-house, not casual — this is guest and vendor management, be precise
                   about names, rooms, and dates.
               trigger_subscriptions:
+              - hourly_trigger
+              - ha_start
               - force_summary
+              pipeline_tier: ambient
               drift_threshold: 5
               emission_cooldown_minutes: 30
               delay_seconds: 0
               suggested_act_event: null
-              seed: null
+              seed:
+                tool: zen_dojotools_rolodex
+                params:
+                  mode: summary
               master_switch: ""
               index_call:
                 domain_inspect_domains: []
@@ -1512,8 +1565,8 @@ script:
               meta:
                 enabled: true
                 requires:
-                  cert: ""
-                  level: 0
+                  cert: zenos.rolodex.read
+                  level: 1
         - variables:
             _kfc_out: >-
               {%- if _kfc_filter == '' -%}
@@ -1524,7 +1577,7 @@ script:
             result:
               status: ok
               tool: zen_dojotools_rolodex
-              version: "1.14.2"
+              version: "1.16.2"
               mode: kfc_manifest
               kfc: '{{ _kfc_out }}'
               count: '{{ _kfc_out | length }}'
@@ -3166,6 +3219,104 @@ script:
                 count: '{{ _sal_filtered | length }}'
                 area_id_filter: '{{ area_id_norm if area_id_norm != "" else none }}'
               error: '{{ none if _sal_ok else "broker error" }}'
+        - stop: return
+          response_variable: final_response
+
+    # ── case: summary (KF6, #10702) ──────────────────────────────────────────────
+    # One scored, read-only answer about the household's guests, from one read
+    # of up to 100 stays (inline: this script is queued, so it cannot call
+    # itself). urgency 0-5, action_required at 3, reasons[] highest first. No
+    # per-guest lookups and no names: stays carry the room and the contact id;
+    # active_stay_prefs answers "who and what do they need" on demand. A new read
+    # only: the stay modes Room Manager and Taskmaster call are unchanged. The
+    # seed of the rolodex KFC (cert zenos.rolodex.read, background only).
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "summary" }}'
+        sequence:
+        - action: script.zen_sutra_twenty
+          response_variable: _su_adv
+          continue_on_error: true
+          data:
+            action_type: get
+            endpoint: 'stays?limit=100'
+        - variables:
+            _su_ok: '{{ _su_adv is mapping and _su_adv.get("status") == "success" }}'
+            _su_all: >-
+              {%- set b = _su_adv.get('result', {}).get('content', {}) if _su_adv is mapping else {} -%}
+              {%- set d = b.get('data', {}) if b is mapping else {} -%}
+              {{ d.get('stays', []) if d is mapping and d.get('stays') is sequence else [] }}
+            _su_now: '{{ now().timestamp() }}'
+        - variables:
+            _su_rows: >-
+              {%- set ns = namespace(out=[]) -%}
+              {%- for s in _su_all if s is mapping and s.get('status', '') != 'RELEASED' -%}
+                {%- set ci = as_datetime(s.get('checkIn')) if s.get('checkIn') else none -%}
+                {%- set co = as_datetime(s.get('checkOut')) if s.get('checkOut') else none -%}
+                {%- set n = _su_now | float(0) -%}
+                {%- set ns.out = ns.out + [{
+                  'id': s.get('id', ''),
+                  'area_id': s.get('roomAreaId', ''),
+                  'room': area_name(s.get('roomAreaId', '')) or s.get('roomAreaId', ''),
+                  'guest_contact_id': s.get('guestContactId', ''),
+                  'check_in': s.get('checkIn', ''),
+                  'check_out': s.get('checkOut', ''),
+                  'here': ci is not none and ci.timestamp() <= n and (co is none or co.timestamp() > n),
+                  'arriving': ci is not none and ci.timestamp() > n and ci.timestamp() <= n + 86400,
+                  'departing': co is not none and co.timestamp() > n and co.timestamp() <= n + 86400,
+                  'not_released': co is not none and co.timestamp() <= n and co.timestamp() > n - 172800,
+                  'stale_unreleased': co is not none and co.timestamp() <= n - 172800
+                }] -%}
+              {%- endfor -%}
+              {{ ns.out }}
+        - variables:
+            _su_scored: >-
+              {%- set ns = namespace(rows=[]) -%}
+              {%- if (_su_adv.get('status', '') if _su_adv is mapping else '') == 'not_configured' -%}
+                {%- set ns.rows = ns.rows + [[0, 'not_configured', []]] -%}
+              {%- elif not _su_ok -%}
+                {%- set ns.rows = ns.rows + [[2, 'crm_unreachable', []]] -%}
+              {%- else -%}
+                {%- set nr = _su_rows | selectattr('not_released') | list -%}
+                {%- set st = _su_rows | selectattr('stale_unreleased') | list -%}
+                {%- set ar = _su_rows | selectattr('arriving') | list -%}
+                {%- set dp = _su_rows | selectattr('departing') | list -%}
+                {%- set hr = _su_rows | selectattr('here') | list -%}
+                {%- if nr | count > 0 -%}{%- set ns.rows = ns.rows + [[3, 'checkout_not_released', nr]] -%}{%- endif -%}
+                {%- if st | count > 0 -%}{%- set ns.rows = ns.rows + [[1, 'stale_unreleased', st]] -%}{%- endif -%}
+                {%- if ar | count > 0 -%}{%- set ns.rows = ns.rows + [[2, 'arriving_within_24h', ar]] -%}{%- endif -%}
+                {%- if dp | count > 0 -%}{%- set ns.rows = ns.rows + [[1, 'departing_within_24h', dp]] -%}{%- endif -%}
+                {%- if hr | count > 0 -%}{%- set ns.rows = ns.rows + [[1, 'guests_staying', hr]] -%}{%- endif -%}
+              {%- endif -%}
+              {{ ns.rows }}
+        - variables:
+            _su_urgency: "{{ (_su_scored | map(attribute=0) | max) if _su_scored | count > 0 else 0 }}"
+        - variables:
+            final_response:
+              status: '{{ "success" if _su_ok else "error" }}'
+              tool: '{{ tool_name }}'
+              version: '{{ tool_version }}'
+              case: summary
+              result:
+                urgency: '{{ _su_urgency | int(0) }}'
+                action_required: '{{ (_su_urgency | int(0)) >= 3 }}'
+                reasons: '{{ _su_scored | sort(attribute=0, reverse=true) | map(attribute=1) | list }}'
+                attention: >-
+                  {%- set ns = namespace(out=[]) -%}
+                  {%- for r in _su_scored | sort(attribute=0, reverse=true) -%}
+                    {%- for s in r[2] if s is mapping -%}
+                      {%- set ns.out = ns.out + [{'reason': r[1], 'room': s.room, 'stay_id': s.id, 'check_in': s.check_in, 'check_out': s.check_out}] -%}
+                    {%- endfor -%}
+                  {%- endfor -%}
+                  {{ ns.out[:10] }}
+                counts:
+                  staying: '{{ _su_rows | selectattr("here") | list | count }}'
+                  arriving_24h: '{{ _su_rows | selectattr("arriving") | list | count }}'
+                  departing_24h: '{{ _su_rows | selectattr("departing") | list | count }}'
+                  not_released: '{{ _su_rows | selectattr("not_released") | list | count }}'
+                  stale_unreleased: '{{ _su_rows | selectattr("stale_unreleased") | list | count }}'
+              error: '{{ none if _su_ok else "broker error" }}'
         - stop: return
           response_variable: final_response
 

@@ -122,7 +122,7 @@ The KF6 action pipeline — Ninja Summarizer (per-component kata writer) and Sup
 
 ---
 
-## 8. Zen DojoTools Library — v6.15.5
+## 8. Zen DojoTools Library — v6.16.1
 **File:** [`zen_dojotools_library_readme.md`](zen_dojotools_library_readme.md)
 
 Knowledge broker and Lens Bus owner. `stack=` routing to registered providers (`paperless`, `radar`, `wiki`, `media`). Generic verbs: `get/find/list/configure/by_anchor`. `section=catalog item_type=book|game|…` unified works catalog backed by Grocy — browse/find/search/add/loan/return with library science (dedup, loan lifecycle, location tracking). Compounding capability tiers: Library alone (Lens Bus) → +Grocy (circulation desk) → +Media Manager (music evidence with playback_hint) → +Room Manager now_playing (room-context evidence). `hash_md5` and `slugify` utility tools. `command_interpreter.jinja` removed in 2026.7.0.
