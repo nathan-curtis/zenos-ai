@@ -157,7 +157,7 @@ GET+SET for `climate` and `fan` entities with topology context (open doors and w
 
 ---
 
-## 11b. Zen DojoTools Weather — v1.0.3
+## 11b. Zen DojoTools Weather — v1.0.4
 **File:** [`zen_dojotools_weather_readme.md`](zen_dojotools_weather_readme.md)
 
 Weather now and the forecast with a locked schema (`schema_version` 1.0): the source is the entity labeled `main_weather`, else the first `weather.*`; `current`, `forecast` (averaged summary, high and low, flags for rain, snow, freeze, heat, wind and storm, named day parts) and a scored `summary` for the ambient-tier weather KFC. Read only; `zenos.weather.read` gates only the background seed.

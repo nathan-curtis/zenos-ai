@@ -1,6 +1,6 @@
 # ZenOS-AI SpaMaster
 
-**Version:** 5.6.0. 5.6.0 (#10698): `zenos.actuation.spa_control` also covers `log` when the entry carries a salt boost, a cover close or a setpoint (those actuate), `setup`, and every `consumables` action except `status`. 5.5.x: the name fallbacks scan only their own domain; the chemistry history baseline query runs. 5.5.0: name outputs carry `entity_name` and `device_name`. 5.4.x: cert names in the `zenos.*` namespace. 5.3.0: onboarding gate (an agent without `zenos.agent.basic` gets help and `tool_manifest` only).
+**Version:** 5.7.2. 5.7.2: on a spa with no water-temperature sensor, `summary` reads the controller's `current_temperature`; a spa with no cover or chemistry sensors simply skips those rules. 5.7.1: `summary` adds `not_heating` (3) and `cover_open_nobody_home` (3). 5.7.0 (#10702, KF6): `summary`, a scored read (urgency 0 to 5) that seeds the new `spamaster` background summary, with the read cert `zenos.spa.read` (in `zenos_agent_basic`). 5.6.0 (#10698): `zenos.actuation.spa_control` also covers `log` when the entry carries a salt boost, a cover close or a setpoint (those actuate), `setup`, and every `consumables` action except `status`. 5.5.x: the name fallbacks scan only their own domain; the chemistry history baseline query runs. 5.5.0: name outputs carry `entity_name` and `device_name`. 5.4.x: cert names in the `zenos.*` namespace. 5.3.0: onboarding gate (an agent without `zenos.agent.basic` gets help and `tool_manifest` only).
 **Script:** `zen_dojotools_spamaster`
 
 ---
@@ -125,6 +125,8 @@ Verifies all readings are live. If no cabinet config exists, discover runs inlin
 | Mode | Description |
 |------|-------------|
 | `status` | Live snapshot: temperature, jets, lights, audio, cover, chemistry. Self-bootstraps via inline discovery if not configured. |
+| `summary` | (5.7.0) One scored, read-only answer, from the same entities and chemistry profile as `status`: `urgency` 0 to 5, `action_required` (3 or more), `reasons[]` highest first (`too_hot` 5 and `freeze_risk` 5 below 40F; `spa_offline` 3; `chlorine_low` 3; `not_heating` 3 (more than 5F below target, heater not running); `cover_open_nobody_home` 3; `below_range`, `chlorine_high`, `ph_out_of_range`, `orp_low` and `cartridge_due` (under 72 hours) 2; `salt_out_of_range`, `cover_open` and `chemistry_unreadable` 1), `attention[]` with what it read, and the readings and targets. A reading that is not a number is skipped. The seed of the `spamaster` KFC (ambient tier); asking needs no cert, the background summary needs `zenos.spa.read`. |
+| `kfc_manifest` | (5.7.0) The `spamaster` KFC definition, consumed by `zen_dojotools_manifest mode=bootstrap_kfc`. |
 | `scene` | Concierge: survey capabilities, define/apply/delete named moods (see Scenes below). |
 | `discover` | Scan device entity map, identify 8 role assignments, report missing. Does not write. |
 | `setup` | Create labels, tag entities, seed spa_config. Safe to re-run. |

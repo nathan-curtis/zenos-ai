@@ -1,4 +1,4 @@
-# Zen DojoTools Weather — v1.0.3
+# Zen DojoTools Weather — v1.0.4
 
 > **2026.12.0 (1.0.0):** a product weather tool with a locked schema. It keeps what the house forecast script (TheFes' "Weather Forecast") did and adds current conditions, highs and lows, in-code answers, named day parts, a read cert and a KFC.
 
@@ -84,7 +84,7 @@ The weather KFC is on the **ambient tier**: Trapper Keeper digests urgency 0 to 
 
 ## Certification
 
-`zenos.weather.read` (level 1, stages `i`, `s` and `l`) gates only the background seed (`summary`) and a live drawer mounted on it (stage `l`). Asking in conversation needs no cert. It is declared in `tool_manifest` with `seed_modes: summary@zenos.weather.read:1`, and the KFC's `meta.requires` names the same cert. Grant it with `persona_editor mode=cert_req_grant cert_component=zenos.weather.read cert_stages=isl`.
+`zenos.weather.read` (level 1, stages `i`, `s` and `l`) gates only the background seed (`summary`) and a live drawer mounted on it (stage `l`). Asking in conversation needs no cert. It is declared in `tool_manifest` with `seed_modes: summary@zenos.weather.read:1`, and the KFC's `meta.requires` names the same cert. Grant it with `persona_editor mode=cert_req_grant cert_component=zenos.weather.read cert_stages=isl`. Since 1.0.4 it is in the `zenos_agent_basic` bundle, so the onboarding grant covers it.
 
 ---
 
