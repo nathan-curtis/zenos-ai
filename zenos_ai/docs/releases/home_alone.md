@@ -42,7 +42,10 @@ Each one is off until you turn it on, unless it says otherwise.
 - **High wind with a door open:** the house asks, and closes it if nobody answers.
 - **A window open with the heat on:** five minutes in, the house asks whether to turn the HVAC off. Once everything's closed it offers to turn it back on. At night it asks nothing and restores quietly.
 - **The morning briefing:** the almanac leads with the weather that matters, such as "hard freeze from Tue 18:00". *(Always on, with the Weather tool.)*
-- **"How's the house?":** the agent has security, climate, weather, vacuum, hot tub and service desk summaries to answer from, and knows when security is temporarily stepped aside. *(Each summary needs its read cert.)*
+- **"How's the house?":** the agent has security, climate, weather, vacuum, hot tub, service desk, guest and paperwork summaries to answer from, and knows when security is temporarily stepped aside. *(Each summary needs its read cert.)*
+- **Guests:** the agent knows who arrives or leaves in the next day, and flags a stay still not released two days after checkout. *(Twenty plugin; needs its read cert.)*
+- **Paperwork:** an import Paperless couldn't file is flagged for a week, then listed quietly. *(Paperless; needs its read cert.)*
+- **The hot tub:** chemistry is judged against its last 24 hours, so one odd reading is a blip, not an alarm, and falling chlorine gets a warning before it's low.
 - **"What did the house do while I was out?":** security keeps a record of what it did on its own, and why. *(Always on.)*
 - **Nobody could be asked:** a question that reached no phone answers that straight away, instead of waiting out a tap that can't come. *(Always on.)*
 
@@ -62,8 +65,11 @@ Each one is off until you turn it on, unless it says otherwise.
 - **Weather 1.0 (new):** current conditions, the forecast by day part, and scored hazards for freeze, heat, storm, wind, rain and snow, behind `zenos.weather.read`. The source is the entity labeled `main_weather`. See [Weather](../scripts/zen_dojotools_weather_readme.md).
 - **Climate 2.3.0 to 2.5.1:** a scored summary and the `climate` component, and the envelope offer. Room Manager's `hvac_coverage` says which rooms each air handler serves. See [Climate](../scripts/zen_dojotools_climate_readme.md).
 - **Taskmaster 0.10.0:** briefing and almanac read the Weather tool: the next 24 hours' high and low, and hazards with when they start. See [Taskmaster](../kung_fu/taskmaster.md).
-- **Spa Master 5.7.0 to 5.7.2:** a scored summary and the `spamaster` component, behind `zenos.spa.read`. See [Spa Master](../components/spamaster.md).
-- **Service Desk 0.6.0 to 0.6.2 (Zammad plugin):** a scored summary and the `servicedesk` component, behind `zenos.service.read`. See [Zammad](../plugins/zammad.md).
+- **Spa Master 5.7.0 to 5.8.0:** a scored summary and the `spamaster` component, behind `zenos.spa.read`. Chemistry is judged against its 24-hour trend. See [Spa Master](../components/spamaster.md).
+- **Service Desk 0.6.0 to 0.6.3 (Zammad plugin):** a scored summary and the `servicedesk` component, behind `zenos.service.read`. See [Zammad](../plugins/zammad.md).
+- **Rolodex 1.16.0 to 1.16.2 (Twenty plugin):** a scored summary of guest stays (rooms and dates, never names) that seeds the `rolodex` component, behind `zenos.rolodex.read`. See [Twenty](../plugins/twenty.md).
+- **Library 6.16.0, 6.16.1:** a scored summary of the Paperless inbox and failed imports (counts and file names, never content) and the first `library` component, behind `zenos.library.read`. See [Library](../scripts/zen_dojotools_library_readme.md).
+- **A plugin that's installed but not set up scores 0** in the Service Desk, Rolodex and Library summaries, instead of reporting itself unreachable every hour.
 - **Room Manager 5.19.2 to 5.20.1:**
   - `home_overview` and `summary` carry a temporary security override;
   - `summary` reports a room occupied while armed Away;
@@ -107,7 +113,8 @@ Grocy handles tare weights, but it expects every stock write as the total on the
   - It's built from the summaries you have on, so it picks up their new read certs:
     - `zenos.security.read` (the security summary now seeds from Security Manager's own `summary`);
     - `zenos.autovac.status`, `zenos.weather.read`, `zenos.climate.read` and `zenos.spa.read`;
-    - with the Zammad plugin, `zenos.service.read`.
+    - with the Zammad plugin, `zenos.service.read`;
+    - with the Twenty plugin, `zenos.rolodex.read`, and with Paperless, `zenos.library.read`. These two are in no standard bundle, because guest stays and file names can be personal, so only parity or a single grant gives them.
   - An existing grant doesn't gain new members by itself.
   - With `seed_cert_mode` on enforce, a summary whose cert is missing stops. In audit, the default on an upgrade, it logs `seed_cert_audit` and keeps running.
 - **Restart, or run `zen_dojotools_systemtools mode=zen_resolver_refresh`, after upgrading.** Room timers now expire through Home Assistant's `timer.finished` trigger on their labels, and a TV sleep timer gets its new `tv_sleep_timer` label at the next resync. Until then, the TV sleep timer doesn't start.
@@ -143,6 +150,7 @@ Grocy handles tare weights, but it expects every stock write as the total on the
   - Its write modes answered ok and stored nothing; they now answer `autovac_not_initialized`.
   - `config` passed as an object is read.
   - `setup create_labels` creates the labels it names.
+- **The Rolodex background summary runs on its own.** Its component had no seed, so it only ran when forced.
 - **SystemTools' `scheduler_anchors` repairs anchors a reset left at 00:00.** Every set was refused.
 - **Text answers a number as text.** A value like `"18"` reported an error after it had been written.
 - **Climate's `read` reports `hvac_mode`.** It was always null.

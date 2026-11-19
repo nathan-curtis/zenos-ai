@@ -127,6 +127,7 @@ Every certification has a short plain `description`, written for the phone appro
 | `zenos.knowledge.inventory_schema_edit` | Change how the pantry inventory is organized; level 2 also deletes |
 | `zenos.knowledge.kfc_publish` | Update what the assistant knows how to do |
 | `zenos.knowledge.stacks_edit` | Edit and file your scanned documents |
+| `zenos.library.read` | Read what is waiting in the document inbox (counts and file names) for the background summary |
 | `zenos.media.generate` | Create AI images (costs money each time) |
 | `zenos.media.playback_control` | Play music and control the TVs and speakers |
 | `zenos.media.prefs_edit` | Change audio and TV preferences |
@@ -137,6 +138,7 @@ Every certification has a short plain `description`, written for the phone appro
 | `zenos.registry.lifecycle_control` | Hide, rename and organize devices; level 2 also disables or removes |
 | `zenos.registry.purge` | Remove dead devices from the system |
 | `zenos.registry.read` | Read the repairs list and other registry diagnostics, which name your entities and scripts |
+| `zenos.rolodex.read` | Read who is staying, arriving and leaving (rooms and dates) for the background summary |
 | `zenos.room.behavior_control` | Change how rooms react on their own |
 | `zenos.room.control_override` | Take a room out of Paused |
 | `zenos.security.camera_scan` | Scan the cameras on a schedule on its own (exterior always, interior only when away) |
@@ -346,6 +348,8 @@ A `deny` scope entry (Section 6) short-circuits before the live-ack step ever ru
 | `zenos.security.read` | Security Manager's `summary`: the panel, who is home, the secure stance, what is open, jammed or unlocked, garage doors left open, appliances on with nobody home, overrides |
 | `zenos.service.read` | Service Desk's `summary`: how many tickets are open and new, which are past their escalation time, high-priority ones nobody owns, reminders come due; numbers and titles, no message bodies |
 | `zenos.spa.read` | Spa Master's `summary`: water temperature against its range, chlorine, pH, ORP and salt against the profile, the cartridge, the cover |
+| `zenos.rolodex.read` | Rolodex's `summary`: stays now, arrivals and departures in the next 24 hours, stays past checkout never released; rooms and dates, no names |
+| `zenos.library.read` | Library's `summary`: the Paperless inbox count and imports that failed and nobody acknowledged; counts and file names, never content |
 | `zenos.finance.read` | Finance summaries: budget, bills, net worth, rollup |
 | `zenos.health.read` | The medication summary (`taskmaster_meds`) |
 | `zenos.presence.read` | Room Manager's `summary` and `home_overview` (the room_manager background summary; Security Manager seeds from its own `summary` since 5.26.0) |

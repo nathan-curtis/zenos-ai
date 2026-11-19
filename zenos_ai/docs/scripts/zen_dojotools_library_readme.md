@@ -1,4 +1,4 @@
-# Zen DojoTools Library — v6.15.5
+# Zen DojoTools Library — v6.16.1
 
 *Knowledge broker and Lens owner for the Monastery*
 
@@ -255,6 +255,8 @@ The MCP-facing script is `zen_dojotools_library`. Consumers and agents call this
 
 | Version | Change |
 |---------|--------|
+| v6.16.1 | A failed import is action-required (`failed_imports`, 3) for 7 days, then `old_failed_import` (1), still listed by file name. `summary` carries `failed[]` with each file, when, and Paperless's reason. |
+| v6.16.0 | `summary`: one scored, read-only answer about the documents (KF6, #10702): the Paperless inbox count and imports that failed and nobody acknowledged. `urgency` 0 to 5: `failed_imports` 3, `paperless_unreachable` 2, `inbox_backlog` 2 at 25 or more, `inbox_waiting` 1, `not_configured` 0 when Paperless is not set up; counts and failed file names, never content. It seeds the first `library` KFC (ambient, hourly) through `kfc_manifest`. New read cert `zenos.library.read` (level 1, stages i, s, l; in no bundle, since file names can be personal). |
 | v6.15.5 | `stacks_configure inspect` no longer writes. An inspect, or a bad-url error, rewrote the stored Paperless entry with an empty url; the write steps now run only for `set`, `update` and `reset`. |
 | v6.15.4 | Gate fixes. The `catalog_configure`, `catalog_add`, `catalog_update`, `catalog_loan` and `catalog_return` aliases need `zenos.knowledge.catalog_edit` like the short names. `stacks_configure` writes (`set`, `update`, `reset`) need `zenos.knowledge.stacks_edit` level 2; `inspect` stays a read. |
 | v6.15.3 | Paperless `stacks_by_anchor` works for every anchor type (a `kitchen` tag answers `area_id` and `label`), matches any tag, reads top-level `anchor_type`/`anchor_ids`, and reports a missing anchor. Catalog `move`, `loan`, `return` and `update` stop on any refusal before writing, and report success only when Grocy confirms it. `move` takes `location_id` or `location_name`. |

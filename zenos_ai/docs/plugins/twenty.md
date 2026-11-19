@@ -1,6 +1,6 @@
 # ZenOS-AI Rolodex (Twenty CRM) Plugin
 
-**Version:** 1.15.4  
+**Version:** 1.16.2  
 
 > **2026.11.1 (1.15.3, 1.15.4):** `configure` asks a person (a live ack) before the stored token is sent to a URL that isn't the stored one, and any `configure` with `config_json` needs `zenos.system.home_config_write` level 1. Before 1.15.3, a caller could point the integration at a host it controls and receive the token. `inspect` stays open.
 **Package:** `packages/zenos_ai/plugins/twenty/twenty.yaml`  
@@ -123,6 +123,7 @@ These modes route to HA calendar and todo entities discovered at call time by la
 | `stay_create` | Create a stay. `area_id` is hard-validated against real HA areas. An overlapping active stay in the same room warns by default; set `block_on_overlap: true` to hard-block instead. | `item_id` (guest contact UUID — resolve via `contact_find`/`contact_create` first), `area_id`, `start_date` |
 | `stay_get` | Fetch a single stay record. | `item_id` |
 | `stays_active_list` | Front-desk view — every stay not yet `RELEASED` (`RESERVED` + `ACTIVE`). Optional `area_id` scopes to one room. | — |
+| `summary` | (1.16.0) One scored, read-only answer about guests from one read of up to 100 stays: `urgency` 0 to 5, `action_required` (3 or more), `reasons[]` (`checkout_not_released` 3: within 48 hours of a checkout that was never released, so the turnover never went out; `crm_unreachable` 2; `arriving_within_24h` 2; `departing_within_24h` 1; `guests_staying` 1; `stale_unreleased` 1: unreleased for more than 48 hours, an old record to tidy; `not_configured` 0 when Twenty is not set up), `attention[]` with rooms and dates (no names: `active_stay_prefs` answers who and what they need), `counts`. The seed of the `rolodex` KFC, which now runs hourly (ambient); the background summary needs `zenos.rolodex.read`. | — |
 | `stay_release` | Checkout. Idempotent — a stay already `RELEASED` with `turnoverSpawned: true` is a no-op, not a re-fire. Always dispatches a baseline turnover chore via Taskmaster (upgraded to a deep-clean variant on allergen-flagged guests or stays of 3+ nights); no Radar tickets are auto-created — humans escalate anything found. Also checks whether the hot tub was active during the stay window and, if so, dispatches a separate "hot tub recheck" chore. Does not touch the guest contact or any chores already spawned by a prior release. | `item_id` |
 | `stay_delete` | Delete a stay record. Twenty soft-deletes to trash (recoverable there for a retention window), not an immediate hard purge. | `item_id` |
 | `stay_amenity_add` | Mid-stay housekeeping task (e.g. "Fresh towels", "Welcome basket") — a dated, location-tied task distinct from the checkout turnover. Use `amenity` for the task title and `day_offset` (days after check-in, `0` = day of check-in) for timing. | `item_id`, `amenity` |
