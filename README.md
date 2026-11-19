@@ -6,7 +6,7 @@ ZenOS-AI blends structure, personality, and unapologetic over-engineering into a
 
 Welcome to the **Home Monastery**.
 
-**Current Stable: 2026.11.0 'This Is Spinal Tap'** (`feat/2026.11.0`) | Previous: 2026.10.2 'Tron' (security patch on 2026.10.0) | Legacy line: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) and 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/spinal_tap.md).
+**Public Beta: 2026.12.0 'Home Alone'** (`feat/2026.12.0`, Beta 1, ETA to be announced; see [release notes](zenos_ai/docs/releases/home_alone.md)) | Current Stable: 2026.11.0 'This Is Spinal Tap' (`feat/2026.11.0`; patch 2026.11.1 in beta on `feat/2026.11.1`, ETA Saturday, November 21) | Previous: 2026.10.2 'Tron' (security patch on 2026.10.0) | Legacy line: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) and 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/spinal_tap.md).
 
 > **ZenOS Spook advisory (Home Assistant 2026.11):** install Spook **5.5.1** and park there until the pending Spook fixes ship in 5.11.2 or later. On Home Assistant 2026.11, Spook 5.6.0 to 5.10.0 fail to load (`cannot import name 'CONF_STOP_ACTIONS'`), and 5.11.0 and 5.11.1 freeze a ZenOS install for 30 to 40 seconds at a time ([frenck/spook#2005](https://github.com/frenck/spook/issues/2005)). On 5.5.1 everything works except the Ectoplasm actions that need Spook 5.7.0 (repair and ghost lists, categories, entity icons and aliases, and helper create and delete other than `input_number`): those answer `spook_version_required` and change nothing. To move: in HACS open **Spook**, choose **Redownload**, pick **5.5.1**, and restart Home Assistant. Still on Home Assistant 2026.10 or earlier? Stay where you are.
 
@@ -76,8 +76,9 @@ The year started with cabinets and a scheduler. It ends with a house that knows 
 | [2026.9 'Steel Magnolia'](zenos_ai/docs/releases/steel_magnolia.md) | Room Manager v3 and REFLEX, the hospitality lifecycle, and cert-gated locks, covers, alarm and climate with a live yes on a real device. |
 | [2026.10 'Tron'](zenos_ai/docs/releases/tron.md) | Admission to the Grid, the administrative plane, a platform-wide bypass audit, one exit and one envelope for every tool, tools-not-entities exposure, and The Book of Friday, Volume 2. |
 | [2026.11 'This Is Spinal Tap'](zenos_ai/docs/releases/spinal_tap.md) | The backstage pass, locks on the cabinets, readable certs, and consent for background work. |
+| [2026.12 'Home Alone'](zenos_ai/docs/releases/home_alone.md) (beta) | The house left home alone: Security Manager becomes the house's security, the envelope and the weather, and every tool comes up to caps. Each new behavior is off until you turn it on. |
 
-**Next, 2026.12.0** finishes 11's security work (hiding unreadable drawers, enforcement by default on upgrades, the operator permission report) and is the first release that lets the house act on its own, under house rules you approve.
+**In beta, 2026.12.0 'Home Alone'** is the first release that lets the house act on its own, under rules you turn on: readiness to arm, the vacuum and the alarm working together, dusk and arrival lighting, garage doors, the HVAC and an open window, and a new Weather tool. Still planned for 12: finishing 11's security work (hiding unreadable drawers, enforcement by default on upgrades, the operator permission report). See the [release notes](zenos_ai/docs/releases/home_alone.md).
 
 **Staying on an older line?** 2026.8.1 is the last release without Steel Magnolia's identity gates; see [why that line exists](zenos_ai/docs/releases/chef.md#202681--the-last-release-before-identity-gates).
 

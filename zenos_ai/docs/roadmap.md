@@ -10,6 +10,14 @@ ZenOS-AI is a cabinet-centric AI framework for deterministic, inspectable househ
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention. Each new month starts at `.0`. Internal architecture versioning (`4.5.x` series) is retained in commit history and internal tooling.
 
+**2026.12.0 'Home Alone' — Public beta 1**
+
+The house left home alone: Security Manager becomes the house's security (readiness, temporary overrides with a record, vacuum sync, dusk and arrival lighting, exterior covers, the appliance sentry), Climate's envelope offer, a new Weather tool, and every tool brought up to caps with a scored summary and a read cert of its own. Each new behavior is off until you turn it on.
+
+See: [Release Notes — Home Alone](releases/home_alone.md)
+
+---
+
 **2026.11.0 'This Is Spinal Tap' — Shipped 2026-11-14, current Stable**
 
 Security goes to eleven: the backstage pass on every agent-facing tool, locks on the cabinets (ACL v2, enforced on a fresh install), certs renamed and readable, consent for background work (KF6), and Home Assistant's naming model.

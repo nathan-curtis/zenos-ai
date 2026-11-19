@@ -1,8 +1,14 @@
 # Release Notes — 2026.12.0 'Home Alone'
 
-**Status:** Beta 1
+**Status:** Public beta 1
+**ETA:** <!-- to be announced -->
 **Branch:** `feat/2026.12.0`
 **Base:** 2026.11.1 (patch on 2026.11.0 'This Is Spinal Tap')
+
+### Betas
+
+- **Beta 1** (<!-- date -->): everything below.
+- **Beta 2:** <!-- placeholder -->
 
 <!-- Minimum Home Assistant version: to confirm. Room Manager's timers use the timer.finished trigger (about 2026.5); Spook needs 2026.11. -->
 
