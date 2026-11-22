@@ -1,6 +1,6 @@
 # ZenOS-AI Grocy ERP Plugin
 
-**Version:** 4.44.0
+**Version:** 5.9.6
 **Script:** `zen_dojotools_inventory`
 **Status:** Live (production)
 
@@ -138,7 +138,7 @@ Features: endpoint normalization, pagination, query search, path parameter injec
 | `catalog_find_product` | Find a product by name (exact or partial) |
 | `catalog_find_by_barcode` | Look up a product by barcode |
 | `get_product_meta` | Fetch full product metadata record |
-| `update_product_meta` | Full read-modify-write product metadata update. GET product → merge changes → PUT full object. Supports `unit`/`unit_id` (sets all three qu_id fields), `amount` (min_stock), `shopping_location_id`, `to_location_id` (default consume location), `product_group_id`. Strips null `qu_id_purchase`/`qu_id_price` before merge to prevent Grocy resolving null→system default unit. Sends `description` only when note/brand/sku are provided. |
+| `update_product_meta` | Full read-modify-write product metadata update. GET product → merge changes → PUT full object. Supports `unit`/`unit_id` (sets all three qu_id fields), `amount` (min_stock), `tare_weight` and `enable_tare_weight_handling` (see [Tare-Weight Products](#tare-weight-products-593-to-596)), `shopping_location_id`, `to_location_id` (default consume location), `product_group_id`. Strips null `qu_id_purchase`/`qu_id_price` before merge to prevent Grocy resolving null→system default unit. Sends `description` only when note/brand/sku are provided. |
 | `rename_product` | Rename a product (requires new name to not conflict) |
 | `set_default_location_for_product` | Set the product's default stock location |
 | `products_merge` | Merge two products (requires explicit keep/remove IDs) |
@@ -327,6 +327,24 @@ Rules:
 * No inferred pluralization
 * No implicit conversion creation
 * `units_add` is idempotent — safe to call even if the unit might already exist
+
+---
+
+## Tare-Weight Products (5.9.3 to 5.9.6)
+
+A tare-weight product is one you weigh in its container: a bin, a jar, a canister. Grocy reads an amount on such a product as the total weight on the scale, container included. ZenOS translates, so **`amount` is always the net quantity** you bought, used or counted, in the product's stock unit:
+
+| Mode | What ZenOS sends Grocy |
+|---|---|
+| `stock_add_purchase`, `stock_buy_product` | tare + current stock + the amount bought, which Grocy books as exactly the amount bought |
+| `stock_consume` | the amount with `exact_amount`, so Grocy takes it off as is |
+| `stock_inventory_adjust` | tare + the amount, as the new total |
+
+Before 5.9.3, Grocy refused a purchase ("The amount cannot be lower or equal than the defined tare weight + current stock amount") and read a consume as a new total.
+
+Setting one up without the Grocy UI: `update_product_meta` takes `enable_tare_weight_handling` (true or false) and `tare_weight` (the empty container, in the stock unit). Grocy rescales a tare weight when the stock unit changes in the same request, so switch the unit in one call and set the tare in another. Minimum stock is not rescaled on a unit switch; set it again after.
+
+The `unit` argument on a stock write doesn't convert the amount. Amounts are in the stock unit. Transfers stay blocked for tare-weight products.
 
 ---
 

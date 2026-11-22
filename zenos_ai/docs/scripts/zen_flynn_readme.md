@@ -1,4 +1,6 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.4.0
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.4.6
+
+> **2026.11.1 (5.4.2 to 5.4.6):** the Sentinel's boot calls into identity (household and family membership, partner links, the identity manifest, the ACL migration, the cert cache refresh and the persona name write) go through its own admin door, [`zen_admintools_identity_writer`](zen_admintools_identity_writer_readme.md), not the agent-facing Identity tool, so gating Identity can't stop a boot. Flynn starts the KFC bootstrap (found by its automation id, so a fresh install's entity name doesn't matter) once the Dojo cabinet is online and holds no component, so a fresh or reset install needn't wait until 00:01 for its components. If none appear, run `zen_dojotools_manifest mode=bootstrap_kfc`.
 
 > **2026.11.0:** Flynn 5.4.0 adds the automation "Flynn: Admin plane guard": at start, hourly at :07, and on `zen_admin_plane_guard` (or a `zen_event` of kind `admin_plane_guard`) it unexposes the admin plane from Assist, Alexa and Google through Spook. Mode `all` (no drawer, the default) covers every `script.zen_admintools_*`; `listed` (a test server, set in the system cabinet's `admin_plane_guard` drawer) covers only its `entities`. `prompt_loader` and anything labeled `zen_never_expose` are always covered. OOBE 5.4.1: a first-time `complete` writes `seed_cert_mode` enforce, so a fresh install starts locked, and asks for whatever `zenos_agent_parity` is missing (stages `ise`). See [The admin plane](../getting_started/security_certification_manual.md#67-the-admin-plane).
 
@@ -115,7 +117,7 @@ Gate 2 behavior depends on the severity of the cabinet health state. Three cases
 
 `zen_cabinet_health`'s rolled-up state uses a priority order (`missing_req > invalid_req > unhealthy_req`), so a `critical` reading alone doesn't tell you whether every affected slot is safe (not yet bootstrapped — missing label, or state `init`/blank/`absent`) or whether a *different* slot is genuinely broken (concrete state on an existing label) behind that higher-priority reading. Flynn checks every required slot individually before deciding to hard-stop: if **every** problematic slot is either genuinely virgin (`init`, blank, `unknown`, or `absent` — `absent` means no entity is tagged with that slot's label at all, the safest possible state) or its label doesn't exist in HA yet, Flynn does not hard-stop — those are handled by the normal bootstrap gates (Gate 0, Gate 2.1) instead. The hard stop fires only when at least one required slot has a concrete state (`online_mounted`, `online_unmounted`, `Variables`, anything non-virgin) **and** an existing label — that combination can't be explained by "not bootstrapped yet." When it fires, Flynn sends a persistent notification ("Cabinet Check Needed") and stops. Operator action required.
 
-**What to do:** Open a conversation and say "initialize my cabinets", or run `script.zen_admintools_cabinetadmin` with `mode: initialize` directly. Check `sensor.zen_cabinet_health` → `missing_cabinets` to see which slots are affected.
+**What to do:** Open a conversation and say "initialize my cabinets", or run `script.zen_admintools_cabinetadmin` with `mode: init` directly. Check `sensor.zen_cabinet_health` → `missing_cabinets` to see which slots are affected.
 
 **Case B — `warn`, outside warmup window, not `ha_start` (notify + continue)**
 
@@ -345,7 +347,7 @@ Options resolve dynamically at render time. The persona select only shows person
 
 **Check:** `sensor.zen_cabinet_health` attributes → `missing_cabinets` list.
 
-**Manual fix:** Run `script.zen_admintools_cabinetadmin` with `mode: initialize` and the specific cabinet entity.
+**Manual fix:** Run `script.zen_admintools_cabinetadmin` with `mode: init` and the specific cabinet entity.
 
 ---
 

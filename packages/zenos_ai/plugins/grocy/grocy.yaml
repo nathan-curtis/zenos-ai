@@ -1,6 +1,17 @@
 ###############################################################################
 # ZenOS-AI Plugin: Grocy ERP Integration
-# Version: 5.9.2
+# Version: 5.9.6
+# v5.9.6: on a tare-weight product amount is the NET quantity in every stock write: stock_consume
+#   sends exact_amount (Grocy would read a consume as the new total weight and refuse it), and
+#   stock_inventory_adjust sends tare + amount as the new total (#10689).
+# v5.9.5: update_product_meta takes enable_tare_weight_handling (true or false), so a product can be
+#   set up for a weighed container without the Grocy UI (#10689).
+# v5.9.4: update_product_meta takes tare_weight (in the stock unit). Grocy rescales a tare weight
+#   on a stock-unit switch, so a switch to grams needs the tare set apart from the switch (#10689).
+# v5.9.3: stock_add_purchase and stock_buy_product on a tare-weight product send the
+#   amount as tare_weight + current stock + the amount bought. Grocy reads an add on
+#   such a product as the new total weight and refused 1 lb with 'The amount cannot
+#   be lower or equal than the defined tare weight + current stock amount.' (#10689).
 # v5.9.2: Inventory: its tool_manifest declares seed_modes, the read modes the
 #   Ninja summarizer may seed a run with (#10549).
 # v5.9.1: each cert this tool declares gets a short plain description for
@@ -850,6 +861,26 @@ script:
           number:
             min: 0
             step: 0.01
+      tare_weight:
+        name: Tare Weight
+        description: >-
+          update_product_meta only. Sets the product's tare weight (the empty
+          container), in the product's stock unit. Grocy auto-scales it on any
+          unit switch (qu_id_stock change) in the same request -- set it in a
+          separate call, before or after the switch.
+        selector:
+          number:
+            min: 0
+            step: 0.01
+      enable_tare_weight_handling:
+        name: Tare Weight Handling
+        description: >-
+          update_product_meta only. Turns tare-weight handling on or off for the
+          product. With it on, Grocy reads the amount of an add, a consume or
+          an inventory as the total weight including the container, and
+          subtracts tare_weight. Set tare_weight too, in the stock unit.
+        selector:
+          boolean:
       price:
         name: Price
         description: Optional unit price used for purchase transactions.
@@ -1215,7 +1246,7 @@ script:
                 summary='Stock, shopping, chores, batteries, and locations',
                 display_name='Inventory',
                 tier='dojotools',
-                version='5.9.2',
+                version='5.9.6',
                 health=(
                   {'configured': false, 'status': 'not_configured', 'notes': ['input_text.grocy_url is not set — set it to your Grocy instance base URL.']}
                   if (states('input_text.grocy_url') | default('', true) | trim) in ['', 'unknown', 'unavailable']
@@ -1319,7 +1350,7 @@ script:
     - variables:
         show_trace: '{{ show_trace | default(false) }}'
         tool_name: Zen DojoTools Inventory
-        tool_version: 5.9.2
+        tool_version: 5.9.6
         schema_version: "1.3.0"
     # ─── CASE AUTHORING CHECKLIST ────────────────────────────────────────────────
     # When adding a new mode/case to this script, update ALL of the following:
@@ -1369,6 +1400,8 @@ script:
         purchase_uid_in: '{{ purchase_unit_id | default(none) }}'
         qca_in: '{{ quick_consume_amount | default(none) }}'
         qoa_in: '{{ quick_open_amount | default(none) }}'
+        tare_in: '{{ tare_weight | default(none) }}'
+        tare_on_in: '{{ (1 if (enable_tare_weight_handling | bool(false)) else 0) if enable_tare_weight_handling is defined and enable_tare_weight_handling is not none else none }}'
         # has_explicit_unit_input: checks the RAW unit/unit_id
         # caller inputs directly, not unit_norm (which silently defaults to
         # 'each' when no unit was passed at all -- see line ~1248) or
@@ -4961,6 +4994,37 @@ script:
               - "Ensure 'each' or 'Piece' is active in Grocy quantity units."
         - stop: "Null unit guard — stock add blocked"
           response_variable: final_response
+    # Tare-weight products: Grocy reads the amount of an add as the NEW TOTAL
+    # weight (container + what is in it), and refuses one at or below tare +
+    # current stock ("The amount cannot be lower or equal than the defined tare
+    # weight + current stock amount."). So a purchase of N is sent as
+    # tare_weight + current stock + N, which Grocy books as exactly N.
+    - alias: "Tare-weight products: send a purchase as the new total weight"
+      if:
+      - condition: template
+        value_template: >-
+          {{ mode_norm in ['stock_buy_product', 'stock_add_purchase', 'stock_consume', 'stock_inventory_adjust']
+             and product_id_resolved is not none
+             and (product_id_resolved | string) not in ['', 'None'] }}
+      then:
+      - action: script.zen_sutra_grocy
+        response_variable: _tare_probe
+        continue_on_error: true
+        data:
+          action_type: read
+          endpoint: "/stock/products/{{ product_id_resolved }}"
+      - variables:
+          _tare_c: >-
+            {{ (_tare_probe['result']['content']
+                if _tare_probe is mapping and _tare_probe.get('result') is mapping
+                   and _tare_probe['result'].get('content') is mapping else {}) }}
+          tare_on: >-
+            {{ ((_tare_c.get('product', {}) or {}).get('enable_tare_weight_handling', 0) | int(0)) == 1 }}
+          tare_w: >-
+            {{ ((_tare_c.get('product', {}) or {}).get('tare_weight', 0) | float(0)) }}
+          tare_new_total: >-
+            {{ (((_tare_c.get('product', {}) or {}).get('tare_weight', 0) | float(0))
+                + (_tare_c.get('stock_amount', 0) | float(0)) + amt_in) | round(4) }}
     - variables:
         action_type: "{% if mode_norm in [\n  'rename_product',\n  'update_product_meta',\n
           \ 'set_default_location_for_product',\n  'locations_metadata_set',     \n
@@ -4972,14 +5036,14 @@ script:
           elif mode_norm in ['locations_delete', 'unit_conversions_delete'] %}\n  delete\n{% else %}\n  read\n{% endif %}    "
     - variables:
         effective_payload: "{% if mode_norm in ['stock_add_purchase','stock_buy_product']
-          %}\n  {{\n    {\n      \"amount\": amt_in,\n      \"best_before_date\": (bbd_in
+          %}\n  {{\n    {\n      \"amount\": (tare_new_total if (tare_on | default(false)) else amt_in),\n      \"best_before_date\": (bbd_in
           if bbd_in is not none else none),\n      \"transaction_type\": \"purchase\",\n
           \     \"price\": (price_in if price_in is not none else none),\n      \"location_id\":
           (location_id_resolved if location_id_resolved is not none else none),\n      \"shopping_location_id\":
           (shopping_location_id_resolved if shopping_location_id_resolved is not none
           else none),\n      \"note\": (note_in if has_note else none)\n    }\n  }}\n{%
-          elif mode_norm == 'stock_consume' %}\n  {{ { \"amount\": amt_in, \"location_id\": (location_id_resolved if location_id_resolved is not none else none), \"spoiled\": spoiled_in, \"transaction_type\": \"consume\" } }}\n{% elif
-          mode_norm == 'stock_inventory_adjust' %}\n  {{ { \"new_amount\": amt_in, \"location_id\": (location_id_resolved if location_id_resolved is not none else none) }
+          elif mode_norm == 'stock_consume' %}\n  {{ { \"amount\": amt_in, \"location_id\": (location_id_resolved if location_id_resolved is not none else none), \"spoiled\": spoiled_in, \"transaction_type\": \"consume\" } | combine({\"exact_amount\": true} if (tare_on | default(false)) else {}) }}\n{% elif
+          mode_norm == 'stock_inventory_adjust' %}\n  {{ { \"new_amount\": ((tare_w + amt_in) if (tare_on | default(false)) else amt_in), \"location_id\": (location_id_resolved if location_id_resolved is not none else none) }
           }}\n{% elif mode_norm == 'stock_transfer_location' %}\n  {{\n    {\n      \"amount\":
           amt_in,\n      \"location_id_from\": location_id_resolved,\n      \"location_id_to\":
           to_location_id_resolved\n    }\n  }}\n{% elif mode_norm == 'rename_product'
@@ -5003,6 +5067,12 @@ script:
           \ {% endif %}\n
           \ {% if qca_in is not none %}\n
           \   {% set _meta = _meta | combine({'quick_consume_amount': qca_in}) %}\n
+          \ {% endif %}\n
+          \ {% if tare_in is not none %}\n
+          \   {% set _meta = _meta | combine({'tare_weight': tare_in}) %}\n
+          \ {% endif %}\n
+          \ {% if tare_on_in is not none %}\n
+          \   {% set _meta = _meta | combine({'enable_tare_weight_handling': tare_on_in}) %}\n
           \ {% endif %}\n
           \ {% if qoa_in is not none %}\n
           \   {% set _meta = _meta | combine({'quick_open_amount': qoa_in}) %}\n
@@ -9509,6 +9579,12 @@ script:
               {%- if qoa_in is not none -%}
                 {%- set _ns.p = _ns.p | combine({'quick_open_amount': qoa_in | float}) -%}
               {%- endif -%}
+              {%- if tare_in is not none -%}
+                {%- set _ns.p = _ns.p | combine({'tare_weight': tare_in | float}) -%}
+              {%- endif -%}
+              {%- if tare_on_in is not none -%}
+                {%- set _ns.p = _ns.p | combine({'enable_tare_weight_handling': tare_on_in | int}) -%}
+              {%- endif -%}
               {%- if shopping_location_id_resolved is not none -%}
                 {%- set _ns.p = _ns.p | combine({'shopping_location_id': shopping_location_id_resolved | int}) -%}
               {%- endif -%}
@@ -9618,6 +9694,8 @@ script:
                 {%- if has_explicit_amount -%}{%- set out = out + ['min_stock_amount'] -%}{%- endif -%}
                 {%- if qca_in is not none -%}{%- set out = out + ['quick_consume_amount'] -%}{%- endif -%}
                 {%- if qoa_in is not none -%}{%- set out = out + ['quick_open_amount'] -%}{%- endif -%}
+                {%- if tare_in is not none -%}{%- set out = out + ['tare_weight'] -%}{%- endif -%}
+                {%- if tare_on_in is not none -%}{%- set out = out + ['enable_tare_weight_handling'] -%}{%- endif -%}
                 {%- if has_note or has_brand or has_sku -%}{%- set out = out + ['description'] -%}{%- endif -%}
                 {%- if shopping_location_id_resolved is not none -%}{%- set out = out + ['shopping_location_id'] -%}{%- endif -%}
                 {%- if to_location_id_resolved is not none -%}{%- set out = out + ['default_consume_location_id'] -%}{%- endif -%}
@@ -10615,6 +10693,7 @@ script:
           for_each: "{{ _loc_crm_ids }}"
           sequence:
           - action: script.zen_dojotools_rolodex
+            enabled: "{{ states('script.zen_dojotools_rolodex') in ['on', 'off'] }}"
             response_variable: _loc_crm_get
             continue_on_error: true
             data:
@@ -10770,6 +10849,7 @@ script:
                  if _cogs_consumed_entries | length > 0
                  else (product_id_resolved ~ '-' ~ (now().timestamp() | int)) }}
         - action: script.zen_dojotools_finance
+          enabled: "{{ states('script.zen_dojotools_finance') in ['on', 'off'] }}"
           continue_on_error: true
           response_variable: _cogs_post_raw
           data:

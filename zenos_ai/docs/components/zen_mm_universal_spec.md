@@ -331,7 +331,7 @@ These integrations typically DO expose physical HDMI inputs in `source_list` as 
 - [ ] `turn_on` / `turn_off` work, each **one action** (a list stops the platform loading, with no log error)
 - [ ] `turn_on` defined, or ZenOS's wake before an activity is skipped
 - [ ] Every child, and every entity named in `active_child_template`, `attributes` and `commands`, exists and is available. A renamed child leaves the UMP `unavailable` with no log error, and a config check still passes. `mode=discover room=<room>` shows the UMP's state; check it first
-- [ ] `active_child_template` returns correct child for play/pause/skip routing
+- [ ] `active_child_template` returns correct child for play/pause/skip routing. Media Manager (6.6.0+) sends `play`, `pause`, `stop`, `next` and `previous` to the UMP when it is what the room is playing, so this template decides which device gets them
 - [ ] Activity names registered in ZenOS cabinet via `activity_set` (only for a UMP that routes sources; try one with `dry_run=true` first). To remove all of a room's activities, delete its `media_activities_<room>` drawer with FileCabinet; Media Manager has no delete mode
 - [ ] If a templated `source_list` doesn't appear in state: hardcoded instead
 

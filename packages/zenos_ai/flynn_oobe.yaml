@@ -1,5 +1,17 @@
 ###############################################################################
-# ZENOS-AI FLYNN: OOBE PROTOCOL (v5.4.1)
+# ZENOS-AI FLYNN: OOBE PROTOCOL (v5.5.2)
+# v5.5.2 (#10670): the held-cert checks use the session caller, not the household
+#   container. With a container ID.caller resolves the responsible agent and needs it
+#   onboarded, which is false until OOBE completes, so on a fresh install every cert
+#   read as missing right after a successful grant (run answered approval_required
+#   forever) and complete re-asked for parity.
+# v5.5.1 (#10670): mode=complete writes the _oobe_complete flag LAST, after the
+#   badge, seed-cert mode and parity handling (it was first).
+# v5.5.0 (#10670): mode=run asks for the common onboarding certs ONCE, up
+#   front: the zenos_agent_onboarding bundle (basic + steward + parity, derived
+#   by Manifest cert_audit), at level 1, one live ack. The setup steps then run
+#   through the gated tools with no exemption. Component certs (vacuum, spa,
+#   print) are asked for when the component is enabled, not here.
 # v5.4.1: the parity ask uses stages ise (the bundle may hold emit certs).
 # v5.4.0: a first-time mode=complete (no earlier completion flag, no
 #   seed_cert_mode set) writes seed_cert_mode enforce: a fresh install
@@ -117,20 +129,6 @@ script:
                 message: "No default AI user cabinet found. Cannot write _oobe_complete."
       - if: "{{ final_response is not defined and _mode == 'complete' }}"
         then:
-          - action: script.zen_sutra_filecabinet
-            data:
-              mode: create
-              force_action: true
-              set_timestamp: true
-              show_hidden_volumes: false
-              volume_entity_id:
-                - "{{ _ai_cab }}"
-              key: _oobe_complete
-              value: >-
-                {{ {"completed": true, "ts": now().isoformat()} | tojson }}
-          - action: persistent_notification.dismiss
-            data:
-              notification_id: flynn_oobe_pending
           # run asked for the approval up front; this only asks again when the
           # badge is still missing (declined then, or onboarding finished by
           # hand). One bundle ask; the badge alone only if the bundle did not
@@ -213,7 +211,7 @@ script:
                     {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
                     {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
                     {%- set ns = namespace(m=[]) -%}
-                    {%- for c in _oobe_parity if not ((ID.caller(c, 1, _hh, 's') | from_json({})).get('cert_ok', false)) -%}
+                    {%- for c in _oobe_parity if not ((ID.caller(c, 1, '', 's') | from_json({})).get('cert_ok', false)) -%}
                       {%- set ns.m = ns.m + [c] -%}
                     {%- endfor -%}
                     {{ ns.m }}
@@ -228,6 +226,24 @@ script:
                       cert_level: 1
                       cert_stages: ise
                       target: "{{ _ai_cab }}"
+          # The completion flag is written LAST (#10670): the approval, the
+          # seed-cert mode and the parity ask above run first, so the flag does
+          # not say done while grant work is still outstanding. A declined ask
+          # still does not block completion.
+          - action: script.zen_sutra_filecabinet
+            data:
+              mode: create
+              force_action: true
+              set_timestamp: true
+              show_hidden_volumes: false
+              volume_entity_id:
+                - "{{ _ai_cab }}"
+              key: _oobe_complete
+              value: >-
+                {{ {"completed": true, "ts": now().isoformat()} | tojson }}
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: flynn_oobe_pending
           - variables:
               final_response:
                 status: "{{ 'ok' if _oobe_admitted else 'admission_pending' }}"
@@ -246,32 +262,80 @@ script:
       ###########################################################################
       # RUN — approval first, then the onboarding protocol
       ###########################################################################
-      - if: "{{ final_response is not defined and _mode == 'run' and not _badge }}"
+      - if: "{{ final_response is not defined and _mode == 'run' }}"
         then:
-          - action: script.zen_dojotools_persona_editor
+          # The common onboarding certs are asked for ONCE, up front (#10670):
+          # the zenos_agent_onboarding bundle (basic + steward + parity, the
+          # set Manifest cert_audit derives). One live ack approves the agent
+          # and everything the setup steps need, so every step then runs
+          # through the gated tools with no exemption. The ask fires when the
+          # badge or any member cert is missing. Level 1 only: the level 2
+          # deletes are not part of onboarding. If the bundle cannot be read
+          # it falls back to the basic bundle (the badge).
+          - action: script.zen_dojotools_manifest
             continue_on_error: true
-            response_variable: _oobe_run_grant
+            response_variable: _oobe_run_ca_raw
             data:
-              mode: cert_req_grant
-              cert_bundle: zenos_agent_basic
-              cert_level: 1
-              target: "{{ _ai_cab }}"
+              mode: cert_audit
           - variables:
-              _oobe_run_badge: >-
+              _oobe_common: >-
+                {%- set _ca = _oobe_run_ca_raw if _oobe_run_ca_raw is mapping else {} -%}
+                {%- set _ca = _ca.get('result', _ca) if _ca.get('result') is mapping else _ca -%}
+                {%- set _b = (_ca.get('bundles', {}) or {}).get('zenos_agent_onboarding', []) -%}
+                {{ _b if _b is sequence and _b is not string else [] }}
+              _oobe_run_bundle: >-
+                {%- set _ca = _oobe_run_ca_raw if _oobe_run_ca_raw is mapping else {} -%}
+                {%- set _ca = _ca.get('result', _ca) if _ca.get('result') is mapping else _ca -%}
+                {%- set _b = (_ca.get('bundles', {}) or {}).get('zenos_agent_onboarding', []) -%}
+                {{ 'zenos_agent_onboarding' if (_b is sequence and _b is not string and _b | count > 0) else 'zenos_agent_basic' }}
+          - variables:
+              _oobe_common_missing: >-
                 {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
-                {{ (ID.caller('zenos.agent.basic', 1) | from_json({})).get('cert_ok', false) }}
-          - if: "{{ not _oobe_run_badge }}"
+                {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+                {%- set ns = namespace(m=[]) -%}
+                {%- for c in _oobe_common if not ((ID.caller(c, 1) | from_json({})).get('cert_ok', false)) -%}
+                  {%- set ns.m = ns.m + [c] -%}
+                {%- endfor -%}
+                {{ ns.m }}
+          - if: "{{ not _badge or _oobe_common_missing | count > 0 }}"
             then:
+              - action: script.zen_dojotools_persona_editor
+                continue_on_error: true
+                response_variable: _oobe_run_grant
+                data:
+                  mode: cert_req_grant
+                  cert_bundle: "{{ _oobe_run_bundle }}"
+                  cert_level: 1
+                  cert_stages: ise
+                  target: "{{ _ai_cab }}"
               - variables:
-                  final_response:
-                    status: approval_required
-                    mode: run
-                    message: >-
-                      The household admin has not approved this agent yet, so
-                      onboarding cannot start: every setup step needs an approved
-                      agent. Ask them to answer the approval on their phone, then
-                      call zen_flynn_oobe mode=run again.
-                    grant: "{{ (_oobe_run_grant.get('result', _oobe_run_grant) if _oobe_run_grant is mapping else {}) }}"
+                  _oobe_run_badge: >-
+                    {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                    {{ (ID.caller('zenos.agent.basic', 1) | from_json({})).get('cert_ok', false) }}
+                  _oobe_run_missing: >-
+                    {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
+                    {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+                    {%- set ns = namespace(m=[]) -%}
+                    {%- for c in _oobe_common if not ((ID.caller(c, 1) | from_json({})).get('cert_ok', false)) -%}
+                      {%- set ns.m = ns.m + [c] -%}
+                    {%- endfor -%}
+                    {{ ns.m }}
+              - if: "{{ not _oobe_run_badge or _oobe_run_missing | count > 0 }}"
+                then:
+                  - variables:
+                      final_response:
+                        status: approval_required
+                        mode: run
+                        message: >-
+                          The household admin has not approved the onboarding
+                          permissions yet, so onboarding cannot start: every setup
+                          step needs them. Ask them to answer the approval on their
+                          phone (or enable the console-admin bypass if the home has
+                          no phone, push or display), then call zen_flynn_oobe
+                          mode=run again.
+                        bundle: "{{ _oobe_run_bundle }}"
+                        missing: "{{ _oobe_run_missing }}"
+                        grant: "{{ (_oobe_run_grant.get('result', _oobe_run_grant) if _oobe_run_grant is mapping else {}) }}"
       - if: "{{ final_response is not defined and _mode == 'run' }}"
         then:
           - variables:
@@ -279,7 +343,7 @@ script:
                 {{
                   {
                     "tool": "zen_flynn_oobe",
-                    "version": "5.4.1",
+                    "version": "5.5.2",
                     "protocol": "ZenOS Home Onboarding",
                     "hard_rules": [
                       "Never ask more than 2 questions at a time.",

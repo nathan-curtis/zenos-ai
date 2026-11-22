@@ -1,4 +1,6 @@
-# Zen DojoTools Summarizers — Ninja Summarizer v5.7.0 · SuperSummary v4.9.0
+# Zen DojoTools Summarizers — Ninja Summarizer v5.9.0 · SuperSummary v4.9.1
+
+> **2026.11.1:** a reply that parses but has every value null, blank or empty isn't written as a summary. A number (urgency 0 is a real quiet reading), text, or a non-empty list or object counts; a true or false on its own doesn't. The Ninja logs "empty summary", keeps the previous summary, and records `outcome` (`ok`, `no_response`, `parse_failed`, `empty_content`) on its per-run record; SuperSummary's status drawer says `error` with `reason: empty_content`. The 11 seed and act bridges stay, still warning.
 
 *Ninja Summarizer + SuperSummary — the KF6 action pipeline — MCP-exposed*
 
@@ -353,6 +355,8 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| Ninja v5.9.0 · SuperSummary v4.9.1 | An all-null reply isn't written as a summary (see the note at the top). |
+| Ninja v5.8.1 | The 11 seed bridge is back, with its deprecation warning. 5.8.0 had removed it in the same release its replacement shipped, which would have silenced a tool that seeds only through the old seed whitelist. No retirement date is set. |
 | Ninja v5.7.0 | Refusals are readable. A run refused for `kfc_cert_required`, `seed_cert_required` or `agent_not_onboarded` stamps `last_refusal` {reason, cert, level, stage, why, agent, at} on the component's existing kata (a merge, so the last summary stays); the next successful run replaces the kata and clears it. A seed or act through an 11 legacy list adds `legacy_bridge` to the kata it writes. Agent health and `zen_health_report` read both. |
 | Ninja v5.6.1 | Life safety skips the emission cooldown. A run at or above `push_gate_life_safety_bypass` (default 8, in `zen_ninja_config`) emits even inside `emission_cooldown_minutes`, and its kata records `cooldown_bypassed: life_safety`. A routine emission a few minutes earlier no longer holds back a leak or an alarm. Lower urgencies still wait out the cooldown, and acks apply as before. |
 | Ninja v5.6.0 | A component with `role: cache` is a cache slot: the Ninja skips it with reason `cache_slot`, so a targeted force or `force_ninja` can't overwrite the cache with a summary. |

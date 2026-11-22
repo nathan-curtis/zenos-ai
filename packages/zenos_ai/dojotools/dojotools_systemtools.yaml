@@ -1,6 +1,18 @@
 ###############################################################################
 # ZenOS-AI DojoTools: SystemTools Package
-# Version: 5.4.0
+# Version: 5.4.4
+# v5.4.4: gate fixes (#10698, from 2026.12.0's 5.6.0). cabinet_schema_upgrade needs
+#   zenos.system.cabinet_lifecycle_control level 1, checks the schema flip result and
+#   skips the ACL migration when the flip was refused or failed (it ran it regardless
+#   and could arm ACL enforcement after a flip that never happened). ha_reload_scripts,
+#   ha_reload_automations, ha_reload_templates and ha_reload_template_entities now
+#   need zenos.system.reload_restart like ha_reload_all.
+# v5.4.2: the approval-path check counts only a missing dependency (a notify target
+#   the approval push needs). Spook's unknown icon, unknown entity and missing label
+#   findings on those scripts are not approval blockers (a label gap heals itself) and no
+#   longer put a fresh install in system_side with "tell a person, request nothing".
+# v5.4.1: repair_remove calls Ectoplasm with mode: in place of the deprecated
+#   action_type: alias, and the repair_list hint names mode=.
 # v5.4.0: zen_health_report has a certs section (#10678): agent_side (a cert
 #   the responsible agent lacks, at the stage it needs, what it holds back;
 #   a grant fixes it), system_side (identity policy, responsible agent not
@@ -787,7 +799,7 @@ script:
                 summary='Health, reloads, notifications, repairs, home settings',
                 display_name='SystemTools - ZenOS Platform Kernel',
                 tier='dojotools',
-                version='5.4.0',
+                version='5.4.4',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools', 'zen_kfc_provider'],
                 optional_labels=['system_monitor', 'system_status'],
@@ -807,7 +819,7 @@ script:
                 'certs_required': [
                   {'cert': 'zenos.system.reload_restart', 'display_name': 'Reload/Restart Control',
                    'description': "Restart or reload Home Assistant", 'detail': 'Supplementary to the existing confirm_action gate on ha_restart/ha_reload_all -- a standing cert layer so a compromised/confused agent cannot even attempt the call, not just get refused at the confirm step.',
-                   'max_level': 1, 'gates': ['tool=ha_restart/ha_reload_all (cert only, in addition to confirm_action)'],
+                   'max_level': 1, 'gates': ['tool=ha_restart/ha_reload_all (cert only, in addition to confirm_action)', 'tool=ha_reload_scripts/ha_reload_automations/ha_reload_templates/ha_reload_template_entities (cert only)'],
                    'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.system.reload_restart (or zen_dojotools_identity mode=cert_list to see current status)'},
                   {'cert': 'zenos.system.home_config_write', 'bundle': ['zenos_agent_steward'], 'display_name': 'Home Config Write',
                    'description': "Change home mode, quiet hours and schedules", 'detail': 'Durable household-config writes: home_mode, quiet_hours, work_hours, scheduler_anchors, guest_mode, entertaining. Write path only -- reads stay open.',
@@ -923,7 +935,7 @@ script:
             response:
               status: "{{ 'not_found' if _kfc_out is none else 'ok' }}"
               tool: zen_dojotools_systemtools
-              version: "5.4.0"
+              version: "5.4.4"
               mode: kfc_manifest
               kfc: "{{ _kfc_out }}"
               count: "{{ 0 if _kfc_out is none else (1 if _kfc_out is mapping else _kfc_out | length) }}"
@@ -944,7 +956,7 @@ script:
     # branch -- nesting this inside the next choose: would consume that
     # choose's single match even when authorized, permanently blocking the
     # real ha_restart/ha_reload_all dispatch branches further down in it.
-    - if: "{{ response is not defined and tool in ['ha_restart', 'ha_reload_all'] and confirm }}"
+    - if: "{{ response is not defined and ((tool in ['ha_restart', 'ha_reload_all'] and confirm) or tool in ['ha_reload_scripts', 'ha_reload_automations', 'ha_reload_templates', 'ha_reload_template_entities']) }}"
       then:
       - action: script.zen_dojotools_identity
         response_variable: _rr_id_raw
@@ -2288,7 +2300,7 @@ script:
               {%- if _vault in ['', 'unknown', 'unavailable', 'none'] or states(_vault) in ['unknown', 'unavailable'] -%}
                 {%- set ns.system = ns.system + [{'issue': 'vault_missing', 'detail': 'The vault cabinet is not resolved or not provisioned; it provisions on boot. Restart, or check zen_cabinet_health.'}] -%}
               {%- endif -%}
-              {%- set _ap = (response.known_issues | default([], true)) | selectattr('issue_id', 'search', 'zen_dojotools_(postman|alertmanager|display|identity)') | list -%}
+              {%- set _ap = (response.known_issues | default([], true)) | selectattr('issue_id', 'search', 'zen_dojotools_(postman|alertmanager|display|identity)') | selectattr('category', 'equalto', 'missing_dependency') | list -%}
               {%- for i in _ap -%}
                 {%- set ns.system = ns.system + [{'issue': 'approval_path', 'detail': 'Approval path: ' ~ i.issue_id ~ ((' (' ~ i.install_hint ~ ')') if i.get('install_hint') else '')}] -%}
               {%- endfor -%}
@@ -2378,7 +2390,7 @@ script:
           - variables:
               _hr0_issues: >-
                 {{ (response.known_issues | default([], true))
-                   | selectattr('issue_id', 'search', 'zen_dojotools_(postman|alertmanager|display|identity)') | list }}
+                   | selectattr('issue_id', 'search', 'zen_dojotools_(postman|alertmanager|display|identity)') | selectattr('category', 'equalto', 'missing_dependency') | list }}
               _hr0_res: "{{ response.resolvers | default({}, true) }}"
               _hr0_flynn: >-
                 {%- set f = response.flynn_ready | default({}, true) -%}
@@ -2431,18 +2443,70 @@ script:
           condition: template
           value_template: "{{ tool == 'cabinet_schema_upgrade' }}"
         sequence:
-        - alias: 'Upgrade cabinet schema to v1 (mount-aware)'
-          action: script.zen_admintools_cabinetadmin
+        # Cert gate (#10698): this mode flips the cabinet schema and can arm ACL
+        # enforcement, so it needs zenos.system.cabinet_lifecycle_control level 1.
+        - action: script.zen_dojotools_identity
+          response_variable: _su_id_raw
+          continue_on_error: true
           data:
-            mode: flip_schema_version
-            schema_version: 1
+            mode: resolve_caller_identity
+            required_cert: zenos.system.cabinet_lifecycle_control
+            required_cert_level: 1
             caller_token: "{{ caller_token | default('') }}"
+        - variables:
+            _su_id_fields: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+              {%- set _raw = OS.resolve_identity_fields(_su_id_raw) -%}
+              {{- (_raw | from_json) if _raw is string else _raw -}}
+        - if: "{{ not (_su_id_fields.authorized | default(false)) }}"
+          then:
+            - variables:
+                response:
+                  tool: "{{ tool }}"
+                  result: error
+                  error: cert_insufficient
+                  message: >-
+                    cabinet_schema_upgrade needs zenos.system.cabinet_lifecycle_control level 1
+                    (held level {{ _su_id_fields.cert_level | default(0) }}). Nothing was changed.
+                  can_request: "{{ (_su_id_fields.policy_status | default('')) == 'allowed' }}"
+                  request_via:
+                    tool: zen_dojotools_persona_editor
+                    mode: cert_req_grant
+                    cert_component: zenos.system.cabinet_lifecycle_control
+                    cert_level: 1
+                  caller_token: "{{ caller_token | default('') }}"
+        - if: "{{ response is not defined }}"
+          then:
+            - alias: 'Upgrade cabinet schema to v1 (mount-aware)'
+              action: script.zen_admintools_cabinetadmin
+              continue_on_error: true
+              response_variable: _su_flip
+              data:
+                mode: flip_schema_version
+                schema_version: 1
+                caller_token: "{{ caller_token | default('') }}"
+        # The flip result is checked: a refused or failed flip stops here, so the ACL
+        # migration below never runs after a flip that did not happen.
+        - variables:
+            _su_flip_inner: >-
+              {%- set f = _su_flip if _su_flip is defined and _su_flip is mapping else {} -%}
+              {{- f.get('result') if f.get('result') is mapping else f -}}
+            _su_flip_ok: "{{ response is not defined and (_su_flip_inner.get('status') in ['success', 'ok']) }}"
+        - if: "{{ response is not defined and not (_su_flip_ok | bool) }}"
+          then:
+            - variables:
+                response:
+                  tool: "{{ tool }}"
+                  result: error
+                  error: schema_flip_failed
+                  message: "The cabinet schema flip did not succeed ({{ _su_flip_inner.get('reason') or _su_flip_inner.get('message') or _su_flip_inner.get('status') or 'no answer' }}). The ACL migration was not run."
+                  caller_token: "{{ caller_token | default('') }}"
         # ACL schema (#10626): migrate when the acl_schema stamp is behind;
         # force_action runs it anyway as a repair.
         - variables:
             _su_acl: >-
               {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-              {{- (force_action | default(false) | bool) or not (CABS.acl_schema_is_current() | trim | bool) -}}
+              {{- (_su_flip_ok | bool) and ((force_action | default(false) | bool) or not (CABS.acl_schema_is_current() | trim | bool)) -}}
         - if: "{{ _su_acl | bool }}"
           then:
             - action: script.zen_dojotools_identity
@@ -2454,16 +2518,18 @@ script:
                 confirm_action: true
         - variables:
             _su_mig_r: "{{ (_su_mig if _su_mig is defined and _su_mig is mapping else {}) if _su_acl | bool else {} }}"
-        - variables:
-            response:
-              tool: "{{ tool }}"
-              result: "{{ 'error' if (_su_acl | bool and _su_mig_r.get('status') != 'ok') else 'success' }}"
-              message: >-
-                Cabinet schema upgraded to v1 (mount-aware).
-                {{ ('ACL schema: ' ~ (_su_mig_r.get('message') or 'acl_migrate did not answer')) if _su_acl | bool else 'ACL schema already current (force_action=true runs the repair anyway).' }}
-                Run zen_health_report to verify.
-              acl_migrate: "{{ {'status': _su_mig_r.get('status'), 'changed': _su_mig_r.get('changed'), 'remaining': _su_mig_r.get('remaining'), 'schema_stamped': _su_mig_r.get('schema_stamped')} if _su_acl | bool else none }}"
-              caller_token: "{{ caller_token | default('') }}"
+        - if: "{{ response is not defined }}"
+          then:
+            - variables:
+                response:
+                  tool: "{{ tool }}"
+                  result: "{{ 'error' if (_su_acl | bool and _su_mig_r.get('status') != 'ok') else 'success' }}"
+                  message: >-
+                    Cabinet schema upgraded to v1 (mount-aware).
+                    {{ ('ACL schema: ' ~ (_su_mig_r.get('message') or 'acl_migrate did not answer')) if _su_acl | bool else 'ACL schema already current (force_action=true runs the repair anyway).' }}
+                    Run zen_health_report to verify.
+                  acl_migrate: "{{ {'status': _su_mig_r.get('status'), 'changed': _su_mig_r.get('changed'), 'remaining': _su_mig_r.get('remaining'), 'schema_stamped': _su_mig_r.get('schema_stamped')} if _su_acl | bool else none }}"
+                  caller_token: "{{ caller_token | default('') }}"
       - conditions:
         - alias: Pipeline Monitor
           condition: template
@@ -2790,7 +2856,7 @@ script:
               result: ok
               count: "{{ _issues | count }}"
               issues: "{{ _issues }}"
-              hint: "Fields available from HA's issues() template global are limited to domain/issue_id/created/dismissed_version/is_persistent — no severity/is_fixable/title data is exposed here. Spook-created issues have domain=spook. Use ectoplasm action_type=repair_remove/repair_ignore_all with domain+issue_id from this list to act on one."
+              hint: "Fields available from HA's issues() template global are limited to domain/issue_id/created/dismissed_version/is_persistent — no severity/is_fixable/title data is exposed here. Spook-created issues have domain=spook. Use ectoplasm mode=repair_remove or mode=repair_ignore_all with domain+issue_id from this list to act on one."
       - conditions:
         - alias: repair_fix
           condition: template
@@ -2798,7 +2864,7 @@ script:
         sequence:
         - action: script.zen_dojotools_ectoplasm
           data:
-            action_type: repair_remove
+            mode: repair_remove
             issue_id: "{{ issue_id | default('') }}"
             domain: "{{ repair_domain | default('') }}"
             confirm_action: true

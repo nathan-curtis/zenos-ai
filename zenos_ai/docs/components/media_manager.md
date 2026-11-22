@@ -1,8 +1,10 @@
 # ZenOS-AI Media Manager (NyxMau5)
 
-**Version:** 6.5.3
+**Version:** 6.6.2
 **Script:** `zen_dojotools_media_manager`
 **Codename:** NyxMau5
+
+> **2026.11.1 (6.6.1, 6.6.2):** `queue_move_up`, `queue_move_down`, `queue_move_next`, `activity_snapshot` and `prefs_apply` need `zenos.media.playback_control` (`prefs_apply` moved from `prefs_edit`, since it applies prefs to real players), and a refused call no longer runs the queue-move or collection steps. The `zen_tts` label is created with an icon Home Assistant has (`mdi:speaker-message`).
 
 ---
 
@@ -245,6 +247,7 @@ Apply to any entity that serves this purpose. Multiple tools (Postman, Dispatche
 | `power_on` / `power_off` | Turn a media player on or off. Needs `zenos.media.playback_control`, and an available `media_player.*` that reports the power feature. No role label is required. `power_on` refuses in a Paused room; `power_off` does not. Already in the wanted state: no call, `changed: false`. After a call it waits up to 45 s (`power_off` 20 s), since a TV can take a minute to report in, and reports `state_before`, `state`, `changed` and `confirmed` (an unconfirmed change is an error). `dry_run=true` previews. A streaming TV wakes, but this does not start a named show. **For a TV, pass `target_role=zen_mm_television` or `intent=watch`.** `room=` alone resolves the room's default surface, which may be a Universal Media Player whose own `turn_on` powers a different device; when the target is one, the result names its `active_child`, the room's `other_power_targets` (shadow players left out) and a `hint`. The hint names `zen_mm_television` only when the room has one; otherwise it points at `other_power_targets` and `entity_id=`. |
 | `state_get` | Full device snapshot: source, sound mode, volume, mute, media title, group membership, adjacent room co-playing detection, acoustic zone context. |
 | `volume_set` | Set the volume of one player, 0-100. Needs the `zenos.media.playback_control` certification. |
+| `queue_command` | `command=` one of `play`, `pause`, `stop`, `next`, `previous`, `seek`, `shuffle`, `repeat`, `crossfade`, `clear_queue`. As of 6.6.0, `play`, `pause`, `stop`, `next` and `previous` go to the player the room resolves to (the one `now_playing` and `volume_set` use, which prefers a player that is playing) with a plain `media_player` action, when that player isn't the Music Assistant one and you named it with `entity_id=`, it is playing, or it is paused. In a room with a universal player that is the UMP, which hands the command to its active child, so pausing the TV pauses the TV, not the receiver. The result says `routed: media_player`. `seek`, `shuffle`, `repeat`, `crossfade` and `clear_queue` always go to Music Assistant, and with nothing playing or paused, `play` resumes the room's music there. |
 | `play_media` | Play media via Music Assistant. When `media_id` is blank and `query` is provided, `query` is passed directly as `media_id` to MA — MA resolves by name. |
 
 ### Preferences

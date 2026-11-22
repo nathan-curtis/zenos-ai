@@ -60,7 +60,7 @@ Anything else answers `status: error`, `reason: "guarded: onboarding_required: .
 
 **Calls no user started pass:** boot, Flynn, automations, the scheduler. They carry no `context.user_id`, the same rule the admin door uses.
 
-**Getting the pass.** `zen_flynn_oobe mode=run` asks for the `zenos_agent_basic` bundle (one live ack; the bundle carries the pass) before it hands out any setup steps. On an install that finished onboarding before 2026.11.0, the agent already holds the pass if you approved the bundle then. If it doesn't, Flynn posts one "waiting for approval" notice, and every gated tool points the agent at `zen_flynn_oobe mode=run`.
+**Getting the pass.** `zen_flynn_oobe mode=run` asks for the `zenos_agent_onboarding` bundle (one live ack; it carries the pass, the basic certs, steward at level 1 and the parity certs) before it hands out any setup steps. A component's own certs are asked for when you turn that component on. On an install that finished onboarding before 2026.11.0, the agent already holds the pass if you approved the bundle then. If it doesn't, Flynn posts one "waiting for approval" notice, and every gated tool points the agent at `zen_flynn_oobe mode=run`.
 
 **Home Assistant can't tell you from the agent.** A dashboard button, or a call you make yourself from Developer Tools, runs as a logged-in user, the same as the agent. Before the pass is granted, those calls are refused too. The exceptions are the console override (Section 4) and the admin tools, which have their own gates.
 
@@ -134,6 +134,7 @@ Every certification has a short plain `description`, written for the phone appro
 | `zenos.registry.label_lifecycle_control` | Create and edit labels; level 2 also deletes |
 | `zenos.registry.lifecycle_control` | Hide, rename and organize devices; level 2 also disables or removes |
 | `zenos.registry.purge` | Remove dead devices from the system |
+| `zenos.registry.read` | Read the repairs list and other registry diagnostics, which name your entities and scripts |
 | `zenos.room.behavior_control` | Change how rooms react on their own |
 | `zenos.room.control_override` | Take a room out of Paused |
 | `zenos.security.camera_scan` | Scan the cameras on a schedule on its own (exterior always, interior only when away) |
@@ -410,10 +411,11 @@ No phone? The console override stands in for the approval, the same as any other
 | `zen_dojotools_todo` | `zenos.comms.todo_control` | `delete` (level 2 — irreversible item removal) | — |
 | `zen_dojotools_calendar` | `zenos.comms.pii_disclosure` (reused) | `create`, `update` | — |
 | `zen_dojotools_calendar` | `zenos.comms.calendar_control` | `delete` (level 2 — irreversible event removal) | — |
-| `zen_dojotools_ectoplasm` (Spook actions) | `zenos.spatial.room_topology_edit` (reused) | `area_create`/`area_delete`, `floor_create`/`floor_delete`, `area_assign_device`/`area_unassign_device`, `area_assign_entity`/`area_unassign_entity`, `floor_assign_area`/`floor_unassign_area` (`area_delete`/`floor_delete` at level 2) | — |
-| `zen_dojotools_ectoplasm` (Spook actions) | `zenos.registry.lifecycle_control` (reused) | Level 1: `entity_hide`/`entity_unhide`, `entity_rename`, `entity_set_icon`, `entity_set_aliases`, `label_assign_area`/`label_unassign_area`, `label_assign_device`/`label_unassign_device`, `category_assign`/`category_unassign`. Level 2: entity/device/integration enable and disable, `category_create`/`category_delete`, `automation_snooze`/`automation_turn_on_for`, helper create/delete | — |
+| `zen_dojotools_ectoplasm` (Spook actions) | `zenos.spatial.room_topology_edit` (reused) | `area_create`/`area_delete`, `area_update`, `floor_create`/`floor_delete`, `floor_update`, `area_assign_device`/`area_unassign_device`, `area_assign_entity`/`area_unassign_entity`, `floor_assign_area`/`floor_unassign_area` (`area_delete`/`floor_delete` at level 2) | — |
+| `zen_dojotools_ectoplasm` (Spook actions) | `zenos.registry.lifecycle_control` (reused) | Level 1: `entity_hide`/`entity_unhide`, `entity_rename`, `entity_set_icon`, `entity_set_aliases`, the alias modes for entities, areas and floors, `label_assign_area`/`label_unassign_area`, `label_assign_device`/`label_unassign_device`, `category_assign`/`category_unassign`. Level 2: entity/device/integration enable and disable, `category_create`/`category_delete`, `automation_snooze`/`automation_turn_on_for`, helper create/delete, `entity_set_id`, `schedule_create`/`schedule_delete`/`schedule_set_day`, `timer_set_duration` | — |
 | `zen_dojotools_inventory` (Grocy) | `zenos.knowledge.inventory_schema_edit` | Level 1: `userfields_deploy`/`repair`/`create`, `userentities_create`, `locations_add`/`rename`/`update_description`/`metadata_set`/`reparent_bulk`/`hierarchy_rebuild`, `units_add`/`units_update`, `unit_conversions_add`, `shopping_locations_rename`. Level 2: `userfields_delete`, `userentities_delete`, `locations_delete`/`delete_safe`, `unit_conversions_delete`, `catalog_delete_product`, `products_merge`. Stock, products, chores, tasks, shopping and batteries stay ungated | — |
 | `zen_dojotools_ectoplasm` (Spook actions) | `zenos.registry.purge` | `orphan_cleanup` (level 2) | — |
+| `zen_dojotools_ectoplasm` | `zenos.registry.read` | `repair_list`, `ghost_list`, `orphaned_db_list` (level 1, read only) | — |
 | `zen_dojotools_scribe` | `zenos.knowledge.kfc_publish` | `publish_kfc`, `republish_kfc`, and `patch`/`replace`/`clear_field`/`delete` when the target artifact is an already-published `kfc` | — |
 | `zen_dojotools_media_manager` | `zenos.media.prefs_edit` | `prefs_set`, `prefs_apply`, `room_default_set`, `setup` | — |
 | `zen_dojotools_media_manager` | `zenos.media.playback_control` | `play_media`, `queue_command`/`queue_remove`/`queue_play_item`/`queue_clear_from_here`/`queue_unfavorite`, `source_set`, `sound_mode_set`, `activity_set`/`activity_apply`/`activity_end` | — |

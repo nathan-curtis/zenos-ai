@@ -1,7 +1,18 @@
 ###############################################################################
 # ZenOS-AI Plugin: Zammad — Fulfillment (Service Desk / Help Tickets)
 # Codename: Radar
-# Version: 0.5.4
+# Version: 0.5.6
+# v0.5.6: configure writes are gated (#10697 part 2): saving the service desk url
+#   needs zenos.service.admin level 2 (interactive stage i), a new cert declared in
+#   tool_manifest, on top of the live ack for a url that is not the stored one.
+#   inspect stays open.
+# v0.5.5: configure no longer sends the stored API token to a URL nobody approved
+#   (#10697). The connectivity test used the url the caller passed, and the token is
+#   attached to whatever host a call names, so a caller could point the integration at
+#   a host it controls and receive the token. A url that is not the stored one (a change,
+#   or the first url on a fresh install) now needs a fresh live ack from a person
+#   (zen_dojotools_identity mode=request_live_ack) before anything is tested or saved;
+#   the stored url tests as before. inspect is unchanged.
 # v0.5.4: Lens fixes (#10681). tickets_by_anchor uses the lean
 #   query/page/per_page search (it sent no page= and read only the
 #   {tickets, assets} shape, so it missed a plain-list reply) and returns
@@ -392,7 +403,7 @@ script:
               message: "{{ _sd_help_message }}"
               tool: Zen DojoTools Fulfillment
               codename: Radar
-              version: "0.5.4"
+              version: "0.5.6"
               configured_url: "{{ _base_url }}"
               cases: "{{ cases_help }}"
               caller_token: "{{ caller_token_norm }}"
@@ -410,7 +421,7 @@ script:
                 summary='Help desk tickets (Radar)',
                 display_name='Service Desk / Zammad',
                 tier='dojotools',
-                version='0.5.4',
+                version='0.5.6',
                 health=_health,
                 required_labels=['zammad'],
                 optional_labels=['zammad', 'service_desk', 'tickets', 'fulfillment'],
@@ -430,7 +441,19 @@ script:
                 mcp_exposed=true,
 
                 caller_token=caller_token_norm
-              ) | from_json -}}
+              ) | from_json | combine({
+                'certs_required': [{
+                  'cert': 'zenos.service.admin',
+                  'display_name': 'Service Desk Admin',
+                  'description': "Change the service desk (Zammad) configuration",
+                  'detail': 'mode=configure with a url saves the Zammad address that the stored API token is sent to. Needs level 2 (interactive stage i) and, for a url that is not the stored one, a fresh live approval from a person. Inspect stays open.',
+                  'max_level': 2,
+                  'st_ok': 'i',
+                  'gates': ['mode=configure (write)'],
+                  'live_ack_required_for': ['configure: a url that is not the stored one'],
+                  'grant_via': "persona_editor mode=cert_req_grant cert_component=zenos.service.admin cert_level=2 cert_stages=i"
+                }]
+              }) -}}
 
     - choose:
       # Already answered (onboarding gate): keep it.
@@ -476,6 +499,78 @@ script:
                   tool: Zen DojoTools Fulfillment
                   case: configure
                   message: 'Missing required field: url. Pass input_json={"url": "http://your-zammad-host/"}'
+                  caller_token: "{{ caller_token_norm }}"
+        # Write gate (#10697 part 2): saving the service desk URL needs
+        # zenos.service.admin level 2 (interactive stage). Inspect stays open.
+        - if:
+          - condition: template
+            value_template: "{{ result is not defined }}"
+          then:
+          - action: script.zen_dojotools_identity
+            response_variable: _cfg_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: zenos.service.admin
+              required_cert_level: 2
+              caller_token: "{{ caller_token_norm }}"
+          - variables:
+              _cfg_id_fields: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {%- set _raw = OS.resolve_identity_fields(_cfg_id_raw) -%}
+                {{- (_raw | from_json) if _raw is string else _raw -}}
+          - if:
+            - condition: template
+              value_template: "{{ not (_cfg_id_fields.authorized | default(false)) }}"
+            then:
+            - variables:
+                result:
+                  status: error
+                  tool: Zen DojoTools Fulfillment
+                  case: configure
+                  error: cert_insufficient
+                  message: "Changing the service desk configuration needs zenos.service.admin level 2 (held level {{ _cfg_id_fields.cert_level | default(0) }})."
+                  can_request: "{{ (_cfg_id_fields.policy_status | default('')) == 'allowed' }}"
+                  request_via:
+                    tool: zen_dojotools_persona_editor
+                    mode: cert_req_grant
+                    cert_component: zenos.service.admin
+                    cert_level: 2
+                  caller_token: "{{ caller_token_norm }}"
+        # The stored API token is attached to whatever base_url a call names, so the
+        # connectivity test must never go to a host nobody approved. A URL that is not the
+        # stored one (a change, or the first URL on a fresh install) needs a fresh live
+        # ack from a person before anything is sent or saved (#10697).
+        - variables:
+            _cfg_stored_url: "{{ (((state_attr(_hh, 'variables') | default({}, true)).get('integrations_config', {}).get('value', {}) or {}).get('fulfillment', {}) or {}).get('url', '') | string | trim | lower | regex_replace('/+$', '') }}"
+            _cfg_new_url: "{{ _cfg_url | lower | regex_replace('/+$', '') }}"
+        - if:
+          - condition: template
+            value_template: "{{ result is not defined and _cfg_new_url != _cfg_stored_url }}"
+          then:
+          - action: script.zen_dojotools_identity
+            response_variable: _cfg_ack_raw
+            continue_on_error: true
+            data:
+              mode: request_live_ack
+              ack_message: >-
+                Radar (service desk) setup: point it at {{ _cfg_url }}? The stored Zammad API token
+                will be sent to that host to test the connection{{ (' (it is now ' ~ _cfg_stored_url ~ ')') if _cfg_stored_url != '' else '' }}. Approve only if you typed or expect this address.
+              caller_token: "{{ caller_token_norm }}"
+          - variables:
+              _cfg_ack_ok: "{{ _cfg_ack_raw.get('approved', false) if _cfg_ack_raw is mapping else false }}"
+              _cfg_ack_why: "{{ _cfg_ack_raw.get('reason', 'dispatch_failed') if _cfg_ack_raw is mapping else 'dispatch_failed' }}"
+          - if:
+            - condition: template
+              value_template: "{{ not _cfg_ack_ok }}"
+            then:
+            - variables:
+                result:
+                  status: denied
+                  tool: Zen DojoTools Fulfillment
+                  case: configure
+                  error: url_not_approved
+                  message: "A new Zammad URL needs a fresh live approval from a person before the stored token is sent to it. Not approved ({{ _cfg_ack_why }}); nothing was tested or saved."
                   caller_token: "{{ caller_token_norm }}"
         - if:
           - condition: template
@@ -1450,6 +1545,7 @@ script:
                     value_template: '{{ _tc_product_name != "" and _tc_created_ok and _tc_new_id is not none }}'
                   sequence:
                   - action: script.zen_dojotools_inventory
+                    enabled: "{{ states('script.zen_dojotools_inventory') in ['on', 'off'] }}"
                     continue_on_error: true
                     response_variable: _inv_notify_raw
                     data:

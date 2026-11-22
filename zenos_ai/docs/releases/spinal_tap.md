@@ -437,3 +437,59 @@ Later: the admission-token contract with `zen_root_authentik` (it needs an OIDC 
 - **The 4.5.6 `run_repair` actions** and the cabinet factory's `family_guid` field.
 - **The CABS `cabinet_acls` and `drawer_acl` macros.** Use `acl_record` and `acl_for`.
 - **Cabinet admin's `expand_drawer`,** with its `source_cabinet`, `source_drawer` and `space_threshold` fields. It moved one drawer without making the slot an expansion. FileCabinet's `expand_drawer` and `collapse_drawer` are the only way to make and undo one.
+
+---
+
+## 2026.11.1 — Patch
+
+**Status:** Released 2026-11-22 (patch on 2026.11.0, `feat/2026.11.1`)
+
+Fixes found running 2026.11.0 on live installs, and a fresh install that comes up clean on its own.
+
+### Read this before upgrading
+
+- **Grant `zenos.registry.read` for the repairs and ghost lists.** Ectoplasm's `repair_list` and `ghost_list` answered any caller, and their issue ids and titles name your entities, scripts, labels and dashboards. They need `zenos.registry.read` (level 1) now, and nothing grants it for you.
+- **Ectoplasm results say `mode`.** Every Ectoplasm result carries `mode: <the mode called>` where it carried `action_type`. Anything that reads `action_type` from an Ectoplasm result needs updating. The `action_type` input still works.
+- **Some writes now need their cert.** Write paths that skipped their cert check now check it. An agent that used one of these needs the cert granted:
+  - **Service Desk (Zammad):** saving the url needs the new `zenos.service.admin` (level 2).
+  - **Rolodex (Twenty):** `configure` with `config_json` needs `zenos.system.home_config_write` (level 1).
+  - **SystemTools:** `cabinet_schema_upgrade` needs `zenos.system.cabinet_lifecycle_control`, and the four reload modes need `zenos.system.reload_restart`.
+  - **Media Manager:** queue moves, `activity_snapshot` and `prefs_apply` need `zenos.media.playback_control`.
+  - **Library:** the `catalog_*` aliases need `zenos.knowledge.catalog_edit`, and `stacks_configure` writes need `zenos.knowledge.stacks_edit` (level 2).
+  - **Lights** `prefs_sweep` (`zenos.actuation.lighting_control`), **Scribe** overwriting a live KFC (`zenos.knowledge.kfc_publish`) and **Spa Master** setup, consumables writes and an actuating `log` (`zenos.actuation.spa_control`).
+  - The default agent already holds these.
+- **Label Taskmaster's default To Do list.** With no `list_name`, Taskmaster used a list name written in the file. It now uses the To Do list labeled `taskmaster_default`, else the first list labeled `taskmaster`. Label the list you want it to use.
+
+### Changed
+
+- **Onboarding asks once.** `zen_flynn_oobe mode=run` asks for the `zenos_agent_onboarding` bundle: the backstage pass and basic certs, steward at level 1 (room setup needs it), and the parity certs, behind one live acknowledgement. A component's own certs are asked for when you turn it on. See [OOBE](../getting_started/oobe.md).
+- **Alert Manager and the camera heartbeat start off on a fresh install.** Both send or act, so turning one on is where its cert is asked for: `zen_dojotools_scribe mode=enable key=alert_manager artifact_class=kfc`. An upgraded install keeps what it has.
+- **Sim mode is on unless you turn it off.** It's stamped on unless `input_boolean.zenos_sim_mode_override` exists and is off.
+- **The old seed and act whitelists stay.** The 2026.11.0 notes said they'd go in 2026.12. They stay, still warning, until every tool that uses them has moved; no date is set.
+
+### Added
+
+- **Ectoplasm edits areas and floors in place.** `area_update` and `floor_update` rename, change an icon, a picture, a floor level or an area's temperature and humidity sensors without deleting and recreating, which emptied the area.
+- **Ectoplasm aliases, entity IDs, schedules and timers.** Add, remove or replace voice aliases on entities, areas and floors; `entity_set_id` renames an entity ID; `schedule_create`, `schedule_set_day` and `schedule_delete` manage schedule helpers; `timer_set_duration` changes a timer's length; `orphaned_db_list` lists history the recorder keeps for entities that are gone. Spook 5.7.0+ (schedules and timers 5.11.0+). See [Ectoplasm](../scripts/zen_dojotools_ectoplasm_readme.md).
+- **To Do names one item by `uid`.** `update` and `delete` take `{uid: <uid>}`, the uid a read shows, to name one item when several share a name. See [To Do](../scripts/zen_dojotools_todo_readme.md).
+- **Inventory sets up a tare-weight product.** `update_product_meta` takes `tare_weight` and `enable_tare_weight_handling`. See [Tare-Weight Products](../../../packages/zenos_ai/plugins/grocy/readme.md#tare-weight-products-593-to-596).
+
+### Fixed
+
+- **Service Desk and Rolodex don't send their token to a new URL.** `configure` tested the url the caller passed with the stored token attached, so a caller could point Zammad or Twenty at a host it controls and receive the token. A url that isn't the stored one now needs a live ack from a person. See [Zammad](../plugins/zammad.md) and [Twenty](../plugins/twenty.md).
+- **Write paths that skipped their cert check now check it.** See "Some writes now need their cert" above. `cabinet_schema_upgrade` also stops when the schema flip fails, where it could arm cabinet enforcement after a flip that never happened. ZenZork's `open`, `close` and the cover branch of `use` no longer move a real device; a text game previews only.
+- **Library's `stacks_configure inspect` no longer wipes the Paperless url.** An inspect rewrote the stored entry with an empty url.
+- **A missing plugin no longer stops the core.** A call to a script that isn't installed raises an error `continue_on_error` doesn't catch, so without the Wiki.js plugin, onboarding, FileCabinet's `tool_manifest` and the KFC bootstrap failed. A core tool's direct calls into a plugin now skip a plugin that isn't installed. A call that names its script at run time isn't covered yet. See [Plugins](../getting_started/install.md#plugins-optional).
+- **Onboarding finishes.** On a fresh install OOBE read every cert as missing right after it was granted and kept answering `approval_required`; `complete` re-asked for parity. Completion is written last, so done means the pass and parity are in place.
+- **A fresh install needn't wait for its components.** Flynn starts the KFC bootstrap once the Dojo cabinet is up, so components don't wait for 00:01. If none appear, run `zen_dojotools_manifest mode=bootstrap_kfc`. Flynn's boot calls go through its own admin door, [`zen_admintools_identity_writer`](../scripts/zen_admintools_identity_writer_readme.md).
+- **Room Manager assigns floors and deletes areas again.** Its calls to Ectoplasm passed the area as `area_id`, which Ectoplasm doesn't read, so floor assignment on `area_create` and `area_update`, and `area_delete`, were refused for having no area. `area_delete` also previewed without deleting.
+- **To Do refuses a name more than one item carries.** On an MS365 list, `update` and `delete` by a shared name picked one item. They now change nothing and answer `ambiguous_item` with each matching uid.
+- **Inventory books the amount you give it on a tare-weight product.** A purchase was refused, a consume was read as a new total, and an inventory count left out the container. `amount` is now the net quantity in every stock write.
+- **Prompt Loader's help writes nothing.** `mode=help` ran the load and re-stamped every prompt slot; an unknown mode did too. Help is now the default and an unknown mode is refused. The other admin tools answer `mode=help` the same way.
+- **Room Manager's summary has room data.** Its component had no seed, and `setup` shipped a second copy that replaced the registered one, so its Kata stayed empty. It now seeds from `mode=summary` (`zenos.presence.read`), and an existing install picks up the new seed.
+- **An empty summary isn't written.** A reply with every value null or blank was written as a Kata. It's skipped, the previous summary stays, and the run records why.
+- **Pausing the TV pauses the TV.** Media Manager sent every transport command to the room's Music Assistant player, so in a room with a universal player, pausing a TV paused the receiver. `play`, `pause`, `stop`, `next` and `previous` now go to what is playing. See [Media Manager](../components/media_manager.md).
+- **The trigger list rebuilds itself right away after a cabinet reset.** It came back minutes after the next quarter-hour tick; it now lands at the tick.
+- **The health report doesn't stop a fresh install over Spook findings.** Unknown icons, entities and labels no longer count as approval-path blockers; only a missing notify target does.
+- **Ectoplasm names an unknown mode.** A mode it doesn't have answers "Unknown mode", where it answered that the call had hit a bug.
+- **Ectoplasm fields left out stay empty.** `area_name`, `floor_id`, `floor_name`, `device_id` and `label_id` share names with Home Assistant template functions, and when they were left out, they read as the function. `area_create` without a floor printed `floor_id=<function ...>` in its advisory.

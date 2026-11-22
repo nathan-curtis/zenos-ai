@@ -1,6 +1,7 @@
 ###############################################################################
 # ZenOS-AI DojoTools: ToDo
-# Version: 5.4.2
+# Version: 5.4.3
+# v5.4.3: update and delete take {uid: <uid>} (the todo_id a read shows) to name one item exactly, and refuse a name that more than one item carries (error ambiguous_item, listing the uids) instead of picking one. #10690.
 # v5.4.2: HA naming (2026.11): name outputs carry entity_name and device_name
 #   next to the legacy friendly_name (kept while HA still sets it), and
 #   composed names are built from those parts, so they survive HA dropping
@@ -266,7 +267,7 @@ script:
                   summary='To-do and shopping lists',
                   display_name='ToDo',
                   tier='dojotools',
-                  version='5.4.2',
+                  version='5.4.3',
                   health={'configured': true, 'status': 'ok', 'notes': []},
                   required_labels=['dojotools'],
                   optional_labels=['todo', 'tasks'],
@@ -315,7 +316,7 @@ script:
                 {{
                   {
                     "status": "help",
-                    "version": "5.2.2",
+                    "version": "5.4.3",
                     "message": _todo_help_message,
                     "why_use_this": "Wraps HA todo services with continue_on_error isolation. Auth failures (401s) return clean errors instead of crashing the pipeline. Consistent JSON responses, automatic list name resolution, label targeting.",
                     "actions": {
@@ -460,30 +461,67 @@ script:
                   {%- set _due    = itm.get('due_date', due_date)           if itm is mapping else due_date -%}
                   {%- set _desc   = itm.get('description', description)     if itm is mapping else description -%}
                   {%- set _rename = itm.get('rename', rename)               if itm is mapping else rename -%}
+                  {#- uid names one item exactly: Home Assistant's update_item takes a uid where it takes a name -#}
+                  {%- set _uid = (itm.get('uid', '') or itm.get('todo_id', '')) if itm is mapping else '' -%}
+                  {%- set _name = _uid if _uid else _name -%}
                   {%- set ns = namespace(obj={'item': _name, 'list_id': list_name}) -%}
+                  {%- if _uid -%}{%- set ns.obj = dict(ns.obj, by_uid=true) -%}{%- endif -%}
                   {%- if _status -%}{%- set ns.obj = dict(ns.obj, status=_status)           -%}{%- endif -%}
                   {%- if _due    -%}{%- set ns.obj = dict(ns.obj, due_date=_due)            -%}{%- endif -%}
                   {%- if _desc   -%}{%- set ns.obj = dict(ns.obj, description=_desc)        -%}{%- endif -%}
                   {%- if _rename -%}{%- set ns.obj = dict(ns.obj, rename=_rename)           -%}{%- endif -%}
                   {{ ns.obj }}
-            - data: >-
-                {{ {'item': update_data.get('item','')}
-                   | combine({'status':      update_data.get('status')}      if update_data.get('status')      else {})
-                   | combine({'due_date':    update_data.get('due_date')}    if update_data.get('due_date')    else {})
-                   | combine({'description': update_data.get('description')} if update_data.get('description') else {})
-                   | combine({'rename':      update_data.get('rename')}      if update_data.get('rename')      else {}) }}
-              target:
-                entity_id: '{{ todo_list_entity }}'
-              action: todo.update_item
-              continue_on_error: true
             - variables:
-                final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\"\
-                  : \"Updated item '\" ~ update_data.get('item','') ~ \"' in list '\"\
-                  \ ~ list_name ~ \"'.\",\n    \"item\": update_data,\n    \"list_name\"\
-                  : list_name\n  } | tojson\n}}"
-            - variables:
-                final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
-            - set_conversation_response: '{{ final_response }}'
+                # Items with this exact name. More than one and no uid: the name
+                # does not say which, and update_item would pick one of them.
+                _upd_same_name: >-
+                  {%- set _at = state_attr(todo_list_entity, 'all_todos') -%}
+                  {%- set ns = namespace(ids=[]) -%}
+                  {%- if not (update_data.get('by_uid', false)) and _at is not none and _at is iterable and _at is not string -%}
+                    {%- for itm_raw in _at -%}
+                      {%- set itm = (itm_raw | from_json) if itm_raw is string else itm_raw -%}
+                      {%- if itm is mapping and itm.get('subject', '') == update_data.get('item', '') and itm.get('todo_id', '') != '' -%}
+                        {%- set ns.ids = ns.ids + [{'uid': itm.get('todo_id', ''), 'due': (itm.get('due') | string)}] -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                  {{ ns.ids }}
+            - choose:
+              - conditions:
+                - condition: template
+                  value_template: '{{ _upd_same_name | length > 1 }}'
+                sequence:
+                - variables:
+                    final_response: >-
+                      {{ {
+                        "status": "error",
+                        "error": "ambiguous_item",
+                        "message": (_upd_same_name | length) ~ " items in '" ~ list_name ~ "' are named '" ~ update_data.get('item','') ~ "', so nothing was changed. Send the one you mean as {uid: <uid>, ...} (read the list to see each uid and due date).",
+                        "matches": _upd_same_name,
+                        "list_name": list_name
+                      } | tojson }}
+                - variables:
+                    final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
+                - set_conversation_response: '{{ final_response }}'
+              default:
+              - data: >-
+                  {{ {'item': update_data.get('item','')}
+                     | combine({'status':      update_data.get('status')}      if update_data.get('status')      else {})
+                     | combine({'due_date':    update_data.get('due_date')}    if update_data.get('due_date')    else {})
+                     | combine({'description': update_data.get('description')} if update_data.get('description') else {})
+                     | combine({'rename':      update_data.get('rename')}      if update_data.get('rename')      else {}) }}
+                target:
+                  entity_id: '{{ todo_list_entity }}'
+                action: todo.update_item
+                continue_on_error: true
+              - variables:
+                  final_response: "{{\n  {\n    \"status\": \"success\",\n    \"message\"\
+                    : \"Updated item '\" ~ update_data.get('item','') ~ \"' in list '\"\
+                    \ ~ list_name ~ \"'.\",\n    \"item\": update_data,\n    \"list_name\"\
+                    : list_name\n  } | tojson\n}}"
+              - variables:
+                  final_response: "{{ (final_response if final_response is mapping else (final_response | from_json)) | combine({'caller_token': caller_token | default('')}) }}"
+              - set_conversation_response: '{{ final_response }}'
           alias: update (list exists)
         - conditions:
           - condition: template
@@ -596,33 +634,60 @@ script:
                     {%- endfor -%}
                   {%- endif -%}
                   {{ ns.map }}
-            - repeat:
-                for_each: '{{ items }}'
-                sequence:
-                - variables:
-                    item_name: '{{ repeat.item if repeat.item is string else repeat.item.get(''item'', repeat.item) }}'
-                    _del_uid: '{{ _del_uid_map.get(item_name, '''') }}'
-                - if: '{{ _del_uid != '''' }}'
-                  then:
-                  - data:
-                      todo_id: '{{ _del_uid }}'
-                    target:
-                      entity_id: '{{ todo_list_entity }}'
-                    action: ms365_todo.delete_todo
-                    continue_on_error: true
-                  else:
-                  - data:
-                      item: '{{ item_name }}'
-                    target:
-                      entity_id: '{{ todo_list_entity }}'
-                    action: todo.remove_item
-                    continue_on_error: true
+            - variables:
+                # Names asked for by name alone that more than one item carries:
+                # the name does not say which, so none of the call is carried out.
+                _del_ambiguous: >-
+                  {%- set _at = state_attr(todo_list_entity, 'all_todos') -%}
+                  {%- set ns = namespace(counts={}, bad=[]) -%}
+                  {%- if _at is not none and _at is iterable and _at is not string -%}
+                    {%- for itm_raw in _at -%}
+                      {%- set itm = (itm_raw | from_json) if itm_raw is string else itm_raw -%}
+                      {%- if itm is mapping -%}
+                        {%- set _s = itm.get('subject', '') -%}
+                        {%- set ns.counts = ns.counts | combine({_s: ns.counts.get(_s, 0) + 1}) -%}
+                      {%- endif -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                  {%- for it in items -%}
+                    {%- if it is not mapping or not ((it.get('uid', '') or it.get('todo_id', ''))) -%}
+                      {%- set _n = it if it is string else it.get('item', '') -%}
+                      {%- if ns.counts.get(_n, 0) > 1 and _n not in ns.bad -%}{%- set ns.bad = ns.bad + [_n] -%}{%- endif -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.bad }}
+            - if: '{{ _del_ambiguous | length == 0 }}'
+              then:
+              - repeat:
+                  for_each: '{{ items }}'
+                  sequence:
+                  - variables:
+                      item_name: '{{ repeat.item if repeat.item is string else repeat.item.get(''item'', repeat.item) }}'
+                      _del_given: '{{ (repeat.item.get(''uid'', '''') or repeat.item.get(''todo_id'', '''')) if repeat.item is mapping else '''' }}'
+                      _del_uid: '{{ _del_given if _del_given != '''' else _del_uid_map.get(item_name, '''') }}'
+                  - if: '{{ _del_uid != '''' }}'
+                    then:
+                    - data:
+                        todo_id: '{{ _del_uid }}'
+                      target:
+                        entity_id: '{{ todo_list_entity }}'
+                      action: ms365_todo.delete_todo
+                      continue_on_error: true
+                    else:
+                    - data:
+                        item: '{{ item_name }}'
+                      target:
+                        entity_id: '{{ todo_list_entity }}'
+                      action: todo.remove_item
+                      continue_on_error: true
             else:
             - repeat:
                 for_each: '{{ items }}'
                 sequence:
                 - variables:
-                    item_name: '{{ repeat.item if repeat.item is string else repeat.item.get(''item'', repeat.item) }}'
+                    item_name: >-
+                      {%- set _g = (repeat.item.get('uid', '') or repeat.item.get('todo_id', '')) if repeat.item is mapping else '' -%}
+                      {{ _g if _g else (repeat.item if repeat.item is string else repeat.item.get('item', repeat.item)) }}
                 - data:
                     item: '{{ item_name }}'
                   target:
@@ -631,7 +696,9 @@ script:
                   continue_on_error: true
           - variables:
               final_response: >-
-                {%- if _del_auth_issue | default(false) -%}
+                {%- if (_del_ambiguous | default([])) | length > 0 -%}
+                  {{ {"status": "error", "error": "ambiguous_item", "message": "More than one item in '" ~ list_name ~ "' has the name " ~ (_del_ambiguous | join(', ')) ~ ", so nothing was deleted. Send the one you mean as {uid: <uid>} (read the list to see each uid and due date).", "ambiguous_names": _del_ambiguous, "list_name": list_name} | tojson }}
+                {%- elif _del_auth_issue | default(false) -%}
                   {{ {"status": "error", "message": "auth_failure — MS365 token expired or access denied. Re-authenticate via Settings → Integrations. Items may not have been deleted — verify the list.", "list_name": list_name} | tojson }}
                 {%- else -%}
                   {{ {"status": "success", "message": "Deleted " ~ (items | length) ~ " item(s) from '" ~ list_name ~ "'.", "list_name": list_name} | tojson }}
@@ -714,7 +781,7 @@ script:
           text:
       items:
         description: >-
-          Strings or objects {item,status,due_date,description,rename}. Bulk complete: multiple strings + status=completed.
+          Strings or objects {item,status,due_date,description,rename}. Bulk complete: multiple strings + status=completed. To name one item exactly (duplicates share a name): {uid: <uid>, ...} with the uid a read shows; a name that more than one item carries is refused with the matching uids.
         selector:
           text:
             multiple: true

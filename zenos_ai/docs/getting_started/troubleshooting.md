@@ -401,6 +401,8 @@ script.zen_admintools_cabinetadmin   (mode: reset_all, confirm: true)
 
 ⚠️ **Wipes every cabinet and every `zen_` label. No undo.**
 
+**Then run onboarding again:** `zen_flynn_oobe mode=run`. No restart is needed: the trigger registry (`zen_trigger_registry`) rebuilds itself at the next quarter-hour tick.
+
 The default `scope: all` is a true fresh start: every cabinet (your user and AI user cabinets, the vault and expansions included) and every `zen_` label on the house, your own included; Flynn recreates only its own labels. It needs the cabinet lifecycle cert, the label delete cert at level 2, and a live household-admin yes. `scope: core` wipes only the 14 Ring-0 cabinets and keeps labels. One call does both; there is no separate label step.
 
 Flynn rebuilds the install as a fresh one, schemas, templates and the FileCabinet lock included.
