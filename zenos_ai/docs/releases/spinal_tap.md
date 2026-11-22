@@ -442,8 +442,7 @@ Later: the admission-token contract with `zen_root_authentik` (it needs an OIDC 
 
 ## 2026.11.1 — Patch
 
-**Status:** Beta 1 (patch on 2026.11.0, `feat/2026.11.1`)
-**ETA:** Saturday, November 21, 2026
+**Status:** Released 2026-11-22 (patch on 2026.11.0, `feat/2026.11.1`)
 
 Fixes found running 2026.11.0 on live installs, and a fresh install that comes up clean on its own.
 
