@@ -1,6 +1,6 @@
 # ZenOS-AI: Install Guide
 
-> **Version:** 2026.10.0 'Tron' | **Last Updated:** Sep 2026
+> **Version:** 2026.11.1 | **Last Updated:** Nov 2026
 
 *What this covers: getting the ZenOS-AI files into your Home Assistant install, confirming it started up correctly, and making sure your phone can actually receive the notifications the system will depend on almost immediately. By the end, Flynn (the system's own startup checker — see [Concepts](concepts.md)) will confirm everything loaded, and you'll be ready to talk to your AI for the first time in [First Run](first_run.md).*
 
@@ -172,6 +172,7 @@ Then:
 | Expose | Why |
 |---|---|
 | `script.zen_dojotools_*` | The agent-facing tool surface: Room Manager, Labels, Identity, FileCabinet, AlertManager, Postman, ZenLux, and the rest. Two are internal and stay unexposed by default: `zen_dojotools_lens_dispatch`, and `zen_dojotools_filecabinet_gc` (expose it only if you want your agent able to force a GC run). |
+| `script.zen_flynn_oobe` | Onboarding. Your agent runs this to start OOBE, check its status, and finish it. It is not a `zen_dojotools_*` script, so the line above does not cover it; without it your agent cannot run onboarding. |
 
 | Do not expose | Why not |
 |---|---|
@@ -240,7 +241,7 @@ conversation.claude
 > - `input_boolean.zen_ninja_summarizer_enabled`
 > - `input_boolean.zen_supersummarizer_enabled`
 >
-> Once enabled, ZenOS-AI runs two AI agents in the background on a continuous schedule: the Ninja Summarizer (fires multiple times per hour) and the SuperSummary (minimum 4 times per hour). The entity set in `input_text.zenos_ai_task_entity` — which Flynn auto-configures from your conversation agent — is what drives these background jobs.
+> Once enabled, ZenOS-AI runs two AI agents in the background on a continuous schedule: the Ninja Summarizer (fires multiple times per hour) and the SuperSummary (minimum 4 times per hour). The entity set in `input_text.zenos_ai_task_entity` — which Flynn auto-configures from your conversation agent — is what drives these background jobs. If your house has more than one `ai_task` entity, Flynn does not choose between them: set `input_text.zenos_ai_task_entity` to the one you want (Settings → Devices & services → Helpers) before you enable the summarizers.
 >
 > **Do NOT point your AI task entity at a paid inference API** (OpenAI, Anthropic, Google, etc.) unless you have explicitly budgeted for continuous automated inference. The token volume will generate a significant bill.
 >

@@ -18,7 +18,7 @@ See: [Release Notes — Home Alone](releases/home_alone.md)
 
 ---
 
-**2026.11.0 'This Is Spinal Tap' — Shipped 2026-11-14, current Stable**
+**2026.11.0 'This Is Spinal Tap' (incl. the 2026.11.1 patch) — Shipped 2026-11-14, current Stable**
 
 Security goes to eleven: the backstage pass on every agent-facing tool, locks on the cabinets (ACL v2, enforced on a fresh install), certs renamed and readable, consent for background work (KF6), and Home Assistant's naming model.
 
