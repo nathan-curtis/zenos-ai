@@ -1,6 +1,6 @@
 # ZenOS-AI Grocy ERP Plugin
 
-**Version:** 5.9.6
+**Version:** 5.9.7
 **Script:** `zen_dojotools_inventory`
 **Status:** Live (production)
 
@@ -354,7 +354,7 @@ Destructive actions are guarded:
 
 * Product merges require explicit keep/remove IDs
 * Transfers blocked for tare-weight products
-* `stock_entry_update` uses read-modify-write safety (reads full entry, merges only provided fields, writes back)
+* `stock_entry_update` uses read-modify-write safety (reads full entry, merges only provided fields, writes back to the numeric entry id), then reads the entry back: success only when Grocy shows the new values (`verified: true`, `persisted`), else `STOCK_ENTRY_WRITE_FAILED`, `STOCK_ENTRY_UNVERIFIED` or `STOCK_ENTRY_NOT_PERSISTED`
 * Location and product renames require new name
 * Purchase requires location when creating product
 * Ambiguous name matches block execution

@@ -162,6 +162,7 @@ Grocy handles tare weights, but it expects every stock write as the total on the
 - **SystemTools' `scheduler_anchors` repairs anchors a reset left at 00:00.** Every set was refused.
 - **Text answers a number as text.** A value like `"18"` reported an error after it had been written.
 - **Climate's `read` reports `hvac_mode`.** It was always null.
+- **Editing a stock entry's best-before date saves.** Inventory's `stock_entry_update` addressed the entry in a way Grocy refused, then reported the values you asked for as saved. It now writes to the right entry and reads it back from Grocy before reporting success.
 
 ---
 
