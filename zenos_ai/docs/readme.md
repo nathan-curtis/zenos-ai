@@ -1,6 +1,6 @@
 # 📘 **ZenOS-AI Documentation Hub**
 
-> **Public beta:** 2026.12.0 'Home Alone' (Beta 1) | **Current stable:** 2026.11.1 'This Is Spinal Tap' | **Previous:** 2026.11.0 'This Is Spinal Tap' | **Legacy line:** 2026.9.1 'Steel Magnolia' and 2026.8.1 'Chef' | **License:** MIT
+> **Public beta:** 2026.12.0 'Home Alone' (Beta 2) | **Current stable:** 2026.11.1 'This Is Spinal Tap' | **Previous:** 2026.11.0 'This Is Spinal Tap' | **Legacy line:** 2026.9.1 'Steel Magnolia' and 2026.8.1 'Chef' | **License:** MIT
 >
 > *Public releases follow Home Assistant's `YYYY.M.patch` convention: `2026.11.0` is the November release. A new month resets to `.0`.*
 

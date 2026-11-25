@@ -1,14 +1,15 @@
 # Release Notes — 2026.12.0 'Home Alone'
 
-**Status:** Public beta 1
+**Status:** Public beta 2
 **ETA:** <!-- to be announced -->
 **Branch:** `feat/2026.12.0`
 **Base:** 2026.11.1 (patch on 2026.11.0 'This Is Spinal Tap')
 
 ### Betas
 
-- **Beta 1** (<!-- date -->): everything below.
-- **Beta 2:** <!-- placeholder -->
+- **Beta 1** (2026-11-18): the release as first published.
+- **Beta 2** (2026-11-24): Cortex 48 'True North', Autovac's `swap_robot`, mounts that carry their whole tree, the Plant water and electrical summaries, and the Inventory stock-entry fix.
+- **Beta 3:** <!-- placeholder -->
 
 <!-- Minimum Home Assistant version: to confirm. Room Manager's timers use the timer.finished trigger (about 2026.5); Spook needs 2026.11. -->
 
