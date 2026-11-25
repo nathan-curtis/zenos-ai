@@ -40,7 +40,7 @@ A component whose domain needs an instant response to one specific sensor does n
 
 ## 22.3 Shedding load
 
-Summarizer runs call a model, and a burst of state changes (a door opening and closing repeatedly, a restart) could queue far more runs than the model can serve. The Scheduler sheds work based on queue depth and tier, using thresholds from the household cabinet's `zen_scheduler_config` drawer:
+Summarizer runs call a model, and a burst of state changes (a door opening and closing repeatedly, a restart) could queue far more runs than the model can serve. The Scheduler sheds work based on pressure and tier, using thresholds from the household cabinet's `zen_scheduler_config` drawer:
 
 | Tier | Dispatched | Shed when |
 |---|---|---|

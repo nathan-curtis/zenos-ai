@@ -138,20 +138,22 @@ Katas are not raw sensor data. They're **curated signal** — what a knowledgeab
 
 ## Pressure-aware dispatch
 
-The Scheduler doesn't run all components on every trigger. Under load, it defers lower-priority work and recovers it later. This is controlled by two thresholds in the `zen_scheduler_config` drawer of your household cabinet:
+The Scheduler doesn't run all components on every trigger. Under load, it defers lower-priority work and recovers it later. Load is **pressure**, `sensor.zen_scheduler_queue_depth`: Scheduler runs plus Ninja runs (the Ninja summarizes one component at a time, so that's where work waits). The thresholds live in the `zen_scheduler_config` drawer of your household cabinet:
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `shed_ambient_at` | 4 | Queue depth at which `ambient`-tier components are deferred |
-| `shed_keeper_at` | 8 | Queue depth at which `keeper`-tier components are deferred |
-| `drain_below` | 3 | Depth the queue must fall below before shed work trickles back |
-| `warmup_minutes` | 5 | Boot delay before the first Scheduler dispatch |
+| `shed_ambient_at` | 4 | Pressure at which `ambient`-tier components are deferred |
+| `shed_keeper_at` | 8 | Pressure at which `keeper`-tier components are deferred |
+| `drain_below` | 3 | Pressure must fall below this before shed work trickles back |
+| `warmup_minutes` | 5 | Flynn's boot warmup window (read by Flynn, not the Scheduler) |
 
-**`keeper` (the default)** — dispatched on all standard triggers; deferred when queue ≥ 8.
+At a pressure of 5 or more, only `system` and `super` components are admitted, except on the daily anchors (`daily_midnight`, `daily_noon`).
 
-**`ambient`** — dispatched only on slower triggers (hourly, occupancy change, etc.). Shed on fast triggers (`quarter_hour`, `every_10_minutes`) and when queue ≥ 4. These are pre-digested by Trapper Keeper rather than read directly by SuperSummary — Friday gets their signal through the ambient index.
+**`keeper` (the default)** — dispatched on all standard triggers; deferred at pressure 5 or more.
 
-**Shed work doesn't disappear.** The drain router runs on a low-water timer and a starvation guard. When the queue quiets down, the most-stale shed-eligible component gets a recovery dispatch. If a component's kata exceeds its `staleness_minutes` ceiling, it fires regardless of queue depth.
+**`ambient`** — dispatched only on slower triggers (hourly, occupancy change, etc.). Shed on fast triggers (`quarter_hour`, `every_10_minutes`) and at pressure 4 or more. These are pre-digested by Trapper Keeper rather than read directly by SuperSummary — Friday gets their signal through the ambient index.
+
+**Shed work doesn't disappear.** The drain router works out when each component is stale: twice its shortest periodic trigger, a day for an event-only component, or the `staleness_minutes` it declares. When pressure stays low it requests the most overdue component that's at least half way to stale; every 10 minutes it also requests any component past its staleness, whatever the pressure. See [the drain router](../scripts/zen_dojotools_dispatcher_readme.md#zen_scheduler_drain_router).
 
 A `summary_request` for a specific component goes through the same shedding. A targeted `force_summary` bypasses it, which is why force is for maintenance only.
 

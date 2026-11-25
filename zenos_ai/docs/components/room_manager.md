@@ -1,6 +1,8 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.20.3
+**Version:** 5.21.0
+
+> **2026.12.0 (5.21.0):** Room Manager is the first [Oracle](../scripts/zen_dojotools_oracle_readme.md) host (KF6.5 prototype). `mode=decision` lists its decision template and `mode=decision_bind` binds the evidence for Oracle. Nothing existing changed, and nothing happens unless the operator turns decision mode on. See [Decisions (KF6.5)](#decisions-kf65).
 
 > **2026.12.0 (5.20.2, 5.20.3):** `setup` creates the `room_occupancy` root drawer in the target cabinet, and moves its data with the location: every `room_occupancy` drawer the household holds is copied to the target and compared value for value before the household originals are removed and the pointer written. A conflict, an unconfirmed copy or an unfinished removal stops `setup` with no pointer written, so the tree is never split between two cabinets.
 
@@ -135,6 +137,8 @@ Room state is **off until you turn it on**. Nothing in setup, onboarding, or an 
 | `room_status_set` | Write housekeeping status for a room: `clean`/`dirty`/`in_service`/`occupied`. `area=` and `room_status=` required. Decoupled from any guest-stay lifecycle — HA-local operational state only. See below. |
 | `room_status_get` | Read housekeeping status. `area=` optional — omit for all rooms, pass for one. Areas never set return `status: unknown`, not a default of `clean`. See below. |
 | `role_audit` | Read-only, no cert. `area=` required. Walks every `zen_mm_*`/`zen_lm_*`/`zen_display_target` role label on entities belonging to the room (by registry `area_id` OR by carrying the room's own slug label) and flags `ambiguous_role` (2+ holders, no `primary` tiebreak), `area_mismatch` (holder's registry area_id disagrees with the room label), and `stale_state` (holder currently unavailable/unknown). `zen_mm_shadow` is exempt — legitimate global/suppressed-by-design entities aren't a real ambiguous-role bug. The cross-domain tagging/registry health check for "why is this room's automation acting weird" without five separate `inspect`/`discover` calls. |
+| `decision` | Room Manager's decision templates, for [Oracle](../scripts/zen_dojotools_oracle_readme.md). Zero inference. See [Decisions](#decisions-kf65). |
+| `decision_bind` | Called by Oracle, not by an agent: binds the evidence for a decision template. Needs `zenos.presence.read`. |
 | `setup` | Deploy Room Manager KFC to dojo cabinet via Scribe. `confirm_action: true` required. Returns preview if omitted. |
 | `help` | Full reference: purpose, when_to_call, seed_steps, domain_routing, schema, context_slices, concepts, modes. |
 
@@ -384,6 +388,35 @@ All three are optional and additive — omitting them preserves existing values 
 ## KFC Registration (KF6)
 
 `zen_dojotools_room_manager` self-registers its dojo drawer via `mode=kfc_manifest` (`room_manager` component, no seed — pure rollup) — see [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract).
+
+---
+
+## Decisions (KF6.5)
+
+Room Manager is the first host for [Oracle](../scripts/zen_dojotools_oracle_readme.md), the decision service. It declares one template, carried on its `kfc_manifest` component as `decision`:
+
+**`resummary_warranted` (version 1):** does the house's room picture differ enough from the last room summary that a fresh one is warranted?
+- **Scope:** the whole house, or one room with `area=` (a room labeled `room_layout`). An area Room Manager doesn't know is `unsupported_scope`; it is never widened to the whole house.
+- **Question:** one `noul`, `material_change`. Material: a new or escalated alert or emergency, someone in rooms while the house is away, a clear change in which rooms are in use, newly opened exterior openings, or the last summary now being wrong. Not material: the same alerts restated, small lighting or media changes, routine movement.
+- **Policy:** refresh at 0.6 or more, keep below 0.35, anything between is `insufficient_evidence`. Tune it in `zen_decision_config` (`thresholds."room_manager.resummary_warranted"`).
+- **Refreshes:** the household `room_manager` kata.
+
+**Evidence** (`decision_bind`): Room Manager runs its summary seed and returns it beside the last `room_manager` kata:
+- `prior`: the kata's urgency, attention, general inference and age in minutes.
+- `current`: urgency, reasons, active rooms (just the one room when `area` is given), attention, open sensors, rooms occupied while away, maintenance.
+- `evidence_revision`: urgency, reasons, each room's occupancy and the open sensors, so a repeated decision on the same picture is recognizable.
+
+With no prior kata, the answer is `refresh` without a model (`basis: deterministic`).
+
+**Certs:** the agent needs `zenos.decision.use`, `zenos.decision.component.room_manager` (level 1, declared in Room Manager's `tool_manifest`) and `zenos.presence.read` (the seed cert, checked by `decision_bind`). The operator's decision switch must be on.
+
+```text
+zen_dojotools_room_manager mode=decision                         # the template (zero inference)
+zen_dojotools_oracle mode=decide host=room_manager decision_template=resummary_warranted
+zen_dojotools_oracle mode=decide host=room_manager decision_template=resummary_warranted area=garage
+```
+
+Decide through Oracle, never through Room Manager: Room Manager is queued, and Oracle calls back into it to bind. On the reference install a decision took about 35 s, nearly all of it the summary seed; the evaluation took under a second.
 
 ---
 

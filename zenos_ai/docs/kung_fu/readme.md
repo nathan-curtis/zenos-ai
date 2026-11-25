@@ -75,7 +75,7 @@ Run with `mode=schema` to get the live `kfc_template` from the Dojo cabinet.
 | `schedules` | no | List of sub-schedule entries. Each entry has `kata_key` (string) and `index_call` (mapping). When present, the Scheduler expands the component into one Ninja run per schedule entry instead of a single run. A `summary_request` (or a maintenance `force_summary`) with `schedule: <kata_key>` runs only the matching entry. |
 | `tool` | no | Specific DojoTools tool this component uses, if any |
 | `pipeline_tier` | no | Dispatch priority and SuperSummary routing. See tier table below. Default: `keeper`. |
-| `staleness_minutes` | no | Age threshold (minutes) at which the drain router will force a re-run regardless of queue depth. Default: `1440` (24 h). Set lower for components that must stay fresh. |
+| `staleness_minutes` | no | Age (minutes) at which the drain router counts the component stale and requests a run, whatever the pressure. Default: twice the component's shortest periodic trigger, or `1440` (24 h) for an event-only component. Set it only to override that. |
 | `emission_cooldown_minutes` | no | Minimum minutes between emissions for this component. Prevents notification spam on rapid-fire triggers. |
 | `drift_threshold` | no | Minimum urgency delta required to consider a kata change "significant" for emission gating. |
 | `suggested_act_event` | no | Slug of the action the AI should suggest in kata output (e.g. `zen_dojotools_notification_router`). `null` = no action. The act runs only if the household's agent holds the target tool's emit cert with stage `e`; otherwise the kata records `act_blocked`. |
@@ -87,9 +87,9 @@ Run with `mode=schema` to get the live `kfc_template` from the Dojo cabinet.
 
 | Tier | Shedding behavior | SuperSummary routing |
 |------|-------------------|----------------------|
-| `keeper` | Shed when queue depth ≥ `shed_keeper_at` (default 8). Standard components use this. | Kata read directly by SuperSummary |
+| `keeper` | Shed when pressure ≥ `shed_keeper_at` (default 8), and not admitted at pressure 5 or more except on the daily anchors. Standard components use this. | Kata read directly by SuperSummary |
 | `system` | Never shed, dispatched with zero delay, same as `super`. Core platform health is the signal most needed when the queue is already under pressure. Conventional for core infrastructure components (e.g. trapper_keeper). | Excluded from SuperSummary's component data. Trapper Keeper's output reaches SuperSummary as `ambient_context` |
-| `ambient` | Shed on fast triggers (`quarter_hour`, `every_10_minutes`) AND when depth ≥ `shed_ambient_at` (default 4). More aggressively deferred under load. | Kata pre-digested by Trapper Keeper into `ambient_context`; SuperSummary receives the index, not the raw kata |
+| `ambient` | Shed on fast triggers (`quarter_hour`, `every_10_minutes`) AND when pressure ≥ `shed_ambient_at` (default 4). More aggressively deferred under load. | Kata pre-digested by Trapper Keeper into `ambient_context`; SuperSummary receives the index, not the raw kata |
 | `super` | Never shed. Reserved for `zen_dojotools_supersummary` internal dispatch. Do not use on regular components. | N/A |
 | `direct` | Deprecated alias for `keeper`. Honored but not written by new tooling. | Kata read directly by SuperSummary |
 

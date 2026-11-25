@@ -101,7 +101,7 @@ Identity resolver for household members and AI constructs. MCP-exposed. Resolves
 
 ---
 
-## 6. Zen DojoTools Scheduler — v5.3.1
+## 6. Zen DojoTools Scheduler — v5.7.1
 **File:** [`zen_dojotools_scheduler_readme.md`](zen_dojotools_scheduler_readme.md)
 
 Trigger orchestrator (the Abbot). Admits components by their Dojo drawer subscriptions and hands them to the `zen_abbot_launch` launcher; requests (`summary_request`, `supersummary_request`), maintenance forces (`summary_force`, `ninja_force`, `supersummary_force`), heartbeat drawer. The same file holds the Housekeeping and Safety Admit automations. Hardware triggers strip to `zen_dojotools_scheduler_custom.yaml`.
@@ -115,10 +115,10 @@ Guide: fire a component summarizer run from a real-world trigger and act on the 
 
 ---
 
-## 7. Zen DojoTools Summarizers — Ninja v5.9.0 · SuperSummary v4.9.1
+## 7. Zen DojoTools Summarizers — Ninja v5.9.4 · SuperSummary v4.9.2
 **File:** [`zen_dojotools_summarizers_readme.md`](zen_dojotools_summarizers_readme.md)
 
-The KF6 action pipeline — Ninja Summarizer (per-component kata writer) and SuperSummary (whole-home synthesizer). Both MCP-exposed. Pipeline tier split: `direct` (keeper), `ambient` (Trapper Keeper pre-digest + breadcrumb), `system` (background). Trapper Keeper pre-digests ambient-tier katas into a navigation index. SuperSummary run governor (default 600s burnout). Context size guard (>200K abort, 28K max_context_tokens). Three kill switches — default off; enable only after pointing at a local inference model. Both act as the household's responsible agent (2026.11.0): seeds are modes the tool declares, and acts need the emit cert held with the Ninja emit stage.
+The KF6 action pipeline — Ninja Summarizer (per-component kata writer) and SuperSummary (whole-home synthesizer). Both MCP-exposed. Pipeline tier split: `direct` (keeper), `ambient` (Trapper Keeper pre-digest + breadcrumb), `system` (background). Trapper Keeper pre-digests ambient-tier katas into a navigation index. SuperSummary run governor (default 300 s gap); a component at its drift threshold asks for the rollup with `supersummary_request`. Context size guard (>200K abort, 28K max_context_tokens). Three kill switches — default off; enable only after pointing at a local inference model. Both act as the household's responsible agent (2026.11.0): seeds are modes the tool declares, and acts need the emit cert held with the Ninja emit stage.
 
 ---
 
@@ -241,10 +241,10 @@ Unified household communications layer. Supersedes `zen_dojotools_notification_r
 
 ---
 
-## 22b. Zen DojoTool Dispatcher — v5.5.3
+## 22b. Zen DojoTool Dispatcher — v5.6.8
 **File:** [`zen_dojotools_dispatcher_readme.md`](zen_dojotools_dispatcher_readme.md)
 
-Event-driven inter-tool communication layer — fires `zen_event(kind: dojotool_call)`, routes through a single registered `choose` arm per tool, fires correlated `dojotool_return`. Unregistered tools get a structured `unknown_tool` fault instead of a hard crash. Single-automation architecture since v5.2.0 (2026.6.0) — the old two-tier dispatcher/tool-router split and its `dojotool_route` event are gone. v5.3.0 (2026.7.1) removed the dead `zen_dojotools_notification_router` compat arm (no backing script existed) and added `zen_stack_battery`.
+Event-driven inter-tool communication layer — fires `zen_event(kind: dojotool_call)`, routes through a single registered `choose` arm per tool, fires correlated `dojotool_return`. Unregistered tools get a structured `unknown_tool` fault instead of a hard crash. Single-automation architecture since v5.2.0 (2026.6.0) — the old two-tier dispatcher/tool-router split and its `dojotool_route` event are gone. v5.3.0 (2026.7.1) removed the dead `zen_dojotools_notification_router` compat arm (no backing script existed) and added `zen_stack_battery`. The drain router (5.6, 2026.12.0) recovers stale components with a `summary_request`, staleness worked out from each component's own schedule.
 
 ---
 
@@ -321,6 +321,13 @@ The admin door: the one writer for structural, system and vault cabinet writes t
 **File:** [`zen_admintools_identity_writer_readme.md`](zen_admintools_identity_writer_readme.md)
 
 Flynn's own admin door for the identity wiring the Sentinel does at boot, before any user or agent exists. Admin plane: never exposed to agents, and its only caller is the Flynn Sentinel.
+
+---
+
+## 34. Zen DojoTools Oracle — v0.2.1 (2026.12.0, prototype, off by default)
+**File:** [`zen_dojotools_oracle_readme.md`](zen_dojotools_oracle_readme.md)
+
+The decision service (KF6.5). A host component's declared template asks a small, typed question through Home Assistant's `ai_task.evaluate` (`noul`, `choice`, `score`) and gets a typed decision back, for example whether a fresh summary is warranted. It judges and never acts. `ask` takes the agent's own questions, advisory only. Gated by the operator's `input_boolean.zen_decision_enabled`, `zenos.decision.use` and `zenos.decision.component.<host>`. Room Manager is the first host.
 
 ---
 

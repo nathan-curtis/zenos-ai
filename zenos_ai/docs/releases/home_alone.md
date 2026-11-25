@@ -21,7 +21,7 @@ The house gets left home alone.
 
 Spinal Tap put locks on the cabinets and a pass in every agent's hand. Home Alone gives the house something to do with them. Security Manager grows from a panel reader into the house's security. It can tell you whether the house is ready to arm and keeps a record of what it did on its own. Once you turn them on, it also lights the house at dusk, lights the way in when you get home after dark, watches the garage doors, steps the alarm aside for the vacuum, and tells you when the range is on with nobody home. Climate learns which rooms each air handler serves and offers to pause the HVAC when a window's left open. A new Weather tool gives every other tool the forecast.
 
-Core changes little. The tools come up to caps: each gets a scored summary, a read cert of its own, and a background summary the agent can rely on.
+The tools come up to caps: each gets a scored summary, a read cert of its own, and a background summary the agent can rely on. Underneath, the house's background thinking gets a calmer head. The Abbot only decides what runs. Maintenance and life-safety have their own lanes, and a routine refresh is a request, never a force. And a preview, Oracle, lets a component ask whether a change is worth a fresh summary before it pays for one.
 
 Every new behavior is off until you turn it on, and each one acts only on grants you approved.
 
@@ -55,6 +55,8 @@ Each one is off until you turn it on, unless it says otherwise.
 - **The hot tub:** chemistry is judged against its last 24 hours, so one odd reading is a blip, not an alarm, and falling chlorine gets a warning before it's low.
 - **"What did the house do while I was out?":** security keeps a record of what it did on its own, and why. *(Always on.)*
 - **Nobody could be asked:** a question that reached no phone answers that straight away, instead of waiting out a tap that can't come. *(Always on.)*
+- **A leak, an alarm or smoke:** the agent's summary of it starts at once, ahead of routine work. *(With the background summaries on.)*
+- **"Is this worth a fresh look?":** ask Oracle, and Room Manager judges whether the house has changed enough since its last summary. *(Preview; off until you turn on decision mode.)*
 
 ---
 
@@ -80,10 +82,12 @@ Each one is off until you turn it on, unless it says otherwise.
 - **Rolodex 1.16.0 to 1.16.2 (Twenty plugin):** a scored summary of guest stays (rooms and dates, never names) that seeds the `rolodex` component, behind `zenos.rolodex.read`. See [Twenty](../plugins/twenty.md).
 - **Library 6.16.0, 6.16.1:** a scored summary of the Paperless inbox and failed imports (counts and file names, never content) and the first `library` component, behind `zenos.library.read`. See [Library](../scripts/zen_dojotools_library_readme.md).
 - **A plugin that's installed but not set up scores 0** in the Service Desk, Rolodex and Library summaries, instead of reporting itself unreachable every hour.
-- **Room Manager 5.19.2 to 5.20.1:**
+- **Oracle 0.2.1 (new, preview, off by default):** typed judgments through Home Assistant's `ai_task.evaluate`. A component's own templates answer keep or refresh, and `ask` takes an agent's own questions as advice. It never acts. Behind the operator's decision switch, `zenos.decision.use` and each component's decision cert. See [Oracle](../scripts/zen_dojotools_oracle_readme.md) and [the story](#an-oracle-in-a-pear-tree).
+- **Room Manager 5.19.2 to 5.21.0:**
   - `home_overview` and `summary` carry a temporary security override;
   - `summary` reports a room occupied while armed Away;
-  - `hvac_coverage`.
+  - `hvac_coverage`;
+  - the first Oracle host: `resummary_warranted`, behind `zenos.decision.component.room_manager`.
 
   See [Room Manager](../components/room_manager.md).
 - **Postman 5.6.0:** a call that reached nobody answers `no_channel`.
@@ -112,7 +116,17 @@ Grocy handles tare weights, but it expects every stock write as the total on the
 
 ## An Oracle in a Pear Tree
 
-<!-- Placeholder: only if it ships. ai_task.evaluate (HA 2026.11+), off by default. -->
+<!-- Draft: Nathan to review. -->
+
+Every background summary costs the same, whether the house changed or not. A trigger fires, the Ninja gathers the evidence, and a model writes the whole picture again. Most of the time the answer is "nothing much".
+
+Home Assistant 2026.11 added a different kind of model call, `ai_task.evaluate`. It doesn't write anything. It answers a question: yes or no as a probability, one of a few choices, or a score. Oracle is ZenOS's door to it.
+
+With Oracle, a component can ask a small question about its own evidence before it pays for a full summary: *does this matter enough to write the picture again?* Room Manager asks first. It sets the rooms as they are now beside its last summary, and asks whether someone in the household would need a fresh one. On the reference house the question took under a second. A decision still gathers the room evidence; what a "keep" saves is the summary's model call and its thousands of tokens. Whether that adds up is something we'll measure, not promise.
+
+Oracle judges and never acts. A decision can say a summary is warranted; it can't request one, force one, or touch a device. The component owns its questions and its thresholds, and a caller only picks which question to ask. An agent with a higher grant can ask questions of its own, over facts it supplies, and gets advice back, never a decision.
+
+In this release Oracle is a preview you try by hand. Nothing in the background calls it yet. It's off until you turn on decision mode, `input_boolean.zen_decision_enabled`, which no agent can reach, and grant `zenos.decision.use` and Room Manager's decision cert. See [Oracle](../scripts/zen_dojotools_oracle_readme.md).
 
 ---
 
@@ -137,6 +151,7 @@ Grocy handles tare weights, but it expects every stock write as the total on the
 - **Load the new prompt once:** run `zen_admintools_prompt_loader mode=load` after updating to move Friday to Cortex 48 'True North'. An install keeps the prompt it last loaded until you do.
 - **Four new automations:** the Zen Security Sentry, the Zen Climate Envelope Watcher, Zen DojoTools Housekeeping and Zen Safety Admit.
 - **Your own trigger automations should send `summary_request`, not `summary_force`.** A force still works, but it's for maintenance now. See [the Scheduler](../scripts/zen_dojotools_scheduler_readme.md#requesting-a-run).
+- **Oracle needs Home Assistant 2026.11 and an AI Task entity that supports evaluation.** Without one, it answers `evaluator_unavailable`, and nothing else changes. Its `ask` fields reach an MCP client after a restart and a client reconnect.
 - **Autovac's `clean` answers `dispatched`, not `ok`.** Anything that reads `ok` from it needs updating.
 - **Includes 2026.11.1,** with its security fixes.
 
@@ -156,11 +171,13 @@ Grocy handles tare weights, but it expects every stock write as the total on the
 - **The agent switches any helper toggle or switch you ask for,** even ones not exposed to Assist.
 - **A mount carries its whole tree.** A drawer under a link to another cabinet now lives in that cabinet, and a link is never written over data that would leave it split between two. See [FileCabinet](../scripts/zen_dojotools_filecabinet_readme.md#virtualdrawer-mount-point).
 - **Household and family cabinet admin (expand, mount, ACL) is open to anyone holding `zenos.system.cabinet_admin` with the live approval,** not only the owner. Personal cabinets stay owner-only.
-- **The Scheduler only decides which background summaries run.** Maintenance (reloads, the manifests, garbage collection, display and Rolodex checks) has its own automation, so a script reload no longer waits behind summaries. A leak, alarm or smoke event starts its summaries at once, with no queue.
-- **A routine refresh is a `summary_request`; forces are for maintenance only.** A request goes through the Scheduler's normal gates. Autovac, garbage collection, Flynn's health refresh and the recovery router all send requests now.
-- **SuperSummary runs every quarter hour, at start, and when a component's urgency asks for it,** at most once every 5 minutes. It no longer runs just because a component did.
-- **Start-up is spaced out.** Components launch 30 seconds apart, and one with no summary yet is filled at start. Flynn's start-up force is gone.
-- **The recovery router works out when each summary is stale from that component's own schedule,** and recovers the `system` tier too. It logs why it ran one.
+- **The Abbot only decides which background summaries run.** See [the Scheduler](../scripts/zen_dojotools_scheduler_readme.md).
+  - Maintenance (reloads, the manifests, garbage collection, display and Rolodex checks) has its own automation, so a script reload no longer waits behind summaries.
+  - A leak, alarm or smoke event starts its summaries at once, with no queue.
+  - A routine refresh is a `summary_request`, through the normal gates; forces are for maintenance only. Autovac, garbage collection, Flynn's health refresh and the recovery router all send requests now.
+  - SuperSummary runs every quarter hour, at start, and when a component's urgency asks for it, at most once every 5 minutes.
+  - At start, components launch 30 seconds apart, and one with no summary yet is filled. Flynn's start-up force is gone.
+  - The recovery router works out when each summary is stale from that component's own schedule, recovers the `system` tier too, and logs why it ran one.
 - **The summarizer kill switches can't be exposed to an agent.** They carry `zen_never_expose`, so Ectoplasm refuses them and Flynn keeps them unexposed.
 - **`sensor.zen_scheduler_queue_depth` measures pressure: Scheduler runs plus Ninja runs.** A dashboard card on it shows different numbers. See [the sensor reference](../sensors/readme.md#sensorzen_scheduler_queue_depth).
 - **Autovac:**
