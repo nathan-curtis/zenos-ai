@@ -1,4 +1,6 @@
-# Zen DojoTools Summarizers — Ninja Summarizer v5.9.4 · SuperSummary v4.9.2
+# Zen DojoTools Summarizers — Ninja Summarizer v5.9.4 · SuperSummary v4.10.0
+
+> **2026.12.0 (SuperSummary 4.10.0):** stale component summaries are flagged. See [Freshness](#freshness).
 
 > **2026.12.0:** a component whose urgency reaches its `drift_threshold` asks for the rollup with `supersummary_request`; it no longer forces a re-run of itself. SuperSummary's minimum gap (`super_burnout_seconds`) defaults to 300 s, and a request inside it is dropped. The Ninja is queued with `max: 10` (was 5): it still runs one at a time, so this is a longer line, not more concurrency. A run past max is dropped with a log warning, and the [drain router](zen_dojotools_dispatcher_readme.md#zen_scheduler_drain_router) recovers stale components. Reload scripts, then automations.
 
@@ -246,6 +248,14 @@ A component is included in SuperSummary if:
 
 Components with `meta.enabled: false` or an unmet `meta.requires` are excluded; their katas are kept. Components with no `meta` block are included. The Ninja's `kata_tier` seed (Trapper Keeper) and the prompt's `dojo_loader()` skip the same components.
 
+### Freshness
+
+Each active component carries its age and when it counts as stale, by the pipeline's one freshness rule (`kfc_freshness` in `zenos_health.jinja`, the same rule the [drain router](zen_dojotools_dispatcher_readme.md#zen_scheduler_drain_router) uses):
+- **Age** runs from the newer of the kata's `last_run_at` and `generated`.
+- **Stale** after the component's declared `staleness_minutes`, else twice its shortest periodic subscription, else a day.
+
+`review_data.freshness` gives `{component: {age_minutes, stale_after_minutes, stale}}`, and `review_data.stale_components` lists the stale ones. The rollup is told a stale component is the last known state: say its age ("as of 3 hours ago"), never present it as happening now, and never raise urgency from it alone. It names a stale component in `attention` only when the staleness itself matters, such as a safety component that has stopped updating.
+
 ### Response
 
 ```json
@@ -361,6 +371,7 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| SuperSummary v4.10.0 | Stale component summaries are flagged: `review_data.freshness` and `stale_components`, and the rollup never presents one as current. |
 | Ninja v5.9.4 | A seed tool that answers with a list (not a mapping) no longer ends the run at the Inspect supplement check. |
 | Ninja v5.9.3 · SuperSummary v4.9.2 | At `drift_threshold` the Ninja sends `supersummary_request` instead of forcing itself. SuperSummary's default gap is 300 s (was 600). |
 | Ninja v5.9.2 | `max: 10` (was 5). |

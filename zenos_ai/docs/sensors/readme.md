@@ -208,6 +208,7 @@ sensor.zen_label_health          ← updates every 1 minute
 | `next_step` | Plain-language instruction for the blocking gate |
 | `blocking` | Comma-separated list of non-ok subsystems |
 | `system_ready` | Pass-through of `binary_sensor.flynn_system_ready` |
+| `decision_mode` | `on`, `disabled` or `not_installed`: the operator's Oracle decision switch (`input_boolean.zen_decision_enabled`). Informational: off is the normal default and never degrades health (2026.12.0) |
 
 Use `current_gate` and `next_step` when troubleshooting a stuck boot — they tell you exactly where Flynn is and what it needs.
 

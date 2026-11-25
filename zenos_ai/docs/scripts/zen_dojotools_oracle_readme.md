@@ -1,6 +1,6 @@
-# Zen DojoTools Oracle — v0.2.1
+# Zen DojoTools Oracle — v0.3.0
 
-> **2026.12.0 (0.1.0 to 0.2.1), prototype, off by default:** Oracle is the decision service (KF6.5). It asks a small, typed question through Home Assistant's `ai_task.evaluate` and returns a typed answer. It judges and never acts. Nothing turns it on but the operator's switch, and nothing in the background pipeline calls it yet: in this release an agent asks it, interactively. Room Manager is the first host.
+> **2026.12.0 (0.1.0 to 0.3.0), prototype, off by default:** Oracle is the decision service (KF6.5). It asks a small, typed question through Home Assistant's `ai_task.evaluate` and returns a typed answer. It judges and never acts. Nothing turns it on but the operator's switch, and nothing in the background pipeline calls it yet: in this release an agent asks it, interactively. Room Manager and Weather are the hosts. 0.3.0: a template names its own outcomes, and a `choice` question can be the outcome.
 
 **File:** `packages/zenos_ai/dojotools/dojotools_oracle.yaml`
 **Script:** `zen_dojotools_oracle` (parallel, max 10)
@@ -35,6 +35,8 @@ Every gate must pass, or nothing is sent to a model.
 | Readiness | An evaluation-capable `ai_task` entity is available | Install configuration |
 | The host's seed cert | The agent may read the evidence (`decide` only; the host checks it when it binds) | Cert grant |
 
+**Health reports it.** Zen Flynn Health carries `decision_mode`: `on`, `disabled` (the normal default, never a degradation) or `not_installed`.
+
 **The switch is the operator's.** It is defined in YAML like the summarizer kill switches, carries `zen_never_expose` (Flynn applies it, so Ectoplasm refuses to expose it), and no agent tool writes it. It keeps its setting across restarts. Turning it off stops decisions at once and changes no schedule. Configuring an evaluator, granting a cert or a host publishing templates never turns decisions on.
 
 **Certs sit on one tree,** `zenos.decision`, beside the inference tree, `zenos.inference`. Prefix inheritance applies (see [dotted certification names](../getting_started/security_certification_manual.md)): granting `zenos.decision` covers use and every host's templates, while `zenos.decision.use` plus one `zenos.decision.component.<key>` covers a single host. The checks are independent: holding use grants no host's templates, and a host cert grants no use. A host must declare its cert as `zenos.decision.component.<its own key>`; Oracle refuses any other name.
@@ -54,31 +56,33 @@ Every gate must pass, or nothing is sent to a model.
 ### `decide`
 
 1. **Switch and use cert** (`zenos.decision.use` level 1).
-2. **Host and template.** The host is found through its Dojo drawer, and its templates through its `kfc_manifest` (`component.decision`). Unknown host: `host_not_found`. Unknown template: `unknown_template`.
+2. **Host and template.** The host is found through its Dojo drawer, and its templates through its `kfc_manifest` (`component.decision`). Unknown host: `host_not_found`. Unknown template: `unknown_template`. A template whose `policy.question` isn't one of its own `noul` or `choice` questions is `invalid_template`, refused before the host binds.
 3. **Host cert** (`zenos.decision.component.<host>`, at the level the host declares).
 4. **Bind.** Oracle calls the host with `mode=decision_bind decision_template=<id> area=<area>`. The host checks the template, the scope and its seed cert, runs its seed, and returns the evidence with an `evidence_revision` and `as_of`. An area the host doesn't know is `unsupported_scope`: a decision is never widened to the whole house.
 5. **Deterministic first.** If the host can settle the case without a model (Room Manager: there is no prior summary to compare with), the answer is `basis: deterministic` and nothing is sent.
 6. **Size.** The questions and evidence together are estimated at characters ÷ 4. Over `max_evaluation_tokens`, nothing is sent: `evaluation_context_overflow`, with the estimate, the cap and the three largest evidence keys. It never truncates.
 7. **Evaluate once.** `ai_task.evaluate` with the template's questions and the bound evidence as `state`.
 8. **Validate.** Every declared question must be answered with the right type: a `noul` between 0 and 1, a `choice` from the allowed options, a numeric `score`. Anything missing or malformed is `evaluator_error`, never a keep.
-9. **Policy.** The template names one `noul` question and two thresholds. At or above `refresh_at` the outcome is `refresh`; below `keep_below` it is `keep`; in between, or with no usable answer, it is `insufficient_evidence`, never a confident keep.
+9. **Policy.** The template's policy reads one question and names the outcomes:
+   - **A `noul` question:** at or above `yes_at` the outcome is `yes_outcome`; below `no_below` it is `no_outcome`; in between, or with no usable answer, it is `insufficient_evidence`, never a confident no. The defaults are `refresh` and `keep` at 0.6 and 0.35, and the older `refresh_at` / `keep_below` names still work.
+   - **A `choice` question:** the chosen option is the outcome when its probability is at least `min_probability` (default 0.5); otherwise `insufficient_evidence`.
 
 ```yaml
 decision:
   host: room_manager
   template: resummary_warranted
   template_version: 1
-  outcome: refresh              # keep | refresh | insufficient_evidence
+  outcome: refresh              # one of the template's outcomes, or insufficient_evidence
   basis: evaluated              # deterministic | evaluated
-  full_summary_required: true   # only on a completed refresh
+  full_summary_required: true   # only on refresh, for a template with a summary_target
   evidence_revision: "..."
   as_of: "..."
   answers: {material_change: {noul: 0.82}}
-  thresholds: {refresh_at: 0.6, keep_below: 0.35}
+  policy: {question: material_change, yes_outcome: refresh, no_outcome: keep, yes_at: 0.6, no_below: 0.35}
   tokens_est: 640
 ```
 
-`full_summary_required` is set only on a completed decision. A refusal or failure is its own answer and never reads as false.
+`full_summary_required` is set only on a completed `refresh` of a template that names a `summary_target`. A refusal or failure is its own answer and never reads as false.
 
 ### `ask`
 
@@ -114,11 +118,12 @@ evidence: {washer: done, minutes_since_done: 95, load: towels, outdoor_temp_f: 8
 
 | Outcome | Meaning |
 |---|---|
-| `keep`, `refresh`, `insufficient_evidence` | A completed `decide` |
+| the template's outcomes (`keep` / `refresh`, `attention` / `nominal`, ...), `insufficient_evidence` | A completed `decide`; `mode=templates` lists each template's outcomes |
 | answers, `advisory: true` | A completed `ask` |
 | `decision_disabled` | The switch is off |
 | `denied` | A cert gate failed; `gate` names which |
 | `host_not_found`, `unknown_template` | No such host, or no such template (or a template with no questions) |
+| `invalid_template` | The template's policy doesn't name one of its `noul` or `choice` questions; nothing was bound or sent |
 | `needs_input`, `unsupported_scope` | The host refused the binding (a missing field, an area it doesn't know) |
 | `invalid_questions` | An `ask` with a bad structure; nothing was sent |
 | `evaluation_context_overflow` | Over `max_evaluation_tokens`; nothing was sent |
@@ -137,7 +142,7 @@ An optional `zen_decision_config` drawer in the household cabinet:
 |---|---|---|
 | `max_evaluation_tokens` | `6000` | The size cap, estimated as characters ÷ 4, over questions and evidence |
 | `evaluate_entity_id` | (none) | Pin the evaluation entity. Without it, Home Assistant's preferred evaluation entity is used, and at least one `ai_task` entity must support evaluation |
-| `thresholds` | (none) | Per-template tuning, keyed `<host>.<template>`, for example `{"room_manager.resummary_warranted": {"refresh_at": 0.7, "keep_below": 0.3}}`. A template's own policy is the default |
+| `thresholds` | (none) | Per-template tuning, keyed `<host>.<template>`: `yes_at`, `no_below` or `min_probability` (`refresh_at` / `keep_below` still read), for example `{"room_manager.resummary_warranted": {"yes_at": 0.7, "no_below": 0.3}}`. A template's own policy is the default |
 
 The entity pin is temporary. It moves to the mechanism inference uses for engine selection once that is updated.
 
@@ -160,8 +165,12 @@ decision:
       outcomes: [keep, refresh, insufficient_evidence]
       questions:
         material_change: {type: noul, instructions: "..."}
-      policy: {question: material_change, refresh_at: 0.6, keep_below: 0.35}
+      policy: {question: material_change, yes_outcome: refresh, no_outcome: keep, yes_at: 0.6, no_below: 0.35}
 ```
+
+Never write bare `yes:` or `no:` keys in a template: YAML reads them as booleans. That's why the policy keys are `yes_outcome`, `no_outcome`, `yes_at` and `no_below`.
+
+A template without a `summary_target` (Weather's `hazard_relevance`, for example) is a judgment only: its outcome never sets `full_summary_required`.
 
 The host also:
 - answers `mode=decision` with its templates (zero inference), and advertises `decision: true` in its `tool_manifest`, with the component cert in `certs_required`;
@@ -173,13 +182,19 @@ What `decision_bind` must honor:
 - **Read only, no inference.** The bind changes nothing and calls no model. It returns only the evidence the template needs, because that evidence counts against `max_evaluation_tokens` (Room Manager's is about 540 to 740 tokens).
 - **A stable `evidence_revision`.** The host defines it, and the same evidence must give the same revision. It is what repeated decisions will be recognized by. Room Manager's is urgency, reasons, each room's occupancy, the open sensors and the area.
 
-**The prototype's policy reads one `noul` question,** named by `policy.question`. A template may declare `choice` or `score` questions too: they are validated and returned in `answers`, but they don't drive keep or refresh yet.
+**The policy reads one question,** named by `policy.question`: a `noul` (with named yes and no outcomes) or a `choice` (each option an outcome). A template may declare other questions, including `score`: they are validated and returned in `answers`, but they don't drive the outcome.
 
 A host must not call Oracle from inside itself: Oracle calls back into the host to bind, and a queued host would wait on itself. That is why Room Manager's `mode=decision` only lists templates.
 
-### Room Manager
+### The hosts
 
-Room Manager 5.21.0 is the first host. See [Room Manager: decisions](../components/room_manager.md#decisions-kf65).
+| Host | Template | Outcomes | Scope |
+|---|---|---|---|
+| Room Manager 5.21.0 | `resummary_warranted` | `refresh` / `keep` (refreshes the `room_manager` kata) | house or one room |
+| Weather 1.1.0 | `forecast_changed` | `refresh` / `keep` (refreshes the `weather` kata) | house |
+| Weather 1.1.0 | `hazard_relevance` | `attention` / `nominal` (a judgment only) | house |
+
+See [Room Manager: decisions](../components/room_manager.md#decisions-kf65) and [Weather: decisions](zen_dojotools_weather_readme.md#decisions-kf65).
 
 ---
 

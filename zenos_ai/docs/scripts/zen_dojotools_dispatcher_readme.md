@@ -1,4 +1,4 @@
-# Zen DojoTool Dispatcher — v5.6.8
+# Zen DojoTool Dispatcher — v5.6.9
 
 > **2026.12.0 (5.6.x):** the [drain router](#zen_scheduler_drain_router) works out each component's staleness from its own schedule, recovers the `system` tier too, and sends a routine `summary_request`, never a force. It writes one log line per recovery saying why. Flynn's health resummarize sends `summary_request` too. Reload automations.
 
@@ -158,7 +158,7 @@ Recovery for components the scheduler shed or missed. It sends a `summary_reques
 - not a cache slot (`role: cache`): the Ninja skips those, so they never get a timestamp;
 - not cooling down: if the Ninja tried it within its staleness window (`zen_ninja_last_run_<kata_key>`) and no fresh kata came of it, it waits for the next window.
 
-**Age and staleness.** Age runs from the last successful refresh: `last_run_at` or `generated` in the kata, whichever is newer, found by the drawer's `kata_key`. Stale is twice the component's shortest periodic subscription (`every_10_minutes` 10, `quarter_hour` 15, `hourly_trigger` 60, noon and midnight together 720, one daily 1440). A declared `staleness_minutes` wins, and an event-only component is stale after a day. `overdue` is age as a percent of stale.
+**Age and staleness.** The router uses `kfc_freshness` in `zenos_health.jinja` (5.6.9), the same rule SuperSummary uses to flag stale summaries. Age runs from the last successful refresh: `last_run_at` or `generated` in the kata, whichever is newer, found by the drawer's `kata_key`. Stale is twice the component's shortest periodic subscription (`every_10_minutes` 10, `quarter_hour` 15, `hourly_trigger` 60, noon and midnight together 720, one daily 1440). A declared `staleness_minutes` wins, and an event-only component is stale after a day. `overdue` is age as a percent of stale.
 
 **Routes.**
 - **Quiet drain:** when `sensor.zen_scheduler_queue_depth` stays below 4 for 3 minutes (and below `drain_below`, default 3, from `zen_scheduler_config`), it takes the most overdue component that is at least half way to stale. `system` sorts first.
