@@ -8,7 +8,7 @@
 ### Betas
 
 - **Beta 1** (2026-11-18): the release as first published.
-- **Beta 2** (2026-11-24): Cortex 48 'True North', Autovac's `swap_robot`, mounts that carry their whole tree, the Plant water and electrical summaries, and the Inventory stock-entry fix.
+- **Beta 2** (2026-11-25): Cortex 48 'True North', Autovac's `swap_robot`, mounts that carry their whole tree, the Plant water and electrical summaries, the Inventory stock-entry fix, the Abbot's new shape (requests instead of forces, its own lanes for maintenance and life-safety, pressure and recovery), and Oracle as a preview.
 - **Beta 3:** <!-- placeholder -->
 
 <!-- Minimum Home Assistant version: to confirm. Room Manager's timers use the timer.finished trigger (about 2026.5); Spook needs 2026.11. -->
