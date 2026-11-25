@@ -167,7 +167,15 @@ The host also:
 - answers `mode=decision` with its templates (zero inference), and advertises `decision: true` in its `tool_manifest`, with the component cert in `certs_required`;
 - answers `mode=decision_bind` for Oracle: it checks the template, the scope and its seed cert, and returns `status: ok` with `evidence`, `evidence_revision` and `as_of`, or `deterministic: keep|refresh` with a `reason` when no model is needed. A refusal returns `status: error` with an `outcome` and `message`.
 
-A host must not call Oracle from inside itself: Oracle calls back into the host to bind, and a queued host would wait on itself.
+What `decision_bind` must honor:
+- **Its inputs.** Oracle always passes `decision_template`, `area` and `caller_token`. `area` may be an empty string, which means the whole house: treat it as house scope and never fail on it.
+- **The caller's identity.** The bind runs as the asking agent, so the host's seed-cert check is against that agent, not the host.
+- **Read only, no inference.** The bind changes nothing and calls no model. It returns only the evidence the template needs, because that evidence counts against `max_evaluation_tokens` (Room Manager's is about 540 to 740 tokens).
+- **A stable `evidence_revision`.** The host defines it, and the same evidence must give the same revision. It is what repeated decisions will be recognized by. Room Manager's is urgency, reasons, each room's occupancy, the open sensors and the area.
+
+**The prototype's policy reads one `noul` question,** named by `policy.question`. A template may declare `choice` or `score` questions too: they are validated and returned in `answers`, but they don't drive keep or refresh yet.
+
+A host must not call Oracle from inside itself: Oracle calls back into the host to bind, and a queued host would wait on itself. That is why Room Manager's `mode=decision` only lists templates.
 
 ### Room Manager
 
