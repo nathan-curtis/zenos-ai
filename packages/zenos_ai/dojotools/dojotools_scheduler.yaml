@@ -1,6 +1,54 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Scheduler
-# Version: 5.4.1
+# Version: 5.7.0
+# v5.7.0: SuperSummary cadence and the cold start (force is maintenance only).
+#   - The rollup runs on quarter_hour (hourly, noon and midnight land on one), ha_start and
+#     a component's supersummary_request (new trigger; the Ninja sends it when urgency
+#     reaches drift_threshold). A run no longer starts it just because it dispatched a
+#     component, which piled several launches onto every :00 and :30.
+#   - A request skips the launcher's burst wait (its kata is already written). The gap
+#     between rollups is SuperSummary's own governor (super_burnout_seconds, default 300);
+#     a request inside it is dropped and the next tick picks the change up.
+#   - Cold start: on ha_start, an enabled, non-cache component with no kata at all is
+#     admitted with the subscribers (same gates and spacing). Replaces Flynn's boot force.
+#   - A targeted summary_request runs without the component's declared delay, as the
+#     forced refresh it replaces did (trigger packs move to summary_request).
+# v5.6.4: reverts 5.6.3. force_summary is special-purpose maintenance; a targeted force
+#   again admits only a component that subscribes to it. New trigger summary_request
+#   (zen_event kind summary_request, component named): a routine request that admits the
+#   named component through the normal gates (tier shed, depth gate, its own delay), with
+#   no force bypass. The drain router uses it (Dispatcher 5.6.6).
+# v5.6.3: a targeted force_summary (component named) admits that component whether or
+#   not it subscribes to force_summary. The subscription check is for the untargeted
+#   broadcast; applied to a targeted force it silently dropped the request, so the drain
+#   router (and any tool) could never recover a component without the subscription.
+# v5.6.2: each heartbeat run records pressure (at admission), shed_tier (dropped by the
+#   per-tier rule) and shed_depth (dropped by the depth gate) next to dispatched. Record
+#   only; no behavior change.
+# v5.6.1: ha_start launches are spaced 30 s apart (the larger of a component's declared
+#   delay and its slot). After the 5.6.0 split a boot filled the Ninja (5/5, 8 more pending)
+#   and launches past max were dropped. Paired with Ninja max 10 (Ninja 5.9.2).
+# v5.6.0 (#10732 item 5, the Abbot split): the Scheduler is admission only. It decides who
+#   runs (subscriptions, tiers, shed rules, depth gate) and hands each admitted component
+#   to zen_abbot_launch (new, parallel, not MCP-exposed), which sleeps the component's
+#   delay, reads its prior kata and starts the Ninja. SuperSummary's wait for the Ninja
+#   burst and the heartbeat's wait for an idle FileCabinet moved there too. A scheduler
+#   run no longer holds its queue slot through delays, kata reads or those waits. The
+#   force_identity_manifest trigger is gone: it had no branch here (Dispatcher handles
+#   identity_manifest_rebuild) and woke the queue for nothing, four times a second at times.
+# v5.5.0 (#10732): the scheduler is the cognitive queue only.
+#   Housekeeping (deferred reloads, Manifest, Identity Manifest, Compact Index, GC,
+#   display expiry, resolver refresh, Rolodex scans) moves to its own automation, Zen
+#   DojoTools Housekeeping. Leak / alarm / smoke-CO-gas triggers move to Zen Safety Admit
+#   (parallel, no depth gate, no delay), which launches their subscribed components'
+#   Ninja runs at once. The depth gate sheds only keeper/ambient subscribers: system and
+#   super are never shed by depth (it used to stop the whole pass). max_exceeded is
+#   declared on all three (drops log a warning; recovery stays self-calculated).
+# v5.4.2: housekeeping jobs are independent (#10732). They shared one first-match choose, so
+#   ha_start / daily_midnight ran only the Manifest (Identity Manifest, Compact Index and the
+#   resolver refresh never ran from here) and quarter_hour only FileCabinet GC (display session
+#   expiry, the resolver refresh and both Rolodex stay checks never ran; display expiry and the
+#   stay checks have no other caller). Each job is now its own if, started as its own run.
 # v5.4.1: the core trigger pack registers inline, in the run that wants it, not through
 #   an event the queued scheduler could only handle after that run. The quarter-hour
 #   run that dispatches Ninja and SuperSummary takes minutes, so the self-heal landed
@@ -237,13 +285,27 @@ automation:
         event:
           kind: summary_force
       alias: 'Zen Event: Force Summary (component)'
+    # Routine request (5.6.4): run the named component through the normal gates (tier
+    # shed, depth gate, its own delay). force_summary is special-purpose maintenance
+    # and keeps its bypasses; routine callers (the drain router) send this instead.
     - trigger: event
       event_type: zen_event
-      id: force_gc
+      id: summary_request
       event_data:
         event:
-          kind: gc_force
-      alias: 'Zen Event: Force FileCabinet GC'
+          kind: summary_request
+      alias: 'Zen Event: Summary Request (component)'
+    # A component asks for the rollup (5.7.0): the Ninja sends it when a run's urgency
+    # reaches the component's drift_threshold. SuperSummary's own minimum gap
+    # (super_burnout_seconds) drops it if a rollup ran recently; the next quarter-hour
+    # tick picks the change up.
+    - trigger: event
+      event_type: zen_event
+      id: supersummary_request
+      event_data:
+        event:
+          kind: supersummary_request
+      alias: 'Zen Event: SuperSummary Request (component decided)'
     - trigger: event
       event_type: zen_event
       id: force_ninja
@@ -260,28 +322,6 @@ automation:
       alias: 'Zen Event: Force SuperSummary only (skip Ninja dispatch)'
     - trigger: event
       event_type: zen_event
-      id: force_identity_manifest
-      event_data:
-        event:
-          kind: identity_manifest_rebuild
-      alias: 'Zen Event: Force Identity Manifest rebuild'
-    - trigger: event
-      event_type: zen_event
-      id: deferred_script_reload
-      event_data:
-        event:
-          kind: deferred_script_reload
-      alias: 'Zen Event: Deferred Script Reload'
-    - trigger: event
-      event_type: zen_event
-      id: deferred_reload_all
-      event_data:
-        event:
-          kind: deferred_reload_all
-      alias: 'Zen Event: Deferred Reload All'
-    # ── Trigger registry (C) ───────────────────────────────────────────────
-    - trigger: event
-      event_type: zen_event
       id: trigger_pack_register
       event_data:
         event:
@@ -292,31 +332,6 @@ automation:
       id: trigger_registry_refresh
       alias: 'Automations reloaded: register the core triggers again'
     # ── Standard label-driven triggers: idle until an entity carries the label
-    - trigger: moisture.detected
-      target:
-        label_id: zen_leak
-      id: zen_leak
-      alias: 'zen_leak: a leak sensor detects water'
-    - trigger: alarm_control_panel.triggered
-      target:
-        label_id: alarm_panel
-      id: alarm_panel
-      alias: 'alarm_panel: an alarm panel labeled alarm_panel is triggered'
-    - trigger: air_quality.smoke_detected
-      target:
-        label_id: zen_smoke
-      id: zen_smoke
-      alias: 'zen_smoke: smoke detected'
-    - trigger: air_quality.co_detected
-      target:
-        label_id: zen_smoke
-      id: zen_smoke
-      alias: 'zen_smoke: carbon monoxide detected'
-    - trigger: air_quality.gas_detected
-      target:
-        label_id: zen_smoke
-      id: zen_smoke
-      alias: 'zen_smoke: gas detected'
     - trigger: door.opened
       target:
         label_id: zen_door
@@ -562,151 +577,6 @@ automation:
           {%- set sched = data.get('event', {}).get('schedule') if data is mapping else None -%}
           {{ sched | default('', true) | slugify }}
 
-    # ── Explicit non-Ninja branches ──────────────────────────────────────────
-    - choose:
-
-      - conditions:
-        - condition: trigger
-          id: deferred_script_reload
-        sequence:
-        - action: script.reload
-          data: {}
-        # Tool manifests may have changed: rebuild the cert catalog cache.
-        - action: script.turn_on
-          target:
-            entity_id: script.zen_dojotools_identity
-          data:
-            variables:
-              mode: cert_cache_refresh
-              force_refresh: true
-        - stop: deferred_script_reload_complete
-        alias: Deferred Script Reload
-
-      - conditions:
-        - condition: trigger
-          id: deferred_reload_all
-        sequence:
-        - action: homeassistant.reload_all
-          data: {}
-        - action: script.turn_on
-          target:
-            entity_id: script.zen_dojotools_identity
-          data:
-            variables:
-              mode: cert_cache_refresh
-              force_refresh: true
-        - stop: deferred_reload_all_complete
-        alias: Deferred Reload All
-
-      - conditions:
-        - alias: Triggers for the Manifest
-          condition: trigger
-          id:
-          - ha_start
-          - daily_midnight
-        sequence:
-        - action: script.zen_dojotools_manifest
-          metadata: {}
-          data:
-            mode: cabinets
-          response_variable: response_manifest
-        alias: Run the Manifest
-
-      - conditions:
-        - alias: Triggers for the Identity Manifest
-          condition: trigger
-          id:
-          - ha_start
-          - daily_midnight
-        sequence:
-        - action: script.zen_dojotools_identity
-          metadata: {}
-          data:
-            mode: build_identity_manifest
-          response_variable: response_identity_manifest
-        alias: Run the Identity Manifest
-
-      - conditions:
-        - alias: Triggers for Compact Index Rebuild
-          condition: trigger
-          id:
-          - ha_start
-          - daily_midnight
-        sequence:
-        - action: script.zen_dojotools_index
-          metadata: {}
-          data:
-            mode: build_compact_index
-          response_variable: response_compact_index
-        alias: Build Compact Index
-
-
-      - conditions:
-        - condition: trigger
-          id:
-          - daily_midnight
-          - quarter_hour
-          - force_gc
-        sequence:
-        - action: script.zen_dojotools_filecabinet_gc
-          metadata: {}
-          data:
-            mode: gc
-            dry_run: false
-          response_variable: response_filecabinet_gc
-        alias: FileCabinet GC
-
-      # Same quarter_hour cadence FileCabinet GC above already uses. Clears
-      # any display_session_* cabinet key idle 5+ minutes; see
-      # dojotools_display.yaml mode=expire_sessions for the logic.
-      - conditions:
-        - condition: trigger
-          id:
-          - quarter_hour
-        sequence:
-        - action: script.zen_dojotools_display
-          metadata: {}
-          data:
-            mode: expire_sessions
-          response_variable: response_display_expire_sessions
-        alias: Display Surface Session Expiry
-
-      - conditions:
-        - condition: trigger
-          id:
-          - quarter_hour
-          - ha_start
-        sequence:
-        - event: zen_resolver_refresh
-        alias: Health Sensor Retrigger
-
-      - conditions:
-        - condition: trigger
-          id:
-          - quarter_hour
-        sequence:
-        - action: script.zen_dojotools_rolodex
-          enabled: "{{ states('script.zen_dojotools_rolodex') in ['on', 'off'] }}"
-          continue_on_error: true
-          data:
-            mode: stay_prep_check
-          response_variable: response_guest_prep_scan
-        alias: Guest Arrival Prep Scan
-
-      - conditions:
-        - condition: trigger
-          id:
-          - quarter_hour
-        sequence:
-        - action: script.zen_dojotools_rolodex
-          enabled: "{{ states('script.zen_dojotools_rolodex') in ['on', 'off'] }}"
-          continue_on_error: true
-          data:
-            mode: stay_checkout_check
-          response_variable: response_guest_checkout_scan
-        alias: Guest Checkout Nudge Scan
-
-
     # ── Dojo-driven Ninja Summarizer dispatch ────────────────────────────────
     # Reads all KFC drawers from the Dojo cabinet. Filters to those whose
     # trigger_subscriptions include the current trigger.id. For force_summary
@@ -750,13 +620,24 @@ automation:
             {%- set force_c   = zen_event_component | default('', true) | slugify -%}
             {%- set force_s   = zen_event_schedule   | default('', true) | slugify -%}
             {%- set protected = ['AI_Cabinet_VolumeInfo', 'kfc_template', 'zen_library_manifest', 'zen_identity_manifest', '_context'] -%}
+            {%- set kata_vars = state_attr(_kata_cab, 'variables') | default({}, true) -%}
             {%- set ns = namespace(subs=[]) -%}
             {%- for key, drawer in dojo_vars.items() -%}
               {%- if not key.startswith('_') and key not in protected -%}
                 {%- set val = drawer.get('value', drawer) if drawer is mapping else {} -%}
                 {%- if val is mapping -%}
                   {%- set sub_list  = val.get('trigger_subscriptions', []) -%}
-                  {%- set subscribed = trig_id in sub_list -%}
+                  {#- summary_request names one component and admits it whether or not it
+                      subscribes, through the normal gates below (5.6.4). -#}
+                  {#- Cold start (5.7.0): on ha_start, an enabled component drawer that is not a
+                      cache slot and has no kata at all (fresh install, reset, wiped kata) is
+                      admitted too, through the same gates and spacing as the subscribers. -#}
+                  {%- set _cold = trig_id == 'ha_start'
+                        and ('kata_key' in val or 'trigger_subscriptions' in val)
+                        and (val.get('role', '') | string | lower) != 'cache'
+                        and ((val.get('meta') if val.get('meta') is mapping else {}).get('enabled', true) | string | lower) not in ['false', 'off', '0']
+                        and kata_vars.get(val.get('kata_key') or key) is none -%}
+                  {%- set subscribed = trig_id in sub_list or (trig_id == 'summary_request' and force_c != '' and force_c == key) or _cold -%}
                   {%- set targeted   = force_c == '' or force_c == key -%}
                   {%- set _tier      = val.get('pipeline_tier', 'keeper') | lower -%}
                   {%- set _eff_delay = 0 if _tier in ['super', 'system'] else val.get('delay_seconds', 0) | int(0) -%}
@@ -833,99 +714,81 @@ automation:
     # The depth gate sheds frequent ticks when the queue backs up. The daily
     # anchors fire once with no retry (and midnight always lands in a burst),
     # so they always dispatch; shedding them leaves a component a day stale.
+    # system and super subscribers are never shed by depth (5.5.0): the gate
+    # used to stop the whole pass, their tier's no-shed rule included.
+    # Who the per-tier shed rule dropped this run (record only, 5.6.2): the same
+    # rule the subscriber build applies, kept for the heartbeat.
+    - variables:
+        _tier_shed: >-
+          {%- set dojo_vars = state_attr(_dojo_cab, 'variables') | default({}, true) -%}
+          {%- set trig_id = 'ha_start' if trigger.id == 'force_ninja' else trigger.id | default('') -%}
+          {%- set force_c = zen_event_component | default('', true) | slugify -%}
+          {%- set ns = namespace(k=[]) -%}
+          {%- if trig_id != 'force_summary' or force_c == '' -%}
+            {%- for key, drawer in (dojo_vars if dojo_vars is mapping else {}).items() if not key.startswith('_') -%}
+              {%- set val = drawer.get('value', drawer) if drawer is mapping else {} -%}
+              {%- if val is mapping and (trig_id in (val.get('trigger_subscriptions', []) or []) or (trig_id == 'summary_request' and force_c != '' and force_c == key)) and (force_c == '' or force_c == key) -%}
+                {%- set _tier = val.get('pipeline_tier', 'keeper') | lower -%}
+                {%- if (_tier == 'ambient' and (trig_id in ['quarter_hour', 'every_10_minutes'] or _queue_depth | int(0) >= _shed_ambient_at | int(4)))
+                       or (_tier not in ['super', 'system', 'ambient'] and _queue_depth | int(0) >= _shed_keeper_at | int(8)) -%}
+                  {%- set ns.k = ns.k + [val.get('kata_key') or key] -%}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endif -%}
+          {{ ns.k }}
+    - variables:
+        _admitted: >-
+          {%- if _queue_depth | int(0) < 5 or trigger.id in ['daily_midnight', 'daily_noon'] -%}
+            {{ _subscribers }}
+          {%- else -%}
+            {{ _subscribers | selectattr('pipeline_tier', 'defined') | selectattr('pipeline_tier', 'in', ['super', 'system', 'SUPER', 'SYSTEM']) | list }}
+          {%- endif -%}
     - if: >-
-        {{ trigger.id != 'force_supersummary'
-           and (_queue_depth | int(0) < 5 or trigger.id in ['daily_midnight', 'daily_noon']) }}
+        {{ trigger.id != 'force_supersummary' and _admitted | count > 0 }}
       then:
+        # Admission only (5.6.0, the Abbot): each admitted component goes to its own
+        # zen_abbot_launch run, which sleeps the component's delay, reads its prior
+        # kata and starts the Ninja. The queue slot is free in seconds instead of
+        # being held through every delay gap and kata read.
         - repeat:
-            for_each: "{{ _subscribers }}"
+            for_each: "{{ _admitted }}"
             sequence:
-              # delay_seconds is an offset from the trigger. _subscribers is
-              # sorted by it, so each one sleeps only the gap since the one
-              # before; a whole pass sleeps its largest delay, not the sum.
-              - variables:
-                  _iter_gap: >-
-                    {%- set _d = repeat.item.delay_seconds | default(0) | int(0) -%}
-                    {%- set _p = (_subscribers[repeat.index - 2].delay_seconds | default(0) | int(0)) if repeat.index > 1 else 0 -%}
-                    {{ [_d - _p, 0] | max }}
-              - if:
-                - condition: template
-                  value_template: >-
-                    {{ trigger.id not in ['force_summary', 'force_ninja']
-                       and _iter_gap | int(0) > 0 }}
-                then:
-                - delay:
-                    seconds: "{{ _iter_gap | int(0) }}"
-              - action: script.zen_sutra_filecabinet
-                metadata: {}
-                data:
-                  action_type: get
-                  show_hidden_volumes: false
-                  volume_entity_id:
-                  - "{{ _kata_cab }}"
-                  key: "{{ repeat.item.kata_key | default(repeat.item._drawer_key) }}"
-                response_variable: _iter_last_kata
-              # 24h events[] stale-out, at the point every kata's prior-run
-              # context flows back through before the next run. GC expires
-              # whole drawers only and can't see a list field inside one.
-              - variables:
-                  _iter_last_kata_pruned: >-
-                    {%- set _fc = _iter_last_kata if _iter_last_kata is mapping else (_iter_last_kata | from_json({}) if _iter_last_kata is string else {}) -%}
-                    {%- set _r = (_fc or {}).get('result', {}) -%}
-                    {%- set _r = _r if _r is mapping else (_r | from_json({}) if _r is string else {}) -%}
-                    {%- set _kkey = repeat.item.kata_key | default(repeat.item._drawer_key) -%}
-                    {%- set _raw = _r.get(_kkey, _fc) -%}
-                    {%- set _raw = _raw if _raw is mapping else (_raw | from_json({}) if _raw is string else {}) -%}
-                    {%- set _val = _raw.get('value', _raw) -%}
-                    {%- set _val = _val if _val is mapping else (_val | from_json({}) if _val is string else {}) -%}
-                    {%- set _events = _val.get('events', []) -%}
-                    {%- set _events = _events if _events is sequence and _events is not string else [] -%}
-                    {%- set _cutoff_ts = (now() - timedelta(hours=24)).timestamp() -%}
-                    {%- set _ns = namespace(kept=[]) -%}
-                    {%- for _e in _events -%}
-                      {%- set _ts_raw = (_e.get('timestamp', '') if _e is mapping else '') -%}
-                      {%- set _ts = as_datetime(_ts_raw) if _ts_raw else none -%}
-                      {#- as_datetime() returns naive when _ts_raw lacks a tz
-                         offset, which crashes the aware/naive compare below --
-                         compare via .timestamp() instead, same fix as the
-                         _zen_priority_inject expiry check (dojotools_core.yaml). -#}
-                      {%- if _ts is not none and _ts.timestamp() >= _cutoff_ts -%}
-                        {%- set _ns.kept = _ns.kept + [_e] -%}
-                      {%- endif -%}
-                    {%- endfor -%}
-                    {{ _raw | combine({'value': _val | combine({'events': _ns.kept})}) }}
-              - variables:
-                  _iter_prompt: >-
-                    {%- set _p = {
-                      "source":            {"id": trigger.id | default(''), "platform": trigger.platform | default('')},
-                      "current_local_time": now().strftime('%Y-%m-%d %H:%M %Z'),
-                      "last_kata_summary": _iter_last_kata_pruned | default({})
-                    } | tojson -%}
-                    {{ _p[:50000] }}
               - action: script.turn_on
+                continue_on_error: true
+                target:
+                  entity_id: script.zen_abbot_launch
                 data:
-                  entity_id: script.zen_dojotools_ninja_summarizer
                   variables:
-                    kung_fu_component_id: "{{ repeat.item.kata_key | default(repeat.item._drawer_key) }}"
-                    post_to_kata_cabinet: true
-                    supplemental_prompt: '{{ _iter_prompt }}'
+                    job: ninja
+                    component: "{{ repeat.item.kata_key | default(repeat.item._drawer_key) }}"
+                    # ha_start: every component wakes at once and the Ninja runs one at a
+                    # time, so a boot burst overflowed its queue. Space them 30 s apart
+                    # (the larger of the declared delay and the slot) (5.6.1).
+                    delay_seconds: >-
+                      {%- set _d = repeat.item.delay_seconds | default(0) | int(0) -%}
+                      {#- A targeted request runs one component now, like an event-driven
+                          refresh should; the declared delay spaces broadcast bursts (5.7.0). -#}
+                      {%- if trigger.id in ['force_summary', 'force_ninja', 'summary_request'] -%}0
+                      {%- elif trigger.id == 'ha_start' -%}{{ [_d, (repeat.index - 1) * 30] | max }}
+                      {%- else -%}{{ _d }}{%- endif -%}
+                    trigger_id: "{{ trigger.id | default('') }}"
+                    trigger_platform: "{{ trigger.platform | default('') }}"
                     index_call_override: >-
                       {%- set _ov = repeat.item._index_call_override | default({}) -%}
                       {{ _ov | tojson if _ov else '' }}
-                    parent_component_id: "{{ repeat.item._parent_component | default('', true) }}"
+                    parent_component: "{{ repeat.item._parent_component | default('', true) }}"
 
     # ── Conditional SuperSummary — fires after ninjas, not before ────────────
     - variables:
+        # Cadence (5.7.0): the rollup runs every quarter hour (hourly, noon and midnight
+        # land on one), at boot, and when a component asks (supersummary_request).
+        # A run no longer starts it just because it dispatched something.
         _always_super: >-
-          {{ trigger.id in ['force_supersummary', 'daily_midnight', 'ha_start', 'daily_noon', 'hourly_trigger', 'quarter_hour'] }}
-        _should_super: >-
-          {{ _always_super or (_subscribers | default([]) | length > 0) }}
+          {{ trigger.id in ['force_supersummary', 'ha_start', 'quarter_hour', 'supersummary_request'] }}
+        _should_super: "{{ _always_super }}"
     - if: "{{ _should_super }}"
       then:
-        - wait_template: "{{ state_attr('script.zen_dojotools_ninja_summarizer', 'current') | int(0) < 2 }}"
-          timeout:
-            seconds: 30
-          continue_on_timeout: true
         - variables:
             supplemental_prompt: >-
               {{
@@ -935,20 +798,22 @@ automation:
                   "notes": "Don't comment about the state of the component's master switch or script. Comment only on the items the component manages. Please ignore when you perform summarization."
                 } | tojson
               }}
+        # The launcher waits for the Ninja burst (current < 2, 30 s ceiling) outside
+        # this queue, then starts SuperSummary.
         - action: script.turn_on
+          continue_on_error: true
+          target:
+            entity_id: script.zen_abbot_launch
           data:
-            entity_id: script.zen_dojotools_supersummary
             variables:
-              post_to_kata_cabinet: true
-              supplemental_prompt: '{{ supplemental_prompt }}'
+              job: supersummary
+              payload: '{{ supplemental_prompt }}'
+              # A component's request comes after its kata is written: no burst wait.
+              wait_burst: "{{ trigger.id != 'supersummary_request' }}"
 
-    # ── Write scheduler heartbeat to Kata ───────────────────────────────────
-    # Wait for FC to be idle — parallel ninja kata writes (FC mode:single) can
-    # race the heartbeat and cause silent drops. 60s ceiling, always continues.
-    - wait_template: "{{ not is_state('script.zen_dojotools_filecabinet', 'on') }}"
-      timeout:
-        seconds: 60
-      continue_on_timeout: true
+    # ── Scheduler heartbeat ─────────────────────────────────────────────────
+    # Built here; the launcher waits for FileCabinet to be idle (parallel Ninja
+    # kata writes can race it) and writes it, outside this queue.
     - variables:
         trigger_entity_id: >-
           {%- if 'from_state' in trigger and trigger.from_state -%}
@@ -967,7 +832,7 @@ automation:
             }
           }}
         _dispatched_keys: >-
-          {{ _subscribers | default([]) | map(attribute='kata_key') | list }}
+          {{ _admitted | default([]) | map(attribute='kata_key') | list }}
         _this_run: >-
           {{
             {
@@ -976,7 +841,10 @@ automation:
               "dispatched":       _dispatched_keys,
               "count":            _dispatched_keys | length,
               "super":            _should_super | default(false) | bool,
-              "duration_seconds": (now() - (_run_start_ts | as_datetime)).total_seconds() | int
+              "duration_seconds": (now() - (_run_start_ts | as_datetime)).total_seconds() | int,
+              "pressure":         _queue_depth | int(0),
+              "shed_tier":        _tier_shed | default([]),
+              "shed_depth":       ((_subscribers | default([])) | map(attribute='kata_key') | reject('in', (_admitted | default([])) | map(attribute='kata_key') | list) | list) if trigger.id != 'force_supersummary' else []
             }
           }}
         _prev_runs: >-
@@ -999,21 +867,442 @@ automation:
               "recent_runs":  _recent_runs | default([])
             } | tojson
           }}
-    - action: script.zen_sutra_filecabinet
-      metadata: {}
+    - action: script.turn_on
+      continue_on_error: true
+      target:
+        entity_id: script.zen_abbot_launch
       data:
-        action_type: upsert
-        mode: replace
-        set_timestamp: true
-        show_hidden_volumes: false
-        volume_entity_id:
-        - "{{ _kata_cab }}"
-        path: zen_scheduler
-        value: '{{ final_response }}'
-      response_variable: _hb_result
+        variables:
+          job: heartbeat
+          payload: '{{ final_response }}'
 
     # ── Fire health tick — unblocks trigger-based health sensors ────────────
     - event: zen_health_tick
 
     mode: queued
     max: 15
+    # Past max, HA drops the new run and logs a warning. Declared, not implied
+    # (#10732): recovery is self-calculated (drain router, kata age).
+    max_exceeded: warning
+
+  # ===========================================================================
+  # Zen DojoTools Housekeeping (5.5.0, #10732)
+  # Maintenance jobs off the cognitive queue: deferred reloads (a script reload
+  # no longer waits behind Ninja dispatch), Manifest, Identity Manifest, Compact
+  # Index, FileCabinet GC, display session expiry, the resolver refresh and the
+  # Rolodex stay scans. Each job starts as its own run.
+  # ===========================================================================
+  - id: zen_dojotools_housekeeping
+    alias: Zen DojoTools Housekeeping
+    description: >-
+      Maintenance jobs on their own queue: deferred script / reload-all, Manifest,
+      Identity Manifest, Compact Index, FileCabinet GC, display session expiry,
+      resolver refresh, Rolodex stay scans. Moved out of the Scheduler (5.5.0).
+    mode: queued
+    max: 10
+    max_exceeded: warning
+    triggers:
+    - trigger: time
+      at: '00:01:00'
+      id: daily_midnight
+    - trigger: time_pattern
+      minutes: /15
+      id: quarter_hour
+    - trigger: homeassistant
+      event: start
+      id: ha_start
+    - trigger: event
+      event_type: zen_event
+      id: force_gc
+      event_data:
+        event:
+          kind: gc_force
+      alias: 'Zen Event: Force FileCabinet GC'
+    - trigger: event
+      event_type: zen_event
+      id: deferred_script_reload
+      event_data:
+        event:
+          kind: deferred_script_reload
+      alias: 'Zen Event: Deferred Script Reload'
+    - trigger: event
+      event_type: zen_event
+      id: deferred_reload_all
+      event_data:
+        event:
+          kind: deferred_reload_all
+      alias: 'Zen Event: Deferred Reload All'
+    # ── Trigger registry (C) ───────────────────────────────────────────────
+    actions:
+    # ── Deferred reloads ──────────────────────────────────────────
+    - choose:
+
+      - conditions:
+        - condition: trigger
+          id: deferred_script_reload
+        sequence:
+        - action: script.reload
+          data: {}
+        # Tool manifests may have changed: rebuild the cert catalog cache.
+        - action: script.turn_on
+          target:
+            entity_id: script.zen_dojotools_identity
+          data:
+            variables:
+              mode: cert_cache_refresh
+              force_refresh: true
+        - stop: deferred_script_reload_complete
+        alias: Deferred Script Reload
+
+      - conditions:
+        - condition: trigger
+          id: deferred_reload_all
+        sequence:
+        - action: homeassistant.reload_all
+          data: {}
+        - action: script.turn_on
+          target:
+            entity_id: script.zen_dojotools_identity
+          data:
+            variables:
+              mode: cert_cache_refresh
+              force_refresh: true
+        - stop: deferred_reload_all_complete
+        alias: Deferred Reload All
+
+    # ── Housekeeping (5.4.2) ─────────────────────────────────────────────────
+    # Each job is its own `if`, started as its own run (script.turn_on): they used
+    # to share one first-match choose, so ha_start / daily_midnight ran only the
+    # Manifest and quarter_hour only FileCabinet GC; display session expiry, the
+    # resolver refresh and the Rolodex stay checks never ran (#10732). A job that
+    # fails or runs long holds up neither the others nor the Ninja dispatch below.
+    - alias: Run the Manifest
+      if:
+      - condition: trigger
+        id:
+        - ha_start
+        - daily_midnight
+      then:
+      - action: script.turn_on
+        continue_on_error: true
+        target:
+          entity_id: script.zen_dojotools_manifest
+        data:
+          variables:
+            mode: cabinets
+
+    - alias: Run the Identity Manifest
+      if:
+      - condition: trigger
+        id:
+        - ha_start
+        - daily_midnight
+      then:
+      - action: script.turn_on
+        continue_on_error: true
+        target:
+          entity_id: script.zen_dojotools_identity
+        data:
+          variables:
+            mode: build_identity_manifest
+
+    - alias: Build Compact Index
+      if:
+      - condition: trigger
+        id:
+        - ha_start
+        - daily_midnight
+      then:
+      - action: script.turn_on
+        continue_on_error: true
+        target:
+          entity_id: script.zen_dojotools_index
+        data:
+          variables:
+            mode: build_compact_index
+
+    - alias: FileCabinet GC
+      if:
+      - condition: trigger
+        id:
+        - daily_midnight
+        - quarter_hour
+        - force_gc
+      then:
+      - action: script.turn_on
+        continue_on_error: true
+        target:
+          entity_id: script.zen_dojotools_filecabinet_gc
+        data:
+          variables:
+            mode: gc
+            dry_run: false
+
+    # Clears any display_session_* cabinet key idle 5+ minutes; see
+    # dojotools_display.yaml mode=expire_sessions for the logic.
+    - alias: Display Surface Session Expiry
+      if:
+      - condition: trigger
+        id:
+        - quarter_hour
+      then:
+      - action: script.turn_on
+        continue_on_error: true
+        target:
+          entity_id: script.zen_dojotools_display
+        data:
+          variables:
+            mode: expire_sessions
+
+    - alias: Health Sensor Retrigger
+      if:
+      - condition: trigger
+        id:
+        - quarter_hour
+        - ha_start
+      then:
+      - event: zen_resolver_refresh
+
+    - alias: Guest Arrival Prep Scan
+      if:
+      - condition: trigger
+        id:
+        - quarter_hour
+      then:
+      - action: script.turn_on
+        enabled: "{{ states('script.zen_dojotools_rolodex') in ['on', 'off'] }}"
+        continue_on_error: true
+        target:
+          entity_id: script.zen_dojotools_rolodex
+        data:
+          variables:
+            mode: stay_prep_check
+
+    - alias: Guest Checkout Nudge Scan
+      if:
+      - condition: trigger
+        id:
+        - quarter_hour
+      then:
+      - action: script.turn_on
+        enabled: "{{ states('script.zen_dojotools_rolodex') in ['on', 'off'] }}"
+        continue_on_error: true
+        target:
+          entity_id: script.zen_dojotools_rolodex
+        data:
+          variables:
+            mode: stay_checkout_check
+
+  # ===========================================================================
+  # Zen Safety Admit (5.5.0, #10732)
+  # Leak, alarm and smoke/CO/gas events start the Ninja runs of the components
+  # that subscribe to them straight away: no queue behind routine work, no depth
+  # gate, no delay. The deterministic responders (leak watch, the panel,
+  # Security) are separate automations; this is the agent's awareness of them.
+  # ===========================================================================
+  - id: zen_safety_admit
+    alias: Zen Safety Admit
+    description: >-
+      Always-admit path for safety triggers (zen_leak, alarm_panel, zen_smoke):
+      launches the Ninja for every KFC subscribed to the trigger id, with no
+      depth gate and no delay.
+    mode: parallel
+    max: 10
+    max_exceeded: warning
+    triggers:
+    - trigger: moisture.detected
+      target:
+        label_id: zen_leak
+      id: zen_leak
+      alias: 'zen_leak: a leak sensor detects water'
+    - trigger: alarm_control_panel.triggered
+      target:
+        label_id: alarm_panel
+      id: alarm_panel
+      alias: 'alarm_panel: an alarm panel labeled alarm_panel is triggered'
+    - trigger: air_quality.smoke_detected
+      target:
+        label_id: zen_smoke
+      id: zen_smoke
+      alias: 'zen_smoke: smoke detected'
+    - trigger: air_quality.co_detected
+      target:
+        label_id: zen_smoke
+      id: zen_smoke
+      alias: 'zen_smoke: carbon monoxide detected'
+    - trigger: air_quality.gas_detected
+      target:
+        label_id: zen_smoke
+      id: zen_smoke
+      alias: 'zen_smoke: gas detected'
+    actions:
+    - variables:
+        _sa_dojo: "{{ states('sensor.zen_dojo_cabinet_resolved') }}"
+        _sa_subs: >-
+          {%- set dv = state_attr(_sa_dojo, 'variables') | default({}, true) if _sa_dojo not in ['', 'unknown', 'unavailable'] else {} -%}
+          {%- set ns = namespace(s=[]) -%}
+          {%- for key, drawer in dv.items() if not key.startswith('_') and key not in ['AI_Cabinet_VolumeInfo', 'kfc_template', 'zen_library_manifest', 'zen_identity_manifest'] -%}
+            {%- set val = drawer.get('value', drawer) if drawer is mapping else {} -%}
+            {%- if val is mapping and trigger.id in (val.get('trigger_subscriptions', []) or []) -%}{%- set ns.s = ns.s + [key] -%}{%- endif -%}
+          {%- endfor -%}
+          {{ ns.s }}
+    - repeat:
+        for_each: "{{ _sa_subs }}"
+        sequence:
+        - action: script.turn_on
+          continue_on_error: true
+          target:
+            entity_id: script.zen_dojotools_ninja_summarizer
+          data:
+            variables:
+              kung_fu_component_id: "{{ repeat.item }}"
+              post_to_kata_cabinet: true
+              supplemental_prompt: >-
+                {{ {'source': {'id': trigger.id, 'platform': trigger.platform | default(''), 'entity_id': trigger.entity_id | default('')},
+                    'current_local_time': now().strftime('%Y-%m-%d %H:%M %Z'), 'safety_event': true} | tojson }}
+
+# =============================================================================
+# zen_abbot_launch (Scheduler 5.6.0, #10732 item 5). NOT MCP-exposed.
+# The Abbot (Zen DojoTools Scheduler) decides who runs; this starts the work so
+# the scheduler's queue slot is free in seconds. One parallel run per job:
+#   ninja         sleep the component's delay (an offset from the trigger), read
+#                 its prior kata (24 h events pruned), start the Ninja
+#   supersummary  wait for the Ninja burst (current < 2, 30 s ceiling), start it
+#   heartbeat     wait for FileCabinet to be idle (60 s ceiling), write zen_scheduler
+# =============================================================================
+script:
+  zen_abbot_launch:
+    alias: Zen Abbot Launch
+    description: >-
+      Internal: started by the Zen DojoTools Scheduler (the Abbot) for each admitted
+      component (job ninja), for SuperSummary (job supersummary) and for its
+      heartbeat (job heartbeat). Not for direct calls.
+    mode: parallel
+    max: 40
+    max_exceeded: warning
+    fields:
+      job:
+        selector:
+          text:
+      component:
+        selector:
+          text:
+      delay_seconds:
+        selector:
+          number:
+            min: 0
+            max: 3600
+      trigger_id:
+        selector:
+          text:
+      trigger_platform:
+        selector:
+          text:
+      index_call_override:
+        selector:
+          text:
+      parent_component:
+        selector:
+          text:
+      payload:
+        selector:
+          text:
+      wait_burst:
+        selector:
+          boolean:
+    sequence:
+    - variables:
+        _al_job: "{{ job | default('', true) | string | lower | trim }}"
+        _al_component: "{{ component | default('', true) | string | trim }}"
+        _kata_cab: "{{ states('sensor.zen_kata_cabinet_resolved') }}"
+    - if: "{{ _al_job == 'ninja' and _al_component != '' }}"
+      then:
+      - if: "{{ (delay_seconds | default(0) | int(0)) > 0 }}"
+        then:
+        - delay:
+            seconds: "{{ delay_seconds | int(0) }}"
+      - action: script.zen_sutra_filecabinet
+        continue_on_error: true
+        data:
+          action_type: get
+          show_hidden_volumes: false
+          volume_entity_id:
+          - "{{ _kata_cab }}"
+          key: "{{ _al_component }}"
+        response_variable: _iter_last_kata
+      - variables:
+          _iter_last_kata_pruned: >-
+            {%- set _fc = _iter_last_kata if _iter_last_kata is mapping else (_iter_last_kata | from_json({}) if _iter_last_kata is string else {}) -%}
+            {%- set _r = (_fc or {}).get('result', {}) -%}
+            {%- set _r = _r if _r is mapping else (_r | from_json({}) if _r is string else {}) -%}
+            {%- set _kkey = _al_component -%}
+            {%- set _raw = _r.get(_kkey, _fc) -%}
+            {%- set _raw = _raw if _raw is mapping else (_raw | from_json({}) if _raw is string else {}) -%}
+            {%- set _val = _raw.get('value', _raw) -%}
+            {%- set _val = _val if _val is mapping else (_val | from_json({}) if _val is string else {}) -%}
+            {%- set _events = _val.get('events', []) -%}
+            {%- set _events = _events if _events is sequence and _events is not string else [] -%}
+            {%- set _cutoff_ts = (now() - timedelta(hours=24)).timestamp() -%}
+            {%- set _ns = namespace(kept=[]) -%}
+            {%- for _e in _events -%}
+              {%- set _ts_raw = (_e.get('timestamp', '') if _e is mapping else '') -%}
+              {%- set _ts = as_datetime(_ts_raw) if _ts_raw else none -%}
+              {#- as_datetime() returns naive when _ts_raw lacks a tz
+                 offset, which crashes the aware/naive compare below --
+                 compare via .timestamp() instead, same fix as the
+                 _zen_priority_inject expiry check (dojotools_core.yaml). -#}
+              {%- if _ts is not none and _ts.timestamp() >= _cutoff_ts -%}
+                {%- set _ns.kept = _ns.kept + [_e] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ _raw | combine({'value': _val | combine({'events': _ns.kept})}) }}
+      - action: script.turn_on
+        continue_on_error: true
+        target:
+          entity_id: script.zen_dojotools_ninja_summarizer
+        data:
+          variables:
+            kung_fu_component_id: "{{ _al_component }}"
+            post_to_kata_cabinet: true
+            supplemental_prompt: >-
+              {%- set _p = {
+                "source":             {"id": trigger_id | default(''), "platform": trigger_platform | default('')},
+                "current_local_time": now().strftime('%Y-%m-%d %H:%M %Z'),
+                "last_kata_summary":  _iter_last_kata_pruned | default({})
+              } | tojson -%}
+              {{ _p[:50000] }}
+            index_call_override: "{{ index_call_override | default('', true) }}"
+            parent_component_id: "{{ parent_component | default('', true) }}"
+    - if: "{{ _al_job == 'supersummary' }}"
+      then:
+      - if: "{{ wait_burst | default(true) | bool(true) }}"
+        then:
+        - wait_template: "{{ state_attr('script.zen_dojotools_ninja_summarizer', 'current') | int(0) < 2 }}"
+          timeout:
+            seconds: 30
+          continue_on_timeout: true
+      - action: script.turn_on
+        continue_on_error: true
+        target:
+          entity_id: script.zen_dojotools_supersummary
+        data:
+          variables:
+            post_to_kata_cabinet: true
+            supplemental_prompt: "{{ payload | default('', true) }}"
+    - if: "{{ _al_job == 'heartbeat' }}"
+      then:
+      - wait_template: "{{ not is_state('script.zen_dojotools_filecabinet', 'on') }}"
+        timeout:
+          seconds: 60
+        continue_on_timeout: true
+      - action: script.zen_sutra_filecabinet
+        continue_on_error: true
+        data:
+          action_type: upsert
+          mode: replace
+          set_timestamp: true
+          show_hidden_volumes: false
+          volume_entity_id:
+          - "{{ _kata_cab }}"
+          path: zen_scheduler
+          value: "{{ payload | default('', true) }}"

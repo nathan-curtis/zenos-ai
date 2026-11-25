@@ -1,6 +1,36 @@
 #####################################################################
 # zen_dojotool_dispatcher — Event-driven dojotool dispatch layer
-# Version: 5.5.3
+# Version: 5.6.7
+# v5.6.7: zen_flynn_health_resummarize 1.2.0 sends summary_request, not summary_force: a
+#   health state change is routine.
+# v5.6.6: the drain router sends summary_request (Scheduler 5.6.4), not summary_force.
+#   Recovery is routine work and goes through the normal gates; force is special-purpose
+#   maintenance. Log line reads "drain router requested".
+# v5.6.5: removes the 5.6.4 force_summary-subscriber filter. The cause was in the
+#   scheduler (5.6.3 there: a targeted force admits the named
+#   component). The router again recovers any enabled, non-cache component; one with no
+#   periodic schedule is refreshed about once a day, as designed.
+# v5.6.3: the drain router only takes component drawers (kata_key or trigger_subscriptions
+#   declared). Once security_perimeter stopped masking it, cfo/cfo_view (a FileCabinet
+#   weave view kept in the dojo cabinet) was forced every 10 minutes at 'age 9999'.
+# v5.6.2: two drain router fixes the 5.6.1 log lines exposed. (1) Cache
+#   slots (role: cache) are not candidates: the Ninja skips them, so security_perimeter
+#   never got a timestamp and won the starvation check every 10 minutes, masking any
+#   keeper that was really starving. (2) The quiet drain only picks a component at least
+#   half way to stale, most overdue (age / staleness) first; it took the first candidate
+#   even when fresh and re-ran trapper_keeper hourly at 3-5 minutes old. Candidates,
+#   summary_force and the log line carry overdue (% of stale).
+# v5.6.1: the drain router's summary_force carries reason drain_router, route, age,
+#   staleness (and its source), tier and pressure, and writes one info line (logger
+#   zen_drain_router). Record only; no behavior change.
+# v5.6.0 (#10732 item 4, self-calculated recovery): the drain router works out each
+#   component's staleness from its own periodic trigger_subscriptions (twice the shortest
+#   cadence: every_10_minutes 10, quarter_hour 15, hourly 60, noon+midnight 720, daily 1440;
+#   a declared staleness_minutes wins; event-only keeps a day). It used to default every
+#   undeclared component to a day. system-tier components are recovered too (first in
+#   line); disabled components (meta.enabled false) are skipped; a component the Ninja
+#   tried within its window without a fresh kata cools down until the next window instead
+#   of being forced every ten minutes. No shed ledger.
 #
 # v5.5.3
 #   + Drain router freshness (#10746): a kata's age comes from its last successful refresh,
@@ -1098,7 +1128,14 @@ automation:
                       {%- set val = drawer.get('value', drawer) if drawer is mapping else {} -%}
                       {%- if val is mapping -%}
                         {%- set tier = val.get('pipeline_tier', 'keeper') | lower -%}
-                        {%- if tier in ['keeper', 'ambient', 'direct'] -%}
+                        {%- set _meta = val.get('meta') if val.get('meta') is mapping else {} -%}
+                        {#- A cache slot (role: cache) is written by a trigger pack and the
+                            Ninja skips it, so it never gets a timestamp and always looked
+                            starving, masking real starvation behind it (5.6.2). -#}
+                        {#- Only component drawers (they declare kata_key or trigger_subscriptions):
+                            the dojo cabinet also holds views and mounts (cfo/cfo_view) that
+                            no Ninja ever writes, which looked never-run (5.6.3). -#}
+                        {%- if ('kata_key' in val or 'trigger_subscriptions' in val) and tier in ['system', 'keeper', 'ambient', 'direct'] and (_meta.get('enabled', true) | string | lower) not in ['false', 'off', '0'] and (val.get('role', '') | string | lower) != 'cache' -%}
                           {#- Freshness = the last successful kata refresh (#10746). The kata is
                               found by the drawer's declared kata_key, falling back to the drawer
                               id. Current Ninja writes last_run_at (epoch seconds as a string, or
@@ -1118,9 +1155,31 @@ automation:
                           {%- set ref_ts   = [lr_ts, gen_ts] | max -%}
                           {%- set ts_src   = 'none' if ref_ts == 0 else ('last_run_at' if lr_ts >= gen_ts else 'generated') -%}
                           {%- set age_min  = ((_now_ts - ref_ts) / 60) | int(9999) if ref_ts > 0 else 9999 -%}
-                          {%- set tier_sort = 0 if tier in ['keeper', 'direct'] else 1 -%}
-                          {%- set staleness = val.get('staleness_minutes', 1440) | int(1440) -%}
-                          {%- set ns.cands = ns.cands + [{'key': key, 'kata_key': kkey, 'tier': tier, 'tier_sort': tier_sort, 'age_min': age_min, 'ts_source': ts_src, 'staleness_minutes': staleness}] -%}
+                          {%- set tier_sort = 0 if tier == 'system' else (1 if tier in ['keeper', 'direct'] else 2) -%}
+                          {#- Self-calculated staleness (5.6.0): the component's own periodic
+                              subscriptions set its expected cadence; stale = twice the
+                              shortest. A declared staleness_minutes wins; an event-only
+                              component keeps a day. -#}
+                          {%- set _subs = val.get('trigger_subscriptions', []) -%}
+                          {%- set _subs = (_subs.split(',') | map('trim') | list) if _subs is string else (_subs if _subs is sequence else []) -%}
+                          {%- set _cad_map = {'every_10_minutes': 10, 'quarter_hour': 15, 'hourly_trigger': 60, 'daily_noon': 1440, 'daily_midnight': 1440} -%}
+                          {%- set _cn = namespace(l=[]) -%}
+                          {%- for _s in _subs if _s in _cad_map -%}{%- set _cn.l = _cn.l + [_cad_map[_s]] -%}{%- endfor -%}
+                          {%- set _cads = _cn.l -%}
+                          {%- set _cad = (720 if ('daily_noon' in _subs and 'daily_midnight' in _subs and (_cads | min) >= 1440) else (_cads | min)) if _cads | count > 0 else none -%}
+                          {%- set staleness = val.get('staleness_minutes') | int(0) if val.get('staleness_minutes') is not none else ((_cad * 2) if _cad is not none else 1440) -%}
+                          {%- set stale_src = 'declared' if val.get('staleness_minutes') is not none else ('cadence' if _cad is not none else 'default') -%}
+                          {#- Cooldown: the Ninja tried within the window and no fresh kata came
+                              of it (a refusal, an empty answer): wait for the next window
+                              instead of forcing it every ten minutes. -#}
+                          {%- set _lr_drawer = _kv.get('zen_ninja_last_run_' ~ kkey) -%}
+                          {%- set _lr_val = _lr_drawer.get('value', _lr_drawer) if _lr_drawer is mapping else {} -%}
+                          {%- set _lr_val = (_lr_val | from_json(none)) if _lr_val is string else _lr_val -%}
+                          {%- set _att_ts = as_timestamp((_lr_val.get('run_started_at') if _lr_val is mapping else '') or '', 0) | int(0) -%}
+                          {%- set cooling = _att_ts > ref_ts and ((_now_ts - _att_ts) / 60) < staleness -%}
+                          {%- if not cooling -%}
+                            {%- set ns.cands = ns.cands + [{'key': key, 'kata_key': kkey, 'tier': tier, 'tier_sort': tier_sort, 'age_min': age_min, 'ts_source': ts_src, 'staleness_minutes': staleness, 'staleness_source': stale_src, 'cadence_minutes': _cad, 'overdue': ((age_min / (staleness if staleness > 0 else 1440)) * 100) | round(0) | int}] -%}
+                          {%- endif -%}
                         {%- endif -%}
                       {%- endif -%}
                     {%- endif -%}
@@ -1141,17 +1200,43 @@ automation:
                   {%- endfor -%}
                   {{ ns2.target }}
                 {%- else -%}
-                  {{ cands[0].key if cands | length > 0 else '' }}
+                  {#- Quiet drain (5.6.2): refresh what is closest to going stale, ahead of
+                      the starvation line. Only components at least half way to stale, most
+                      overdue first; it used to take the first candidate even when fresh
+                      (system tier sorts first), re-running a 4-minute-old kata hourly. -#}
+                  {%- set ripe = cands | selectattr('overdue', 'ge', 50) | sort(attribute='overdue', reverse=true) | list -%}
+                  {{ ripe[0].key if ripe | length > 0 else '' }}
                 {%- endif -%}
 
           # ── Fire force_summary for target (if found) ────────────────
+          # The event and one log line carry why (5.6.1): a recovery run is
+          # traceable, and threshold tuning can see what each decision saw.
           - if: "{{ _target_component | trim != '' }}"
             then:
+              - variables:
+                  _target_cand: "{{ (_candidates | selectattr('key', 'eq', _target_component | trim) | list | first) | default({}) }}"
               - event: zen_event
                 event_data:
                   event:
-                    kind: summary_force
+                    kind: summary_request
                     component: "{{ _target_component }}"
+                    reason: drain_router
+                    route: "{{ trigger.id }}"
+                    age_minutes: "{{ _target_cand.get('age_min') }}"
+                    staleness_minutes: "{{ _target_cand.get('staleness_minutes') }}"
+                    staleness_source: "{{ _target_cand.get('staleness_source') }}"
+                    tier: "{{ _target_cand.get('tier') }}"
+                    overdue_pct: "{{ _target_cand.get('overdue') }}"
+                    pressure: "{{ _queue_depth }}"
+              - action: system_log.write
+                continue_on_error: true
+                data:
+                  level: info
+                  logger: zen_drain_router
+                  message: >-
+                    drain router requested {{ _target_component | trim }} ({{ trigger.id }}): age
+                    {{ _target_cand.get('age_min') }} min, stale at {{ _target_cand.get('staleness_minutes') }}
+                    ({{ _target_cand.get('staleness_source') }}), tier {{ _target_cand.get('tier') }}, {{ _target_cand.get('overdue') }}% of stale, pressure {{ _queue_depth }}
 
 
   #####################################################################
@@ -1161,15 +1246,16 @@ automation:
   #
   # Flynn health state changes reflect real infrastructure shifts. The
   # supersummary cycle is too slow to capture a recovery — kata stays
-  # stale and the agent sees a lie. This automation fires summary_force
+  # stale and the agent sees a lie. This automation sends summary_request
   # for zen_system on any state change, debounced 30s against burst.
   #####################################################################
 
   - id: zen_flynn_health_resummarize
     alias: Zen Flynn Health — Resummarize zen_system on state change
     description: >-
-      zen_flynn_health_resummarize 1.1.0. Fires summary_force for zen_system
-      whenever sensor.zen_flynn_health changes state, debounced 30s.
+      zen_flynn_health_resummarize 1.2.0. Sends summary_request for zen_system
+      whenever sensor.zen_flynn_health changes state, debounced 30s (a routine
+      refresh through the normal gates; force is for maintenance).
       to: null = state changes only; the sensor rewrites its timestamp
       attribute every minute, which used to fire this ~1,440 times a day.
       Ensures kata reflects recovery (or degradation) without waiting
@@ -1186,7 +1272,7 @@ automation:
       - event: zen_event
         event_data:
           event:
-            kind: summary_force
+            kind: summary_request
             component: zen_system
             reason: flynn_health_state_change
             from_state: "{{ trigger.from_state.state }}"
