@@ -1,6 +1,6 @@
 ###############################################################################
 # DojoTools: Oracle
-# zen_dojotools_oracle (v0.2.1)
+# zen_dojotools_oracle (v0.3.0)
 # The one judgment service (KF6.5, #10747). A host component asks a bounded,
 # typed question through Home Assistant's ai_task.evaluate (noul / choice /
 # score) and gets a typed decision back. Oracle judges; it never acts. A
@@ -21,6 +21,13 @@
 # Evaluation and inference are separate branches: nothing here depends on the
 # summarizer switches, and a decision never requests or forces a summary.
 #
+# v0.3.0: a template names its own outcomes (#10769-10773). policy on a noul question:
+#   yes_outcome/no_outcome name the outcomes (default refresh/keep), yes_at/no_below the thresholds (default
+#   the old refresh_at/keep_below, which still work). policy on a choice question: the option
+#   chosen is the outcome when its probability is at least min_probability (default 0.5).
+#   Anything else is insufficient_evidence. A policy that names no noul or choice question is
+#   invalid_template, refused before the host binds. full_summary_required only on refresh
+#   for a template with a summary_target.
 # v0.2.1: the decision switch keeps the operator's setting across restarts (no `initial`,
 #   like the summarizer switches); `initial: false` turned it off on every boot.
 # v0.2.0: mode=ask (#10767): free-form questions the agent writes itself, over evidence it
@@ -134,7 +141,7 @@ script:
             status: ok
             tool: zen_dojotools_oracle
             display_name: Oracle
-            version: 0.2.1
+            version: 0.3.0
             tier: dojotools
             required_labels: ['dojotools']
             optional_labels: ['oracle']
@@ -217,7 +224,12 @@ script:
               - "decide only: zenos.decision.component.<host> level 1"
               - "an evaluation-capable ai_task entity (zen_decision_config.evaluate_entity_id, else Home Assistant's preferred one)"
               - "decide only: the host's own seed cert (checked by the host when it binds evidence)"
-            outcomes: "decide: keep | refresh | insufficient_evidence. ask: answers (advisory). Typed failures: decision_disabled, denied, host_not_found, unknown_template, needs_input, unsupported_scope, invalid_questions, evaluation_context_overflow, evaluator_unavailable, evaluator_error"
+            outcomes: "decide: the template's own outcomes (mode=templates lists them; Room Manager: keep | refresh) or insufficient_evidence. ask: answers (advisory). Typed failures: decision_disabled, denied, host_not_found, unknown_template, invalid_template, needs_input, unsupported_scope, invalid_questions, evaluation_context_overflow, evaluator_unavailable, evaluator_error"
+            policy_structure:
+              noul: "{question: <noul id>, yes_outcome: <outcome>, no_outcome: <outcome>, yes_at: 0.6, no_below: 0.35}  at or above yes_at: yes_outcome; below no_below: no_outcome; between: insufficient_evidence. Defaults refresh/keep. Never bare yes:/no: keys (YAML reads them as booleans)"
+              choice: "{question: <choice id>, min_probability: 0.5}  the chosen option is the outcome when its probability is at least min_probability, else insufficient_evidence"
+              tuning: "zen_decision_config.thresholds[<host>.<template>] overrides yes_at, no_below or min_probability"
+              summary: "full_summary_required is true only on a refresh outcome for a template with a summary_target"
             size_cap: "max_evaluation_tokens in the household zen_decision_config drawer (default 6000, estimated as characters / 4). Over it, nothing is sent."
             ask_structure:
               questions: "{question_id: {type, instructions, criteria}}: 1 to 5 questions, ids are short snake_case"
@@ -369,6 +381,23 @@ script:
                 mode: decide
                 outcome: unknown_template
                 message: "{{ _host }} declares no template '{{ _tpl }}'. mode=templates host={{ _host }} lists them."
+      # The policy must name a noul or choice question of the template. Checked
+      # here, before the host binds, so a bad template costs nothing.
+      - variables:
+          _or_pq: "{{ (_or_t.get('policy', {}).get('question', '') if _or_t.get('policy') is mapping else '') | string }}"
+      - variables:
+          _or_pqt: >-
+            {%- set q = _or_t.get('questions') -%}
+            {%- set q = q.get(_or_pq) if q is mapping else none -%}
+            {{ q.get('type', '') if q is mapping else '' }}
+      - if: "{{ final_response is not defined and _or_pqt not in ['noul', 'choice'] }}"
+        then:
+          - variables:
+              final_response:
+                status: error
+                mode: decide
+                outcome: invalid_template
+                message: "{{ _host }}/{{ _tpl }}: policy.question must name one of its noul or choice questions (it names '{{ _or_pq }}'). Nothing was sent."
       # The host's decision cert is always zenos.decision.component.<host> (by
       # pattern). A declaration naming anything else is refused, not honored.
       - if: "{{ final_response is not defined and (_or_req.get('cert', '') | string) != 'zenos.decision.component.' ~ _host }}"
@@ -443,7 +472,7 @@ script:
                     template_version: "{{ _or_t.get('version', 1) }}"
                     outcome: "{{ _or_bind.deterministic }}"
                     basis: deterministic
-                    full_summary_required: "{{ _or_bind.deterministic == 'refresh' }}"
+                    full_summary_required: "{{ _or_bind.deterministic == 'refresh' and (_or_t.get('summary_target', '') | string) != '' }}"
                     evidence_revision: "{{ _or_bind.get('evidence_revision', '') }}"
                     as_of: "{{ _or_bind.get('as_of', '') }}"
                     reason: "{{ _or_bind.get('reason', '') }}"
@@ -590,9 +619,10 @@ script:
                   outcome: evaluator_error
                   invalid: "{{ _or_invalid }}"
                   message: The evaluation's answers failed validation. Nothing was decided.
-        # The host's policy: one noul question with keep/refresh thresholds
-        # (template defaults; tunable later in zen_decision_config). The band
-        # between them is insufficient_evidence, never a confident keep.
+        # The host's policy reads one question. noul: yes/no outcomes at the
+        # template's thresholds; the band between is insufficient_evidence, never
+        # a confident no. choice: the option chosen, if its probability clears
+        # min_probability. Tunable per template in zen_decision_config.
         # ask: advisory only. The raw answers, never keep/refresh.
         - if: "{{ final_response is not defined and _mode == 'ask' }}"
           then:
@@ -609,12 +639,25 @@ script:
           then:
             - variables:
                 _or_pol: "{{ _or_t.get('policy', {}) if _or_t.get('policy') is mapping else {} }}"
-            - variables:
                 _or_tune: "{{ ((_cfg.get('thresholds', {}) or {}).get(_host ~ '.' ~ _tpl, {})) if _cfg.get('thresholds') is mapping else {} }}"
-                _or_p: "{{ _or_answers.get(_or_pol.get('question', ''), {}).get('noul', none) }}"
+                _or_a: "{{ _or_answers.get(_or_pq) if _or_answers.get(_or_pq) is mapping else {} }}"
             - variables:
-                _or_refresh_at: "{{ _or_tune.get('refresh_at', _or_pol.get('refresh_at', 0.6)) | float(0.6) }}"
-                _or_keep_below: "{{ _or_tune.get('keep_below', _or_pol.get('keep_below', 0.35)) | float(0.35) }}"
+                _or_yes: "{{ _or_pol.get('yes_outcome', 'refresh') | string }}"
+                _or_no: "{{ _or_pol.get('no_outcome', 'keep') | string }}"
+                _or_yes_at: "{{ _or_tune.get('yes_at', _or_tune.get('refresh_at', _or_pol.get('yes_at', _or_pol.get('refresh_at', 0.6)))) | float(0.6) }}"
+                _or_no_below: "{{ _or_tune.get('no_below', _or_tune.get('keep_below', _or_pol.get('no_below', _or_pol.get('keep_below', 0.35)))) | float(0.35) }}"
+                _or_min_p: "{{ _or_tune.get('min_probability', _or_pol.get('min_probability', 0.5)) | float(0.5) }}"
+            - variables:
+                _or_outcome: >-
+                  {%- if _or_pqt == 'noul' -%}
+                    {%- set p = _or_a.get('noul') -%}
+                    {%- if p is not number -%}insufficient_evidence{%- elif p >= _or_yes_at -%}{{ _or_yes }}{%- elif p < _or_no_below -%}{{ _or_no }}{%- else -%}insufficient_evidence{%- endif -%}
+                  {%- else -%}
+                    {%- set c = _or_a.get('choice', '') | string -%}
+                    {%- set pr = _or_a.get('probabilities') -%}
+                    {%- set p = pr.get(c) if pr is mapping else none -%}
+                    {%- if c != '' and p is number and p >= _or_min_p -%}{{ c }}{%- else -%}insufficient_evidence{%- endif -%}
+                  {%- endif -%}
             - variables:
                 final_response:
                   status: ok
@@ -623,13 +666,13 @@ script:
                     host: "{{ _host }}"
                     template: "{{ _tpl }}"
                     template_version: "{{ _or_t.get('version', 1) }}"
-                    outcome: "{%- if _or_p is not number -%}insufficient_evidence{%- elif _or_p >= _or_refresh_at -%}refresh{%- elif _or_p < _or_keep_below -%}keep{%- else -%}insufficient_evidence{%- endif -%}"
+                    outcome: "{{ _or_outcome }}"
                     basis: evaluated
-                    full_summary_required: "{{ _or_p is number and _or_p >= _or_refresh_at }}"
+                    full_summary_required: "{{ _or_outcome == 'refresh' and (_or_t.get('summary_target', '') | string) != '' }}"
                     evidence_revision: "{{ _or_bind.get('evidence_revision', '') }}"
                     as_of: "{{ _or_bind.get('as_of', '') }}"
                     answers: "{{ _or_answers }}"
-                    thresholds: {refresh_at: "{{ _or_refresh_at }}", keep_below: "{{ _or_keep_below }}"}
+                    policy: "{{ {'question': _or_pq, 'yes_outcome': _or_yes, 'no_outcome': _or_no, 'yes_at': _or_yes_at, 'no_below': _or_no_below} if _or_pqt == 'noul' else {'question': _or_pq, 'min_probability': _or_min_p} }}"
                     tokens_est: "{{ _or_tokens }}"
 
     # ── unknown mode ────────────────────────────────────────────────────────

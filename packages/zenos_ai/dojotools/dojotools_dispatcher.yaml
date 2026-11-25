@@ -1,6 +1,9 @@
 #####################################################################
 # zen_dojotool_dispatcher — Event-driven dojotool dispatch layer
-# Version: 5.6.8
+# Version: 5.6.9
+# v5.6.9: the drain router's age and staleness come from the shared macro
+#   zenos_health.jinja kfc_freshness, the same rule SuperSummary uses to flag stale
+#   component summaries (#10763). Same results as before.
 # v5.6.8: comments only, plus one unused variable. The drain router's header and description
 #   describe what it does now (summary_request, per-component staleness, the half-way quiet
 #   rule); _s_max_minutes is gone (unused since staleness became per component; the
@@ -1123,6 +1126,7 @@ automation:
           - variables:
               _now_ts: "{{ now().timestamp() | int(0) }}"
               _candidates: >-
+                {%- import 'zenos_ai/zenos_health.jinja' as HL -%}
                 {%- set protected = ['AI_Cabinet_VolumeInfo', 'kfc_template', 'zen_library_manifest', 'zen_identity_manifest', '_context'] -%}
                 {%- set dojo_v = state_attr(_dojo_cab, 'variables') | default({}, true) -%}
                 {%- set kata_v = state_attr(_kata_cab, 'variables') | default({}, true) -%}
@@ -1152,28 +1156,16 @@ automation:
                           {%- set kata_val = kata_raw.get('value', kata_raw) if kata_raw is mapping else {} -%}
                           {%- set kata_val = (kata_val | from_json(none)) if kata_val is string else kata_val -%}
                           {%- set kata_val = kata_val if kata_val is mapping else {} -%}
-                          {%- set lr_str   = kata_val.get('last_run_at', '') | default('', true) | string | trim -%}
-                          {%- set lr_num   = lr_str | float(-1) if lr_str | is_number else -1 -%}
-                          {%- set lr_ts    = ((lr_num / 1000) if lr_num > 100000000000 else lr_num) | int(0) if lr_num > 0 else (as_timestamp(lr_str, 0) | int(0) if lr_str != '' else 0) -%}
-                          {%- set gen_str  = kata_val.get('generated', '') | default('', true) | string -%}
-                          {%- set gen_ts   = as_timestamp(gen_str, 0) | int(0) if gen_str != '' else 0 -%}
-                          {%- set ref_ts   = [lr_ts, gen_ts] | max -%}
-                          {%- set ts_src   = 'none' if ref_ts == 0 else ('last_run_at' if lr_ts >= gen_ts else 'generated') -%}
-                          {%- set age_min  = ((_now_ts - ref_ts) / 60) | int(9999) if ref_ts > 0 else 9999 -%}
+                          {#- Age and staleness by the one shared rule, HL.kfc_freshness
+                              (zenos_health.jinja): the same rule SuperSummary flags with (5.6.9). -#}
+                          {%- set _f = HL.kfc_freshness(val, kata_val, _now_ts) | from_json -%}
+                          {%- set ref_ts = _f.ref_ts -%}
+                          {%- set ts_src = _f.ts_source -%}
+                          {%- set age_min = _f.age_min -%}
                           {%- set tier_sort = 0 if tier == 'system' else (1 if tier in ['keeper', 'direct'] else 2) -%}
-                          {#- Self-calculated staleness (5.6.0): the component's own periodic
-                              subscriptions set its expected cadence; stale = twice the
-                              shortest. A declared staleness_minutes wins; an event-only
-                              component keeps a day. -#}
-                          {%- set _subs = val.get('trigger_subscriptions', []) -%}
-                          {%- set _subs = (_subs.split(',') | map('trim') | list) if _subs is string else (_subs if _subs is sequence else []) -%}
-                          {%- set _cad_map = {'every_10_minutes': 10, 'quarter_hour': 15, 'hourly_trigger': 60, 'daily_noon': 1440, 'daily_midnight': 1440} -%}
-                          {%- set _cn = namespace(l=[]) -%}
-                          {%- for _s in _subs if _s in _cad_map -%}{%- set _cn.l = _cn.l + [_cad_map[_s]] -%}{%- endfor -%}
-                          {%- set _cads = _cn.l -%}
-                          {%- set _cad = (720 if ('daily_noon' in _subs and 'daily_midnight' in _subs and (_cads | min) >= 1440) else (_cads | min)) if _cads | count > 0 else none -%}
-                          {%- set staleness = val.get('staleness_minutes') | int(0) if val.get('staleness_minutes') is not none else ((_cad * 2) if _cad is not none else 1440) -%}
-                          {%- set stale_src = 'declared' if val.get('staleness_minutes') is not none else ('cadence' if _cad is not none else 'default') -%}
+                          {%- set staleness = _f.staleness_minutes -%}
+                          {%- set stale_src = _f.staleness_source -%}
+                          {%- set _cad = _f.cadence_minutes -%}
                           {#- Cooldown: the Ninja tried within the window and no fresh kata came
                               of it (a refusal, an empty answer): wait for the next window
                               instead of forcing it every ten minutes. -#}
@@ -1183,7 +1175,7 @@ automation:
                           {%- set _att_ts = as_timestamp((_lr_val.get('run_started_at') if _lr_val is mapping else '') or '', 0) | int(0) -%}
                           {%- set cooling = _att_ts > ref_ts and ((_now_ts - _att_ts) / 60) < staleness -%}
                           {%- if not cooling -%}
-                            {%- set ns.cands = ns.cands + [{'key': key, 'kata_key': kkey, 'tier': tier, 'tier_sort': tier_sort, 'age_min': age_min, 'ts_source': ts_src, 'staleness_minutes': staleness, 'staleness_source': stale_src, 'cadence_minutes': _cad, 'overdue': ((age_min / (staleness if staleness > 0 else 1440)) * 100) | round(0) | int}] -%}
+                            {%- set ns.cands = ns.cands + [{'key': key, 'kata_key': kkey, 'tier': tier, 'tier_sort': tier_sort, 'age_min': age_min, 'ts_source': ts_src, 'staleness_minutes': staleness, 'staleness_source': stale_src, 'cadence_minutes': _cad, 'overdue': _f.overdue}] -%}
                           {%- endif -%}
                         {%- endif -%}
                       {%- endif -%}
