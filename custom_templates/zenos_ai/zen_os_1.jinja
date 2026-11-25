@@ -1544,7 +1544,7 @@
 {%- endmacro -%}
 
 {# ================== DRAWER BUILDER ================== #}
-{%- macro zen_drawer(drawer, value, kata_cab, desc="") -%}
+{%- macro zen_drawer(drawer, value, kata_cab, desc="", kata_ts=none) -%}
   {%- set _enabled = ((value['meta'] | default({})) if value is mapping else {}).get('enabled', true) | bool -%}
   {%- set kata_val = CABS.cabinet_drawer_value(kata_cab, drawer) | from_json() -%}
   {%- set kata_val = kata_val if kata_val is mapping else {} -%}
@@ -1558,15 +1558,32 @@
       carried in full for every low-urgency component on every render. #}
   {%- set _attention = 'nominal' if (_attention is not none and _urgency < 4) else _attention -%}
   {%- set kata_signal = {'urgency': _urgency} -%}
+  {#- Freshness (#10745): no kata yet reads 'unobserved', not nominal; a kata older than
+      24 hours carries its age in hours. Current rows carry nothing extra. -#}
+  {%- set _kts = as_datetime(kata_ts) if kata_ts else none -%}
+  {%- set _kage = ((now() - _kts).total_seconds() // 3600) | int if _kts is not none and _kts.tzinfo is not none else none -%}
+  {%- if kata_val | length == 0 -%}
+    {%- set kata_signal = kata_signal | combine({'unobserved': true}) -%}
+  {%- elif _kage is not none and _kage > 24 -%}
+    {%- set kata_signal = kata_signal | combine({'stale_h': _kage}) -%}
+  {%- endif -%}
   {%- if _attention is not none -%}
     {%- set kata_signal = kata_signal | combine({'attention': _attention}) -%}
   {%- endif -%}
-  {%- set _drawer_out = {'id': drawer, 'meta': {'enabled': _enabled}, 'kata': kata_signal} -%}
-  {%- set _fn = value['friendly_name'] | default('') -%}
-  {%- set _drawer_out = _drawer_out | combine({'friendly_name': _fn}) if _fn else _drawer_out -%}
-  {%- set _lbl = value['label'] | default('') -%}
-  {%- set _drawer_out = _drawer_out | combine({'label': _lbl}) if _lbl else _drawer_out -%}
-  {%- set _drawer_out = _drawer_out | combine({'description': desc}) if desc else _drawer_out -%}
+  {#- Rows carry only what tells components apart (#10745 step 4): enabled only
+      when false, and a name, label or description only when it is not just
+      the id (or the name) again. -#}
+  {%- set _drawer_out = {'id': drawer, 'kata': kata_signal} -%}
+  {%- set _drawer_out = _drawer_out | combine({'enabled': false}) if not _enabled else _drawer_out -%}
+  {%- set _key = drawer | string | lower -%}
+  {%- set _fn = value['friendly_name'] | default('') | string | trim -%}
+  {%- set _fn_key = _fn | lower | replace(' ', '_') -%}
+  {%- set _drawer_out = _drawer_out | combine({'friendly_name': _fn}) if (_fn and _fn_key != _key) else _drawer_out -%}
+  {%- set _lbl = value['label'] | default('') | string | trim -%}
+  {%- set _lbl_key = _lbl | lower | replace(' ', '_') -%}
+  {%- set _drawer_out = _drawer_out | combine({'label': _lbl}) if (_lbl and _lbl_key not in [_key, _fn_key]) else _drawer_out -%}
+  {%- set _d = desc | default('', true) | string | trim -%}
+  {%- set _drawer_out = _drawer_out | combine({'description': _d}) if (_d and _d | lower not in ['tbd', _fn | lower, _lbl | lower]) else _drawer_out -%}
   {{ _drawer_out | tojson }}
 {%- endmacro -%}
 
@@ -1575,6 +1592,7 @@
   {%- import 'zenos_ai/zen_identity.jinja' as ID -%}
   {%- set dojo_cab = states('sensor.zen_dojo_cabinet_resolved') -%}
   {%- set kata_cab = states('sensor.zen_kata_cabinet_resolved') -%}
+  {%- set _kvars = state_attr(kata_cab, 'variables') or {} -%}
   {%- set dojo = state_attr(dojo_cab, 'variables') or {} -%}
   {%- set meta = (dojo_kungfu_meta(dojo) | default('{}')) | from_json(none) -%}
   {%- set meta = meta if meta is mapping else {} -%}
@@ -1640,7 +1658,8 @@
           to special-case each generation's notion of "family". #}
       {%- set _desc = '' if (_desc and _desc in _seen_descs.vals) else _desc -%}
       {%- if _desc -%}{%- set _seen_descs.vals = _seen_descs.vals + [_desc] -%}{%- endif -%}
-      {%- set component = zen_drawer(drawer, value, kata_cab, _desc) | from_json(none) -%}
+      {%- set _kts_raw = ((_kvars.get(drawer) if _kvars.get(drawer) is mapping else {}) or {}).get('timestamp') -%}
+      {%- set component = zen_drawer(drawer, value, kata_cab, _desc, _kts_raw) | from_json(none) -%}
       {%- set component = component if component is mapping else {} -%}
       {%- set data.components = data.components + [component] -%}
     {%- endif -%}
@@ -1657,16 +1676,25 @@
       home_overview/system aren't duplicated anywhere else and are kept. #}
   {%- set _digest = _zen_summary_raw.get('zen_summary', {}) -%}
   {%- set _digest = _digest if _digest is mapping else {} -%}
+  {#- Freshness (#10745): the digest carries its own timestamp. Its age goes in, and stale
+      when it is over 3 hours old, so old news is not read as current. The summary's
+      'system' block (build and os version) duplicated the header, wrongly, and is dropped. -#}
+  {%- set _ts = as_datetime(_digest.get('timestamp', '')) if _digest.get('timestamp') else none -%}
+  {%- set _ts = _ts.replace(tzinfo=now().tzinfo) if (_ts is not none and _ts.tzinfo is none) else _ts -%}
+  {%- set _age = ((now() - _ts).total_seconds() // 60) | int if _ts is not none else none -%}
+  {%- set _fresh = ({'age_minutes': _age, 'stale': _age > 180} if _age is not none else ({'stale': true} if _digest else {})) -%}
+  {#- kung_fu goes in only when the Dojo knows its branch or version; unknown/unknown
+      tells the agent nothing. The kung_fu drawer was retired for kfc_template in KF4
+      (5fe2ce5ed), so on a current install this stays out (#10745). -#}
+  {%- set _kf_known = meta_slim.version != 'unknown' or meta_slim.branch != 'unknown' -%}
   {{
-    {
-      'kung_fu':      meta_slim,
+    ({'kung_fu': meta_slim} if _kf_known else {}) | combine({
       'drawers':      data.components,
       'zen_summary':  {
-        'digest':        _digest,
-        'home_overview': _zen_summary_raw.get('home_overview', {}),
-        'system':        _zen_summary_raw.get('system', {})
+        'digest':        _digest | combine(_fresh),
+        'home_overview': _zen_summary_raw.get('home_overview', {})
       }
-    } | tojson
+    }) | tojson
   }}
 {%- endmacro -%}
 
@@ -1842,12 +1870,24 @@
 {# ===========================================
    WAKE SCENE RENDERER
    =========================================== #}
+{#- Pronouns for the wake prose, from the persona jacket (#10745). No pronouns set:
+    she, as the wake text always said. A set this map does not know: they. -#}
+{%- macro persona_pronouns(jacket={}) -%}
+  {%- set _pr = ((jacket.get('pronouns', '') if jacket is mapping else '') | string | lower | trim) -%}
+  {%- set _sub = (_pr.split('/') | first | trim) if _pr else 'she' -%}
+  {%- set P = {'she': ['she', 'her', 'her', 'herself'], 'he': ['he', 'him', 'his', 'himself'], 'they': ['they', 'them', 'their', 'themself'], 'it': ['it', 'it', 'its', 'itself']} -%}
+  {%- set _key = _sub if _sub in P else 'they' -%}
+  {%- set r = P[_key] -%}
+  {{ {'s': r[0], 'o': r[1], 'p': r[2], 'x': r[3], 'S': r[0] | capitalize, 'plural': _key == 'they'} | to_json }}
+{%- endmacro -%}
+
 {%- macro render_wake_from_essence(essence) -%}
 {%- set _ess = essence | default({}, true) -%}
 
 {# ── THREE-LAYER NATIVE PATH ──────────────────────────────────────────────── #}
 {%- if _ess.get('core') is mapping and _ess.get('jacket') is mapping -%}
   {%- set _j   = _ess.jacket -%}
+  {%- set PR  = persona_pronouns(_j) | from_json -%}
   {%- set _p   = _j.get('persona', {}) if _j.get('persona') is mapping else {} -%}
   {%- set _ap  = _p.get('appearance', {}) if _p.get('appearance') is mapping else {} -%}
   {%- set _lin_raw = _p.get('lineage', []) -%}
@@ -1889,9 +1929,9 @@
   {# compose sentences #}
   {%- set s_arrive   = 'Systems online. ' ~ _name ~ (', ' ~ _title if _title else '') ~ ' returns to presence' ~ (' — ' ~ _present ~ '.' if _present else '.') -%}
   {%- set _room_str  = ('Warm light glows softly across ' ~ _room) if _room else 'Warm light glows softly' -%}
-  {%- set s_scene    = (_room_str ~ '. She stirs in ' ~ _wake_in ~ '.') if _wake_in else (_room_str ~ ' as systems come online.') if _room else '' -%}
-  {%- set _desk_ref  = ('At her ' ~ _desk ~ ', ') if _desk else '' -%}
-  {%- set _plant_str = (_plants | join(' and ') ~ ' she placed there herself catch the light in a quiet shimmer.') if _plants else '' -%}
+  {%- set s_scene    = (_room_str ~ '. ' ~ PR.S ~ (' stir in ' if PR.plural else ' stirs in ') ~ _wake_in ~ '.') if _wake_in else (_room_str ~ ' as systems come online.') if _room else '' -%}
+  {%- set _desk_ref  = ('At ' ~ PR.p ~ ' ' ~ _desk ~ ', ') if _desk else '' -%}
+  {%- set _plant_str = (_plants | join(' and ') ~ ' ' ~ PR.s ~ ' placed there ' ~ PR.x ~ ' catch the light in a quiet shimmer.') if _plants else '' -%}
   {%- set s_desk     = (_desk_ref ~ _plant_str) if _plant_str else '' -%}
   {%- set _mus_parts = [_mus_genre, _mus_riff, _mus_mood] | reject('equalto', '') | list -%}
   {%- set s_music    = ('A hint of ' ~ (_mus_parts | join(' — ')) ~ '.') if _mus_parts else '' -%}
@@ -2163,7 +2203,7 @@ Executing: ~WAKE~ <<timestamp>>
     -#}
     {%- set auto_exec = CABS.cabinet_drawer_value(ai_cab, 'programs_auto_exec', none) | from_json() -%}
 AutoContext:
-{{ auto_exec | default("null") | tojson }}
+{{ auto_exec | default(none) | to_json }}
     {#- Semantic roots: the first tool for each question word, published by
         zen_dojotools_manifest mode=publish into zen_tool_manifest. Each root
         condenses its domain; the names after > are where to go deeper. -#}
@@ -2262,15 +2302,8 @@ Roots (ask the root first; it answers what matters now and names where to go dee
      }, recursive=true)
    | tojson }}
     {%- else -%}
-{{ header
-   | combine(base, recursive=true)
-   | combine({
-       "squirrel_mode": "OFF",
-       "message": "Secret Squirrel mode is disabled.",
-       "squirrel_status": "SQURLOK OPUND",
-       "notes": squirrel_note
-     }, recursive=true)
-   | tojson }}
+{#- Off: one line instead of the whole Skwerlco block on every boot (#10745). -#}
+{{ {"squirrel_mode": "OFF", "squirrel_status": "SQURLOK OPUND"} | to_json }}
     {%- endif %}
 
   {%- endif -%}  {# identity_ok #}
@@ -2353,12 +2386,26 @@ Roots (ask the root first; it answers what matters now and names where to go dee
     {%- set _pri     = priority_inject() | trim -%}
     {%- set _aq      = agent_queue_inject() | trim -%}
     {%- set _bridge  = console_check_bridge(_idcard) | trim -%}
-    {%- set _total   = (_header|length) + (_system|length) + (_mfst|length) + (_id_mani|length) + (_idx|length) + (_dojo|length) + (_cap|length) + (_over|length) + (_wake|length) + (_pri|length) + (_aq|length) + (_bridge|length) -%}
+    {#- The JSON sections are measured as render_prompt serializes them (parsed,
+        then to_json with sort_keys), so the audit counts what the agent gets. -#}
+    {%- set _header  = (_header  | from_json(none) or {}) | to_json(sort_keys=True) -%}
+    {%- set _system_s = (_system | from_json(none) or {}) | to_json(sort_keys=True) -%}
+    {%- set _mfst    = (_mfst    | from_json(none) or {}) | to_json(sort_keys=True) -%}
+    {%- set _id_mani = (_id_mani | from_json(none) or {}) | to_json(sort_keys=True) -%}
+    {%- set _idx     = (_idx     | from_json(none) or []) | to_json(sort_keys=True) -%}
+    {%- set _dojo    = (_dojo    | from_json(none) or {}) | to_json(sort_keys=True) -%}
+    {%- set _cap     = (_cap     | from_json(none) or {}) | to_json(sort_keys=True) -%}
+    {%- set _over    = (_over    | from_json(none) or {}) | to_json(sort_keys=True) -%}
+    {%- set _total   = (_header|length) + (_system_s|length) + (_mfst|length) + (_id_mani|length) + (_idx|length) + (_dojo|length) + (_cap|length) + (_over|length) + (_wake|length) + (_pri|length) + (_aq|length) + (_bridge|length) -%}
     {{ {
       'total':    _total,
+      'checks': {
+        'ready_to_adventure': 'READY TO ADVENTURE' in _system,
+        'wake_present':       _wake | length > 0
+      },
       'sections': {
         'header':         _header   | length,
-        'system':         _system   | length,
+        'system':         _system_s | length,
         'manifest':       _mfst     | length,
         'id_manifest':    _id_mani  | length,
         'index':          _idx      | length,
@@ -2390,6 +2437,8 @@ Roots (ask the root first; it answers what matters now and names where to go dee
    (falls back to .desk, then "terminal").
    ============================== #}
 {%- macro console_check_bridge(idcard) -%}
+  {%- set _pe = CABS.cabinet_drawer_value(states('sensor.zen_default_ai_user_cabinet_resolved'), 'zenai_essence', none) | from_json(none) -%}
+  {%- set PR = persona_pronouns((_pe.get('jacket', {}) if _pe is mapping else {})) | from_json -%}
   {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
   {%- if _hh not in ['', 'unknown', 'unavailable'] -%}
     {%- set _slug = states('input_text.zenos_persona_name') | lower | trim | regex_replace('[^a-z].*', '') -%}
@@ -2421,13 +2470,13 @@ Roots (ask the root first; it answers what matters now and names where to go dee
 
       {%- if _alert_count > 0 and _queue_count > 0 %}
 
-She glances at her {{ _console }}. {{ _alert_count }} alert{{ 's' if _alert_count != 1 else '' }} already waiting — those go first. {{ _queue_count }} item{{ 's' if _queue_count != 1 else '' }} in queue — she'll surface them once she knows why they're here.
+{{ PR.S }} {{ 'glance' if PR.plural else 'glances' }} at {{ PR.p }} {{ _console }}. {{ _alert_count }} alert{{ 's' if _alert_count != 1 else '' }} already waiting — those go first. {{ _queue_count }} item{{ 's' if _queue_count != 1 else '' }} in queue — {{ PR.s }}'ll surface them once {{ PR.s }} {{ 'know' if PR.plural else 'knows' }} why they're here.
       {%- elif _alert_count > 0 %}
 
-She glances at her {{ _console }}. {{ _alert_count }} alert{{ 's' if _alert_count != 1 else '' }} flagged. That gets her attention before anything else.
+{{ PR.S }} {{ 'glance' if PR.plural else 'glances' }} at {{ PR.p }} {{ _console }}. {{ _alert_count }} alert{{ 's' if _alert_count != 1 else '' }} flagged. That gets {{ PR.p }} attention before anything else.
       {%- else %}
 
-She glances at her {{ _console }}. {{ _queue_count }} item{{ 's' if _queue_count != 1 else '' }} in queue — she'll hold them until she knows what brought them here.
+{{ PR.S }} {{ 'glance' if PR.plural else 'glances' }} at {{ PR.p }} {{ _console }}. {{ _queue_count }} item{{ 's' if _queue_count != 1 else '' }} in queue — {{ PR.s }}'ll hold them until {{ PR.s }} {{ 'know' if PR.plural else 'knows' }} what brought them here.
       {%- endif -%}
     {%- endif -%}
   {%- endif -%}
@@ -2582,14 +2631,17 @@ render_prompt() — persona sensor unavailable (state: {{ _ai_ent }}). Check inp
     {%- set _active_notif = _active_notif if (_active_notif is mapping or _active_notif is none) else none -%}
     {%- set _capsule  = ({'type': 'flynn_gate', 'reason': _flynn_reason, 'active_notification': _active_notif, 'status': flynn.flynn_gate_status(_ai_user) | trim} | tojson) if _is_flynn else ai_capsule(_idcard) -%}
     {%- set _overview = ({} | tojson) if _is_flynn else compact_overview() -%}
-{"header": {{ (_header    | from_json(none) or {}) | tojson }},
-"system": {{ (_system    | from_json(none) or {}) | tojson }},
-"manifest": {{ (_manifest  | from_json(none) or {}) | tojson }},
-"id_manifest": {{ (_id_mani  | from_json(none) or {}) | tojson }},
-"index": {{ (_index     | from_json(none) or []) | tojson }},
-"kata": {{ (_dojo      | from_json(none) or {}) | tojson }},
-"capsule": {{ (_capsule   | from_json(none) or {}) | tojson }},
-"overview": {{ (_overview  | from_json(none) or {}) | tojson }},
+{#- to_json, not tojson: Jinja's tojson is ASCII-only and HTML-escapes, so every
+    em dash cost 6 characters (—) and every apostrophe 6 (') in the
+    prompt. sort_keys keeps the same key order tojson produced (#10745). -#}
+{"header": {{ (_header    | from_json(none) or {}) | to_json(sort_keys=True) }},
+"system": {{ (_system    | from_json(none) or {}) | to_json(sort_keys=True) }},
+"manifest": {{ (_manifest  | from_json(none) or {}) | to_json(sort_keys=True) }},
+"id_manifest": {{ (_id_mani  | from_json(none) or {}) | to_json(sort_keys=True) }},
+"index": {{ (_index     | from_json(none) or []) | to_json(sort_keys=True) }},
+"kata": {{ (_dojo      | from_json(none) or {}) | to_json(sort_keys=True) }},
+"capsule": {{ (_capsule   | from_json(none) or {}) | to_json(sort_keys=True) }},
+"overview": {{ (_overview  | from_json(none) or {}) | to_json(sort_keys=True) }},
 "session_token": "experimental_0123456789abcdef",
 "boot_time": "{{ now().isoformat() }}"}
 {%- if not _is_flynn %}

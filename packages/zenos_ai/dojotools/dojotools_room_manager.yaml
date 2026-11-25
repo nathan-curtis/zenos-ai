@@ -1,5 +1,13 @@
 ###############################################################################
-# zen_dojotools_room_manager v5.20.1 (codename: RoomReg)
+# zen_dojotools_room_manager v5.20.3 (codename: RoomReg)
+# v5.20.3: setup moves its data with the location. Every room_occupancy drawer the household
+#   holds is copied to the target and compared value for value before the household originals
+#   are removed and the pointer written; a conflict, a copy not confirmed or a removal that
+#   does not finish stops setup with no pointer written (copies taken back on a failed copy).
+#   It never leaves the tree split between two cabinets (FileCabinet 6.43.0 refuses that too).
+# v5.20.2: setup creates the room_occupancy root drawer in the target cabinet, the drawer the
+#   household pointer resolves to (it was never written, so fleet showed the mount as broken).
+#   Per-room writes follow the mount there (FileCabinet 6.42.0).
 # v5.20.1: home_overview finds the weather entity by main_weather first (the label the
 #   Weather tool uses), still reading zen_weather, so one label serves every tool.
 # v5.20.0: mode=hvac_coverage, which areas each air handler serves and what is not
@@ -791,7 +799,7 @@ script:
                 summary='Room brief and room state: occupancy, scenes, safety',
                 display_name='Room Manager',
                 tier='dojotools',
-                version='5.20.1',
+                version='5.20.3',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['zen_household_cabinet', 'zen_kfc_provider', 'room_manager', 'room_layout', 'carbon_monoxide', 'moisture', 'privacy_door', 'siren', 'smoke'],
                 optional_labels=['scene_vacant', 'scene_occupied', 'scene_engaged', 'scene_asleep', 'scene_hold', 'scene_paused', 'scene_automation', 'scene_cleaning', 'scene_emergency', 'hps', 'hold', 'engaged', 'occupied', 'asleep', 'motion', 'wasp_door', 'bed_occupancy', 'sleep_off_target', 'tv_sleep_target', 'vent_fan', 'window', 'garage_door', 'occupied_timer', 'asleep_timer', 'emergency_latch', 'nap_latch', 'asleep_minutes', 'nap_minutes', 'occupied_minutes', 'zenos_roomstate_master_switch', 'zenos_reflex_master_switch', 'scene_vacant', 'scene_occupied', 'scene_engaged', 'scene_asleep', 'scene_paused', 'scene_automation', 'scene_cleaning', 'scene_emergency', 'vibration', 'vibration_completion'],
@@ -7084,7 +7092,102 @@ script:
               _setup_occ_already_mounted: >-
                 {{ _setup_occ_existing.get('mount_point', false) == true
                    and _setup_occ_existing.get('target_entity_id', '') != '' }}
+          # Setup moves the data with the location (FileCabinet 6.43.0 refuses a
+          # split tree). Every room_occupancy drawer the household holds is copied
+          # to the target and compared value for value; only then are the household
+          # originals removed and the pointer written. Any failure stops here: the
+          # copies are taken back, no pointer is written, the household keeps its data.
           - if: "{{ not _setup_occ_already_mounted }}"
+            then:
+              - variables:
+                  _rmv_keys: >-
+                    {%- set sv = state_attr(_setup_hh_cab, 'variables') or {} -%}
+                    {%- set ns = namespace(k=[]) -%}
+                    {%- for k in sv.keys() | list | sort if k.startswith('room_occupancy/') -%}{%- set ns.k = ns.k + [k] -%}{%- endfor -%}
+                    {{ ns.k + (['room_occupancy'] if 'room_occupancy' in sv else []) }}
+                  _rmv_conflicts: >-
+                    {%- set tv = state_attr(_setup_target_cab, 'variables') or {} -%}
+                    {{ _rmv_keys | select('in', tv.keys() | list) | list }}
+              - if: "{{ _rmv_conflicts | count > 0 }}"
+                then:
+                  - variables:
+                      _result:
+                        status: error
+                        mode: setup
+                        step_failed: occupancy_move_preflight
+                        message: "{{ _setup_target_cab }} already holds {{ _rmv_conflicts | join(', ') }}. Nothing was moved or written; reconcile the two copies first."
+                        caller_token: "{{ _caller_token }}"
+              - if: "{{ _result is not defined and _rmv_keys | count > 0 }}"
+                then:
+                  - repeat:
+                      for_each: "{{ _rmv_keys }}"
+                      sequence:
+                        - action: script.zen_sutra_filecabinet
+                          continue_on_error: true
+                          data:
+                            mode: copy
+                            force_action: true
+                            caller_tool: zen_dojotools_room_manager
+                            volume_entity_id: "{{ _setup_hh_cab }}"
+                            key: "{{ repeat.item }}"
+                            destination_volume_entity_id: "{{ _setup_target_cab }}"
+                            destination_path: "{{ repeat.item }}"
+                  - variables:
+                      _rmv_bad: >-
+                        {%- set sv = state_attr(_setup_hh_cab, 'variables') or {} -%}
+                        {%- set tv = state_attr(_setup_target_cab, 'variables') or {} -%}
+                        {%- set ns = namespace(b=[]) -%}
+                        {%- for k in _rmv_keys -%}
+                          {%- if not (tv.get(k) is mapping and sv.get(k) is mapping and tv[k].get('value') == sv[k].get('value')) -%}{%- set ns.b = ns.b + [k] -%}{%- endif -%}
+                        {%- endfor -%}
+                        {{ ns.b }}
+                  - if: "{{ _rmv_bad | count > 0 }}"
+                    then:
+                      - repeat:
+                          for_each: "{{ _rmv_keys | select('in', (state_attr(_setup_target_cab, 'variables') or {}).keys() | list) | list }}"
+                          sequence:
+                            - action: script.zen_sutra_filecabinet
+                              continue_on_error: true
+                              data:
+                                mode: delete
+                                force_action: true
+                                caller_tool: zen_dojotools_room_manager
+                                volume_entity_id: "{{ _setup_target_cab }}"
+                                key: "{{ repeat.item }}"
+                      - variables:
+                          _result:
+                            status: error
+                            mode: setup
+                            step_failed: occupancy_move_copy
+                            message: "Copy to {{ _setup_target_cab }} not confirmed for {{ _rmv_bad | join(', ') }}. The copies were taken back; the household keeps its data and no pointer was written."
+                            caller_token: "{{ _caller_token }}"
+              - if: "{{ _result is not defined and _rmv_keys | count > 0 }}"
+                then:
+                  - repeat:
+                      for_each: "{{ _rmv_keys }}"
+                      sequence:
+                        - action: script.zen_sutra_filecabinet
+                          continue_on_error: true
+                          data:
+                            mode: delete
+                            force_action: true
+                            caller_tool: zen_dojotools_room_manager
+                            volume_entity_id: "{{ _setup_hh_cab }}"
+                            key: "{{ repeat.item }}"
+                  - variables:
+                      _rmv_left: >-
+                        {%- set sv = state_attr(_setup_hh_cab, 'variables') or {} -%}
+                        {{ _rmv_keys | select('in', sv.keys() | list) | list }}
+                  - if: "{{ _rmv_left | count > 0 }}"
+                    then:
+                      - variables:
+                          _result:
+                            status: error
+                            mode: setup
+                            step_failed: occupancy_move_cleanup
+                            message: "{{ _setup_target_cab }} holds a verified copy of every room_occupancy drawer, but the household still holds {{ _rmv_left | join(', ') }}. No pointer was written; the household copy is still the one in use. Reconcile before running setup again."
+                            caller_token: "{{ _caller_token }}"
+          - if: "{{ _result is not defined and not _setup_occ_already_mounted }}"
             then:
               - action: script.zen_sutra_filecabinet
                 data:
@@ -7099,6 +7202,20 @@ script:
                     completed: true
                     completed_at: "{{ now().isoformat() }}"
                     claimed_by: zen_dojotools_room_manager
+              # A fresh install has no tree to move: the root is created in the
+              # target so the pointer resolves.
+              - if: "{{ 'room_occupancy' not in (state_attr(_setup_target_cab, 'variables') or {}) }}"
+                then:
+                  - action: script.zen_sutra_filecabinet
+                    data:
+                      mode: create
+                      force_action: true
+                      show_hidden_volumes: false
+                      volume_entity_id: "{{ _setup_target_cab }}"
+                      key: room_occupancy
+                      value:
+                        room_occupancy_root: true
+                        mounted_from: "{{ _setup_hh_cab }}"
               - action: script.zen_sutra_filecabinet
                 data:
                   mode: upsert
@@ -7119,43 +7236,48 @@ script:
                   volume_entity_id: "{{ _setup_hh_cab }}"
                   key: room_occupancy
                 response_variable: _setup_occ_verify_raw
-          - variables:
-              _setup_occ_verified: >-
-                {%- if _setup_occ_already_mounted -%}
-                  true
-                {%- else -%}
-                  {%- set _v = _setup_occ_verify_raw.get('value', {}) if _setup_occ_verify_raw is mapping else {} -%}
-                  {{ _v.get('mount_point', false) == true and _v.get('target_entity_id', '') == _setup_target_cab }}
-                {%- endif -%}
-              _setup_occ_result:
-                already_mounted: "{{ _setup_occ_already_mounted }}"
-                target_cabinet: >-
-                  {{ _setup_occ_existing.get('target_entity_id', '') if _setup_occ_already_mounted else _setup_target_cab }}
-                verified: "{{ _setup_occ_verified }}"
-          # The KFC comes from this tool's own kfc_manifest (the one source, with the
-          # summary seed and the zenos.presence.read requirement). bootstrap_kfc
-          # registers it as a live mount; setup used to ship a second inline copy
-          # through Scribe that replaced the mount and dropped both (#10670).
-          # Started as its own run (script.turn_on): called inside this queued run, its
-          # scan would try to start this tool again, which Home Assistant refuses.
-          - alias: 'Register KFC: room_manager (bootstrap_kfc, separate run)'
-            action: script.turn_on
-            continue_on_error: true
-            target:
-              entity_id: script.zen_dojotools_manifest
-            data:
-              variables:
-                mode: bootstrap_kfc
-                caller_token: "{{ _caller_token }}/setup"
-          - variables:
-              _result:
-                status: success
-                mode: setup
-                kfc_key: room_manager
-                version: "1.0.0"
-                deployed: "{{ {'source': 'kfc_manifest', 'registered_by': 'manifest bootstrap_kfc, started as a separate run', 'note': 'The component seeds through summary and requires zenos.presence.read; setup no longer ships its own copy.'} }}"
-                occupancy_cabinet: "{{ _setup_occ_result }}"
-                caller_token: "{{ _caller_token }}"
+          - if: "{{ _result is not defined }}"
+            then:
+              - variables:
+                  _setup_occ_verified: >-
+                    {%- if _setup_occ_already_mounted -%}
+                      true
+                    {%- else -%}
+                      {#- The pointer itself, not what it resolves to (get follows the mount). -#}
+                      {%- set _e = (state_attr(_setup_hh_cab, 'variables') or {}).get('room_occupancy') -%}
+                      {%- set _v = _e.get('value') if _e is mapping else {} -%}
+                      {%- set _v = ((_v | from_json(none)) if _v is string else _v) or {} -%}
+                      {{ _v.get('mount_point', false) == true and _v.get('target_entity_id', '') == _setup_target_cab }}
+                    {%- endif -%}
+                  _setup_occ_result:
+                    already_mounted: "{{ _setup_occ_already_mounted }}"
+                    target_cabinet: >-
+                      {{ _setup_occ_existing.get('target_entity_id', '') if _setup_occ_already_mounted else _setup_target_cab }}
+                    verified: "{{ _setup_occ_verified }}"
+              # The KFC comes from this tool's own kfc_manifest (the one source, with the
+              # summary seed and the zenos.presence.read requirement). bootstrap_kfc
+              # registers it as a live mount; setup used to ship a second inline copy
+              # through Scribe that replaced the mount and dropped both (#10670).
+              # Started as its own run (script.turn_on): called inside this queued run, its
+              # scan would try to start this tool again, which Home Assistant refuses.
+              - alias: 'Register KFC: room_manager (bootstrap_kfc, separate run)'
+                action: script.turn_on
+                continue_on_error: true
+                target:
+                  entity_id: script.zen_dojotools_manifest
+                data:
+                  variables:
+                    mode: bootstrap_kfc
+                    caller_token: "{{ _caller_token }}/setup"
+              - variables:
+                  _result:
+                    status: success
+                    mode: setup
+                    kfc_key: room_manager
+                    version: "1.0.0"
+                    deployed: "{{ {'source': 'kfc_manifest', 'registered_by': 'manifest bootstrap_kfc, started as a separate run', 'note': 'The component seeds through summary and requires zenos.presence.read; setup no longer ships its own copy.'} }}"
+                    occupancy_cabinet: "{{ _setup_occ_result }}"
+                    caller_token: "{{ _caller_token }}"
 
 
       # ═══════════════════════════════════════════════════════════════════════

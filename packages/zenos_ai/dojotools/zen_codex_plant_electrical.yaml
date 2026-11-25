@@ -1,0 +1,487 @@
+###############################################################################
+# ZenOS-AI DojoTools: Plant Codex -- Electrical
+# zen_codex_plant_electrical (v1.0.1)
+# v1.0.1: circuit_high_draw only when the rating is unknown or the circuit is past 50% of it
+#   (a 3.9 kW spa feed on a 60 A double-pole circuit is 27%, not an anomaly).
+#
+# NOT MCP-exposed. Plant (zen_dojotools_plant) dispatches its electrical modes
+# here when this codex is installed: electric, circuits, circuit_draw,
+# electrical_summary, electrical_inspect, plus the electric block Plant's
+# overview and validate read (electric_block). Without it those Plant modes
+# answer not_configured and the rest of Plant is unchanged.
+#
+# Read-only. Nothing here opens a breaker, sheds a load or changes a circuit
+# priority; actuation stays with the integration's own controls under a cert.
+#
+# Found by label and by device (zero hardcoded entities):
+#   main_panel, sub_panel   panel sensors; a circuit is a *_current sensor on
+#                           these labels; its breaker switch and rating are the
+#                           switch / *_breaker_rating sensor on the same device
+#   consumed_energy         per-circuit lifetime energy (circuits sort_by=energy)
+#   utility_main, utility_meter, utility_billing, energy_management
+#   zen_plant_site_power / tariff / billing_* / grid_carbon (pins)
+#   zen_plant_pv_power / battery_power / battery_soc / grid_power / off_grid
+#   surge_suppression, zen_plant_generator, zen_plant_battery, zen_plant_solar
+#   breaker_gfci, breaker_afci (human-confirmed, on the breaker switch)
+#   zen_plant_ignore        excluded everywhere
+#
+# Household tuning: household cabinet drawer energy_config
+#   (high_load_warning_watts, anomalous_single_circuit_watts, has_co2_sensors).
+#
+# v1.0.0 (#10750): moved out of Plant 5.14 (electric, circuits, circuit_draw
+#   and the electric discovery); the breaker switch and rating are matched on
+#   the circuit's device instead of a house-specific entity-id prefix. New
+#   electrical_summary (urgency 0-5) and electrical_inspect. Seeds the Plant
+#   'electrical' KFC component (cert zenos.electrical.read).
+###############################################################################
+
+script:
+
+  zen_codex_plant_electrical:
+    alias: "Zen Codex Plant Electrical"
+    description: >-
+      Plant codex: electrical. Not MCP-exposed; call through zen_dojotools_plant.
+    mode: parallel
+    max: 10
+    fields:
+      mode:
+        description: "electric | circuits | circuit_draw | electrical_summary | electrical_inspect | electric_block | help"
+        selector:
+          text:
+      circuit_limit:
+        selector:
+          number:
+            min: 1
+            max: 50
+      sort_by:
+        selector:
+          text:
+      entity_id:
+        selector:
+          text:
+      utility:
+        description: "Plant passes the household utility registry's electric entry."
+        selector:
+          object:
+      caller_token:
+        selector:
+          text:
+
+    sequence:
+      - variables:
+          _ec_mode: "{{ mode | default('electrical_summary', true) | string | lower | trim }}"
+          _ec_token: "{{ caller_token | default('', true) }}"
+          _ec_util: "{{ utility if utility is mapping else {} }}"
+          _ec_ign: "{{ label_entities('zen_plant_ignore') | list }}"
+          _ec_hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+      - variables:
+          _um: "{{ label_entities('utility_main') | select('match', 'sensor\\.') | reject('in', _ec_ign) | list }}"
+          _umeter: "{{ label_entities('utility_meter') | select('match', 'sensor\\.') | reject('in', _ec_ign) | list }}"
+          _mp: "{{ label_entities('main_panel') | select('match', 'sensor\\.') | reject('in', _ec_ign) | list }}"
+          _sp: "{{ label_entities('sub_panel') | select('match', 'sensor\\.') | reject('in', _ec_ign) | list }}"
+          _panel_bin: "{{ (label_entities('main_panel') + label_entities('sub_panel')) | unique | select('match', 'binary_sensor\\.') | reject('in', _ec_ign) | list }}"
+          _bill: "{{ label_entities('utility_billing') | select('match', 'sensor\\.') | reject('in', _ec_ign) | list }}"
+          _bill_bin: "{{ label_entities('utility_billing') | select('match', 'binary_sensor\\.') | reject('in', _ec_ign) | list }}"
+          _emgmt: "{{ label_entities('energy_management') | select('match', 'sensor\\.') | reject('in', _ec_ign) | list }}"
+          _consumed: "{{ label_entities('consumed_energy') | select('match', 'sensor\\.') | reject('in', _ec_ign) | list }}"
+          _zp_site_power: "{{ label_entities('zen_plant_site_power') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_tariff: "{{ label_entities('zen_plant_tariff') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_bd: "{{ label_entities('zen_plant_billing_daily') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_bw: "{{ label_entities('zen_plant_billing_weekly') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_bm: "{{ label_entities('zen_plant_billing_monthly') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_carbon: "{{ label_entities('zen_plant_grid_carbon') | select('match', 'sensor\\.') | list | first | default('') }}"
+          _zp_pv: "{{ label_entities('zen_plant_pv_power') | select('match', 'sensor\\.') | reject('in', _ec_ign) | list }}"
+          _zp_bp: "{{ label_entities('zen_plant_battery_power') | select('match', 'sensor\\.') | reject('in', _ec_ign) | list }}"
+          _zp_soc: "{{ label_entities('zen_plant_battery_soc') | select('match', 'sensor\\.') | reject('in', _ec_ign) | list }}"
+          _zp_grid: "{{ label_entities('zen_plant_grid_power') | select('match', 'sensor\\.') | reject('in', _ec_ign) | list }}"
+          _zp_offgrid: "{{ label_entities('zen_plant_off_grid') | select('match', 'binary_sensor\\.') | reject('in', _ec_ign) | list | first | default('') }}"
+      - variables:
+          _site_power_eid: >-
+            {%- if _zp_site_power != '' -%}{{ _zp_site_power }}
+            {%- else -%}
+              {%- set a = _um | select('search', 'power|watt') | reject('search', 'produced|reactive|pv') | list | first | default('') -%}
+              {%- set b = _mp | select('search', 'site_power') | list | first | default('') -%}
+              {{ a if a != '' else b }}
+            {%- endif -%}
+          _l1_eid: "{{ _mp | select('search', 'l1_voltage') | list | first | default('') }}"
+          _l2_eid: "{{ _mp | select('search', 'l2_voltage') | list | first | default('') }}"
+          _brk_eid: "{{ _mp | select('search', 'main_breaker_rating') | list | first | default('') }}"
+          _bd_eid: >-
+            {%- if _zp_bd != '' -%}{{ _zp_bd }}{%- else -%}
+              {%- set c = _bill | select('search', 'daily') | list | first | default('') -%}{%- set u = _umeter | select('search', 'daily') | list | first | default('') -%}{{ c if c != '' else u }}
+            {%- endif -%}
+          _bm_eid: >-
+            {%- if _zp_bm != '' -%}{{ _zp_bm }}{%- else -%}
+              {%- set c = _bill | select('search', 'monthly') | list | first | default('') -%}{%- set u = _umeter | select('search', 'monthly') | list | first | default('') -%}{{ c if c != '' else u }}
+            {%- endif -%}
+          _bw_eid: >-
+            {%- if _zp_bw != '' -%}{{ _zp_bw }}{%- else -%}
+              {%- set c = _bill | select('search', 'weekly') | list | first | default('') -%}{%- set u = _umeter | select('search', 'weekly') | list | first | default('') -%}{{ c if c != '' else u }}
+            {%- endif -%}
+          _tariff_eid: >-
+            {%- if _zp_tariff != '' -%}{{ _zp_tariff }}{%- else -%}
+              {%- set c = _bill | select('search', 'tariff|rate|price') | list | first | default('') -%}{%- set u = _umeter | select('search', 'tariff|rate|price') | list | first | default('') -%}{{ c if c != '' else u }}
+            {%- endif -%}
+          _peak_eid: "{{ _bill_bin | list | first | default('') }}"
+          _fossil_eid: "{{ _zp_carbon if _zp_carbon != '' else (_emgmt | select('search', 'fossil') | list | first | default('')) }}"
+          # A circuit: a *_current sensor on the panel labels, bus-level ones excluded.
+          _circuit_eids: >-
+            {{ (_mp + _sp) | unique | list | select('search', '_current$')
+               | reject('search', 'upstream|downstream|l1_current|l2_current|breaker_rating') | list }}
+      - variables:
+          _site_power_w: >-
+            {%- set s = states(_site_power_eid) if _site_power_eid != '' else 'unavailable' -%}{{ s | float(none) if s not in ['unavailable','unknown',''] else none }}
+          _l1_v: >-
+            {%- set s = states(_l1_eid) if _l1_eid != '' else 'unavailable' -%}{{ s | float(none) if s not in ['unavailable','unknown',''] else none }}
+          _l2_v: >-
+            {%- set s = states(_l2_eid) if _l2_eid != '' else 'unavailable' -%}{{ s | float(none) if s not in ['unavailable','unknown',''] else none }}
+          _breaker_a: >-
+            {%- set s = states(_brk_eid) if _brk_eid != '' else 'unavailable' -%}{{ s | float(none) if s not in ['unavailable','unknown',''] else none }}
+          _bd_wh: >-
+            {%- set s = states(_bd_eid) if _bd_eid != '' else 'unavailable' -%}{{ s | float(none) if s not in ['unavailable','unknown',''] else none }}
+          _bm_wh: >-
+            {%- set s = states(_bm_eid) if _bm_eid != '' else 'unavailable' -%}{{ s | float(none) if s not in ['unavailable','unknown',''] else none }}
+          _bw_wh: >-
+            {%- set s = states(_bw_eid) if _bw_eid != '' else 'unavailable' -%}{{ s | float(none) if s not in ['unavailable','unknown',''] else none }}
+          _tariff_usd_wh: >-
+            {%- set s = states(_tariff_eid) if _tariff_eid != '' else 'unavailable' -%}{{ s | float(none) if s not in ['unavailable','unknown',''] else none }}
+          _peak: >-
+            {%- set s = states(_peak_eid) if _peak_eid != '' else 'unavailable' -%}{{ (s == 'on') if s not in ['unavailable','unknown',''] else none }}
+          _fossil_pct: >-
+            {%- set s = states(_fossil_eid) if _fossil_eid != '' else 'unavailable' -%}{{ s | float(none) if s not in ['unavailable','unknown',''] else none }}
+          _solar_available: "{{ (_zp_pv | count) > 0 or (_zp_bp | count) > 0 or (_zp_soc | count) > 0 or (_zp_grid | count) > 0 or _zp_offgrid != '' }}"
+      - variables:
+          _solar_block: >-
+            {%- if _solar_available -%}
+              {{ {'pv_power_w': ((_zp_pv | map('states') | map('float', 0) | list | sum) | round(0)) if _zp_pv | count > 0 else none,
+                  'battery_power_w': ((_zp_bp | map('states') | map('float', 0) | list | sum) | round(0)) if _zp_bp | count > 0 else none,
+                  'battery_soc_pct': (((_zp_soc | map('states') | map('float', 0) | list | sum) / (_zp_soc | count)) | round(1)) if _zp_soc | count > 0 else none,
+                  'grid_power_w': ((_zp_grid | map('states') | map('float', 0) | list | sum) | round(0)) if _zp_grid | count > 0 else none,
+                  'grid_connected': (not is_state(_zp_offgrid, 'on')) if _zp_offgrid != '' else none,
+                  'inverter_count': _zp_pv | count, 'battery_bank_count': _zp_soc | count} }}
+            {%- else -%}{{ none }}{%- endif -%}
+      - variables:
+          _elec_block: >-
+            {{ {'available': _site_power_w is not none or _bd_wh is not none or _solar_available,
+                'live_power_w': _site_power_w,
+                'live_power_kw': (_site_power_w / 1000) | round(2) if _site_power_w is not none else none,
+                'daily_kwh': (_bd_wh / 1000) | round(2) if _bd_wh is not none else none,
+                'weekly_kwh': (_bw_wh / 1000) | round(3) if _bw_wh is not none else none,
+                'monthly_kwh': (_bm_wh / 1000) | round(2) if _bm_wh is not none else none,
+                'tariff_usd_kwh': (_tariff_usd_wh | float(0) * 1000) | round(5) if _tariff_usd_wh is not none else none,
+                'peak_billing_month': _peak,
+                'grid_fossil_pct': _fossil_pct,
+                'l1_voltage': _l1_v, 'l2_voltage': _l2_v, 'main_breaker_amps': _breaker_a,
+                'source': _site_power_eid,
+                'solar': _solar_block} }}
+          _ec_configured: "{{ (_mp + _sp + _um + _bill + _consumed) | count > 0 or _site_power_eid != '' or _solar_available }}"
+
+      # ── Circuit rows (circuit_draw shape). The breaker switch and the rating
+      #    sensor are the ones on the circuit's own device; the rating falls back
+      #    to the <circuit>_breaker_rating naming convention when the device has
+      #    none. ─────────────────────────────────────────────────────────────
+      - if: "{{ _ec_mode in ['circuit_draw', 'electrical_summary', 'electrical_inspect'] }}"
+        then:
+          - variables:
+              _cd_rows: >-
+                {%- set ns = namespace(rows=[]) -%}
+                {%- for eid in _circuit_eids -%}
+                  {%- set raw = states(eid) -%}
+                  {%- set a = raw | float(-1) -%}
+                  {%- set dev = device_id(eid) -%}
+                  {%- set dents = device_entities(dev) if dev else [] -%}
+                  {%- set sw = (dents | select('match', 'switch\\.') | list | first) | default('') -%}
+                  {%- set rt = (dents | select('match', 'sensor\\.') | select('search', 'breaker_rating') | list | first) | default('') -%}
+                  {%- set rt = rt if rt != '' else (eid | replace('_current', '_breaker_rating')) -%}
+                  {%- set ra = states(rt) | float(-1) -%}
+                  {%- set v = state_attr(eid, 'voltage') | default(120, true) | int(120) -%}
+                  {%- set tabs = state_attr(eid, 'tabs') | default('', true) | string -%}
+                  {%- set poles = 2 if ':' in tabs else (2 if v >= 240 else 1) -%}
+                  {%- set name = ((([device_name(eid) if dev else '', entity_name(eid)] | select | unique | join(' ')) if entity_name is defined else '') or (state_attr(eid, 'friendly_name') | default(eid, true))) -%}
+                  {%- set swl = (labels(sw) | default([], true)) if sw != '' else [] -%}
+                  {%- set rs = state_attr(eid, 'relay_state') | default(none, true) -%}
+                  {%- set rq = state_attr(eid, 'relay_requester') | default(none, true) -%}
+                  {%- set row = {'entity_id': eid, 'name': name, 'voltage': v, 'poles': poles,
+                      'draw_a': a if a >= 0 else none, 'draw_w_est': ((a * v) | round(0)) if a >= 0 else none,
+                      'no_data': a < 0,
+                      'breaker_switch': sw if sw != '' else none,
+                      'protection_type': 'gfci' if 'breaker_gfci' in swl else ('afci' if 'breaker_afci' in swl else none),
+                      'special_purpose': 'surge_suppression' if 'surge_suppression' in swl else none,
+                      'relay_state': rs, 'relay_open': rs == 'OPEN',
+                      'relay_requester': rq if rq not in [none, 'NONE'] else none,
+                      'is_sheddable': state_attr(eid, 'is_sheddable') | default(none, true),
+                      'shed_priority': state_attr(eid, 'shed_priority') | default(none, true)} -%}
+                  {%- if ra > 0 and a >= 0 -%}
+                    {%- set row = dict(row, breaker_rating_a=ra, capacity_w_est=(ra * v) | round(0), pct_of_capacity=((a / ra) * 100) | round(1)) -%}
+                  {%- else -%}
+                    {%- set row = dict(row, breaker_rating_a=(ra if ra > 0 else none), capacity_w_est=none, pct_of_capacity=none) -%}
+                  {%- endif -%}
+                  {%- set ns.rows = ns.rows + [row] -%}
+                {%- endfor -%}
+                {{ ns.rows }}
+
+      - if: "{{ _ec_mode == 'help' }}"
+        then:
+          - variables:
+              _ec_result:
+                status: ok
+                tool: zen_codex_plant_electrical
+                modes:
+                  electric: "Whole-home power, energy, tariff, voltages, main breaker, panel status and features."
+                  circuits: "Circuits by lifetime energy (sort_by=energy) or live current (sort_by=current)."
+                  circuit_draw: "Draw against breaker rating per circuit, relay state and who opened it."
+                  electrical_summary: "One scored, read-only electrical answer: urgency 0-5 and reasons."
+                  electrical_inspect: "One circuit or panel sensor."
+                note: "Read-only. Nothing here opens a breaker or sheds a load."
+                caller_token: "{{ _ec_token }}"
+
+      - if: "{{ _ec_result is not defined and _ec_mode == 'electric_block' }}"
+        then:
+          - variables:
+              _ec_result:
+                status: ok
+                tool: zen_codex_plant_electrical
+                mode: electric_block
+                block: "{{ _elec_block }}"
+                validate_slots:
+                  site_power: {'entity_id': "{{ _site_power_eid }}", 'pinned': "{{ _zp_site_power != '' }}", 'raw_state': "{{ states(_site_power_eid) if _site_power_eid != '' else none }}", 'ok': "{{ _site_power_w is not none }}"}
+                  tariff: {'entity_id': "{{ _tariff_eid }}", 'pinned': "{{ _zp_tariff != '' }}", 'raw_state': "{{ states(_tariff_eid) if _tariff_eid != '' else none }}", 'ok': "{{ _tariff_usd_wh is not none }}"}
+                  billing_daily: {'entity_id': "{{ _bd_eid }}", 'pinned': "{{ _zp_bd != '' }}", 'raw_state': "{{ states(_bd_eid) if _bd_eid != '' else none }}", 'ok': "{{ _bd_wh is not none }}"}
+                  billing_weekly: {'entity_id': "{{ _bw_eid }}", 'pinned': "{{ _zp_bw != '' }}", 'raw_state': "{{ states(_bw_eid) if _bw_eid != '' else none }}", 'ok': "{{ _bw_wh is not none }}"}
+                  billing_monthly: {'entity_id': "{{ _bm_eid }}", 'pinned': "{{ _zp_bm != '' }}", 'raw_state': "{{ states(_bm_eid) if _bm_eid != '' else none }}", 'ok': "{{ _bm_wh is not none }}"}
+                  grid_carbon: {'entity_id': "{{ _fossil_eid }}", 'pinned': "{{ _zp_carbon != '' }}", 'raw_state': "{{ states(_fossil_eid) if _fossil_eid != '' else none }}", 'ok': "{{ _fossil_pct is not none }}"}
+                  l1_voltage: {'entity_id': "{{ _l1_eid }}", 'pinned': false, 'raw_state': "{{ states(_l1_eid) if _l1_eid != '' else none }}", 'ok': "{{ _l1_v is not none }}"}
+                  l2_voltage: {'entity_id': "{{ _l2_eid }}", 'pinned': false, 'raw_state': "{{ states(_l2_eid) if _l2_eid != '' else none }}", 'ok': "{{ _l2_v is not none }}"}
+                  breaker_rating: {'entity_id': "{{ _brk_eid }}", 'pinned': false, 'raw_state': "{{ states(_brk_eid) if _brk_eid != '' else none }}", 'ok': "{{ _breaker_a is not none }}"}
+                  pv_power: {'entity_id': null, 'pinned': false, 'raw_state': "{{ (_solar_block or {}).get('pv_power_w') }}", 'ok': "{{ (_solar_block or {}).get('pv_power_w') is not none }}", 'entity_count': "{{ _zp_pv | count }}"}
+                  battery_power: {'entity_id': null, 'pinned': false, 'raw_state': "{{ (_solar_block or {}).get('battery_power_w') }}", 'ok': "{{ (_solar_block or {}).get('battery_power_w') is not none }}", 'entity_count': "{{ _zp_bp | count }}"}
+                  battery_soc: {'entity_id': null, 'pinned': false, 'raw_state': "{{ (_solar_block or {}).get('battery_soc_pct') }}", 'ok': "{{ (_solar_block or {}).get('battery_soc_pct') is not none }}", 'entity_count': "{{ _zp_soc | count }}"}
+                  grid_power: {'entity_id': null, 'pinned': false, 'raw_state': "{{ (_solar_block or {}).get('grid_power_w') }}", 'ok': "{{ (_solar_block or {}).get('grid_power_w') is not none }}", 'entity_count': "{{ _zp_grid | count }}"}
+                caller_token: "{{ _ec_token }}"
+
+      - if: "{{ _ec_result is not defined and _ec_mode == 'electric' }}"
+        then:
+          - variables:
+              _ec_result:
+                status: ok
+                mode: electric
+                summary: "{{ {'available': _elec_block.get('available', false), 'live_kw': _elec_block.get('live_power_kw'), 'daily_kwh': _elec_block.get('daily_kwh'), 'tariff_usd_kwh': _elec_block.get('tariff_usd_kwh')} }}"
+                entities: >-
+                  {%- set dsm = _mp | select('search', 'dsm_state$') | list | first | default('') -%}
+                  {%- set relay = _mp | select('search', 'main_relay_state') | list | first | default('') -%}
+                  {{ _elec_block | combine({
+                      'panel_status': {'dsm_state': states(dsm) if dsm != '' else none, 'relay_state': states(relay) if relay != '' else none},
+                      'panel_features': {
+                        'surge_suppressor_present': label_entities('surge_suppression') | count > 0, 'surge_suppressor_entities': label_entities('surge_suppression') | list,
+                        'generator_present': label_entities('zen_plant_generator') | count > 0, 'generator_entities': label_entities('zen_plant_generator') | list,
+                        'battery_present': label_entities('zen_plant_battery') | count > 0, 'battery_entities': label_entities('zen_plant_battery') | list,
+                        'solar_present': label_entities('zen_plant_solar') | count > 0, 'solar_entities': label_entities('zen_plant_solar') | list},
+                      'utility': _ec_util}) }}
+                warnings: []
+                next_actions: []
+                caller_token: "{{ _ec_token }}"
+
+      - if: "{{ _ec_result is not defined and _ec_mode == 'circuits' }}"
+        then:
+          - variables:
+              _c_limit: "{{ circuit_limit | default(10, true) | int(10) }}"
+              _c_sort: "{{ sort_by | default('energy', true) | string | lower }}"
+          - variables:
+              _c_rows: >-
+                {%- set ns = namespace(rows=[]) -%}
+                {%- if _c_sort == 'current' -%}
+                  {%- for eid in _circuit_eids -%}
+                    {%- set a = states(eid) | float(-1) -%}
+                    {%- if a >= 0 -%}
+                      {%- set v = state_attr(eid, 'voltage') | default(120, true) | int(120) -%}
+                      {%- set name = ((([device_name(eid) if device_id(eid) else '', entity_name(eid)] | select | unique | join(' ')) if entity_name is defined else '') or (state_attr(eid, 'friendly_name') | default(eid, true))) -%}
+                      {%- set ns.rows = ns.rows + [{'entity_id': eid, 'name': name, 'current_a': a, 'voltage': v, 'est_power_w': (a * v) | round(0)}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.rows | sort(attribute='current_a', reverse=true) | list }}
+                {%- else -%}
+                  {%- for eid in _consumed -%}
+                    {%- set wh = states(eid) | float(-1) -%}
+                    {%- if wh >= 0 -%}
+                      {%- set name = ((([device_name(eid) if device_id(eid) else '', entity_name(eid)] | select | unique | join(' ')) if entity_name is defined else '') or (state_attr(eid, 'friendly_name') | default(eid, true))) -%}
+                      {%- set ns.rows = ns.rows + [{'entity_id': eid, 'name': name, 'lifetime_wh': wh, 'lifetime_kwh': (wh / 1000) | round(2)}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                  {{ ns.rows | sort(attribute='lifetime_wh', reverse=true) | list }}
+                {%- endif -%}
+          - variables:
+              _ec_result:
+                status: ok
+                mode: circuits
+                summary:
+                  total_circuits: "{{ _circuit_eids | count if _c_sort == 'current' else _consumed | count }}"
+                  whole_home_w: "{{ _site_power_w }}"
+                  sort_by: "{{ _c_sort }}"
+                  limit: "{{ _c_limit }}"
+                entities:
+                  circuits: "{{ _c_rows[:_c_limit] }}"
+                warnings: []
+                next_actions: []
+                caller_token: "{{ _ec_token }}"
+
+      - if: "{{ _ec_result is not defined and _ec_mode == 'circuit_draw' }}"
+        then:
+          - variables:
+              _cd_limit: "{{ circuit_limit | default(25, true) | int(25) }}"
+              _cd_live: "{{ _cd_rows | selectattr('no_data', 'eq', false) | list }}"
+          - variables:
+              _cd_sorted: >-
+                {%- set w = _cd_live | rejectattr('pct_of_capacity', 'none') | sort(attribute='pct_of_capacity', reverse=true) | list -%}
+                {{ w + (_cd_live | selectattr('pct_of_capacity', 'none') | list) }}
+          - variables:
+              _ec_result:
+                status: ok
+                mode: circuit_draw
+                summary:
+                  total_circuits: "{{ _cd_live | count }}"
+                  limit: "{{ _cd_limit }}"
+                  open_breakers: "{{ _cd_live | selectattr('relay_open', 'eq', true) | list | count }}"
+                  note: "Voltage and poles come from the circuit sensor's own attributes. The breaker switch and rating are the ones on the circuit's device. GFCI/AFCI protection_type and special_purpose are human-confirmed labels (breaker_gfci, breaker_afci, surge_suppression) on the breaker switch; none until tagged. relay_open=true means the breaker is open now; relay_requester says who opened it."
+                entities:
+                  circuits: "{{ _cd_sorted[:_cd_limit] }}"
+                warnings: >-
+                  {%- set ns = namespace(w=[]) -%}
+                  {%- if _circuit_eids | count == 0 -%}{%- set ns.w = ns.w + ['No circuit current sensors under the main_panel or sub_panel labels. Label the panel integration (mode=label_suggest).'] -%}{%- endif -%}
+                  {%- set mr = _cd_live | selectattr('breaker_rating_a', 'none') | list -%}
+                  {%- if mr | count > 0 -%}{%- set ns.w = ns.w + [(mr | count | string) ~ ' circuit(s) report a current but no breaker rating on their device: draw only, no pct_of_capacity.'] -%}{%- endif -%}
+                  {{ ns.w }}
+                next_actions: []
+                caller_token: "{{ _ec_token }}"
+
+      - if: "{{ _ec_result is not defined and _ec_mode in ['electrical_summary', 'electrical_inspect'] and not _ec_configured }}"
+        then:
+          - variables:
+              _ec_result:
+                status: not_configured
+                tool: zen_codex_plant_electrical
+                mode: "{{ _ec_mode }}"
+                component: electrical
+                message: "No electrical sources are labeled. Label the panel's sensors main_panel / sub_panel (mode=label_suggest integration=<panel integration>), whole-home power utility_main, circuit energy consumed_energy."
+                caller_token: "{{ _ec_token }}"
+
+      - if: "{{ _ec_result is not defined and _ec_mode == 'electrical_summary' }}"
+        then:
+          - variables:
+              _ec_cfg: >-
+                {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                {%- set raw = CABS.cabinet_drawer_value_mounted(_ec_hh, 'energy_config') if _ec_hh not in ['', 'unknown', 'unavailable'] else none -%}
+                {%- set c = (raw | from_json) if raw not in [none, ''] else {} -%}
+                {%- set c = c if c is mapping else {} -%}
+                {{ {'high_load_w': (c.get('high_load_warning_watts') or 8000) | float(8000),
+                    'circuit_w': (c.get('anomalous_single_circuit_watts') or 3000) | float(3000),
+                    'co2': (c.get('has_co2_sensors') | default(false)) | string | lower == 'true',
+                    'source': 'energy_config' if c | count > 0 else 'defaults'} }}
+          - variables:
+              _ec_eval: >-
+                {%- set ns = namespace(u=0, r=[], unk=[]) -%}
+                {%- set live = _cd_rows | selectattr('no_data', 'eq', false) | list -%}
+                {%- set nodata = _cd_rows | selectattr('no_data', 'eq', true) | list -%}
+                {%- set opened = live | selectattr('relay_open', 'eq', true) | list -%}
+                {%- for c in opened -%}
+                  {%- set rq = (c.relay_requester or '') | string | upper -%}
+                  {%- set u = 1 if rq == 'USER' else (3 if rq == '' else 4) -%}
+                  {%- set ns.u = [ns.u, u] | max -%}
+                  {%- set ns.r = ns.r + [{'urgency': u, 'key': 'breaker_open', 'message': c.name ~ ' is open' ~ (' (opened by ' ~ c.relay_requester ~ ')' if c.relay_requester else ' (no requester reported)') ~ '.', 'entities': [c.entity_id]}] -%}
+                {%- endfor -%}
+                {%- if nodata | count > 0 -%}
+                  {%- set ns.u = [ns.u, 2] | max -%}
+                  {%- set ns.r = ns.r + [{'urgency': 2, 'key': 'circuit_no_data', 'message': (nodata | count) ~ ' circuit sensor(s) not reporting: ' ~ (nodata[:5] | map(attribute='name') | join(', ')) ~ '. Possible hardware or integration issue.', 'entities': nodata | map(attribute='entity_id') | list}] -%}
+                {%- endif -%}
+                {%- if _site_power_w is not none and _site_power_w > _ec_cfg.high_load_w -%}
+                  {%- set ns.u = [ns.u, 3] | max -%}
+                  {%- set ns.r = ns.r + [{'urgency': 3, 'key': 'high_load', 'message': 'Whole-home load ' ~ (_site_power_w | round(0) | int) ~ ' W, over ' ~ (_ec_cfg.high_load_w | int) ~ ' W. HVAC plus EV charging together is normal.', 'entities': [_site_power_eid]}] -%}
+                {%- endif -%}
+                {#- A big load on a circuit rated for it (a 60 A spa feed at 27%) is normal: flag a high draw only when the rating is unknown or the circuit is past half of it. -#}
+                {%- for c in live if c.draw_w_est is not none and c.draw_w_est > _ec_cfg.circuit_w and (c.pct_of_capacity is none or c.pct_of_capacity >= 50) -%}
+                  {%- set ns.u = [ns.u, 2] | max -%}
+                  {%- set ns.r = ns.r + [{'urgency': 2, 'key': 'circuit_high_draw', 'message': c.name ~ ' drawing about ' ~ (c.draw_w_est | int) ~ ' W.', 'entities': [c.entity_id]}] -%}
+                {%- endfor -%}
+                {%- for c in live if c.pct_of_capacity is not none and c.pct_of_capacity >= 80 -%}
+                  {%- set ns.u = [ns.u, 2] | max -%}
+                  {%- set ns.r = ns.r + [{'urgency': 2, 'key': 'circuit_near_rating', 'message': c.name ~ ' at ' ~ c.pct_of_capacity ~ '% of its ' ~ (c.breaker_rating_a | int) ~ ' A rating. Sustained draw above 80% is a caution, not a code finding.', 'entities': [c.entity_id]}] -%}
+                {%- endfor -%}
+                {%- set door = _panel_bin | select('search', 'door') | list -%}
+                {%- for d in door -%}
+                  {%- set st = (expand(d) | first) if expand(d) | count > 0 else none -%}
+                  {%- if st and st.state == 'on' -%}
+                    {%- set mins = ((now().timestamp() - as_timestamp(st.last_changed, 0)) / 60) | round(0) -%}
+                    {%- if mins >= 30 -%}
+                      {%- set ns.u = [ns.u, 2] | max -%}
+                      {%- set ns.r = ns.r + [{'urgency': 2, 'key': 'panel_door_open', 'message': 'Panel door open ' ~ (mins | int) ~ ' min.', 'entities': [d]}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- if door | count == 0 -%}{%- set ns.unk = ns.unk + ['panel door: no door sensor under main_panel / sub_panel'] -%}{%- endif -%}
+                {%- if _ec_cfg.co2 -%}
+                  {%- for s in states.sensor | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'carbon_dioxide') | rejectattr('entity_id', 'in', _ec_ign) -%}
+                    {%- set ppm = s.state | float(-1) -%}
+                    {%- set cu = 3 if ppm > 2000 else (2 if ppm > 1500 else (1 if ppm > 1000 else 0)) -%}
+                    {%- if cu > 0 -%}
+                      {%- set ns.u = [ns.u, cu] | max -%}
+                      {%- set ns.r = ns.r + [{'urgency': cu, 'key': 'co2_high', 'message': (s.name or s.entity_id) ~ ' at ' ~ (ppm | int) ~ ' ppm.', 'entities': [s.entity_id]}] -%}
+                    {%- endif -%}
+                  {%- endfor -%}
+                {%- endif -%}
+                {%- if _site_power_w is none -%}{%- set ns.unk = ns.unk + ['whole-home power: no utility_main or site_power sensor reporting'] -%}{%- endif -%}
+                {%- if _circuit_eids | count == 0 -%}{%- set ns.unk = ns.unk + ['circuits: no circuit current sensors labeled'] -%}{%- endif -%}
+                {{ {'urgency': ns.u, 'reasons': ns.r | sort(attribute='urgency', reverse=true), 'unknown': ns.unk} }}
+          - variables:
+              _ec_result:
+                status: ok
+                tool: zen_codex_plant_electrical
+                mode: electrical_summary
+                component: electrical
+                urgency: "{{ _ec_eval.urgency }}"
+                level: "{{ ['nominal', 'attention', 'attention', 'warning', 'warning', 'critical'][_ec_eval.urgency | int(0)] }}"
+                reasons: "{{ _ec_eval.reasons }}"
+                power: "{{ {'live_kw': _elec_block.live_power_kw, 'daily_kwh': _elec_block.daily_kwh, 'l1_voltage': _l1_v, 'l2_voltage': _l2_v, 'main_breaker_amps': _breaker_a, 'source': _site_power_eid} }}"
+                circuits:
+                  total: "{{ _cd_rows | count }}"
+                  reporting: "{{ _cd_rows | selectattr('no_data', 'eq', false) | list | count }}"
+                  open: "{{ _cd_rows | selectattr('relay_open', 'eq', true) | map(attribute='name') | list }}"
+                  top_draw: "{{ (_cd_rows | rejectattr('draw_w_est', 'none') | sort(attribute='draw_w_est', reverse=true) | list)[:5] | map(attribute='name') | list }}"
+                solar: "{{ _solar_block }}"
+                unknown: "{{ _ec_eval.unknown }}"
+                config: "{{ _ec_cfg }}"
+                generated_at: "{{ now().isoformat() }}"
+                caller_token: "{{ _ec_token }}"
+
+      - if: "{{ _ec_result is not defined and _ec_mode == 'electrical_inspect' }}"
+        then:
+          - variables:
+              _ei: "{{ entity_id | default('', true) | string | trim }}"
+              _ei_row: "{{ (_cd_rows | selectattr('entity_id', 'eq', entity_id | default('', true) | string | trim) | list | first) | default(none) }}"
+              _ei_known: "{{ (_mp + _sp + _um + _umeter + _bill + _consumed + _panel_bin) | unique | list }}"
+          - variables:
+              _ec_result: >-
+                {%- if _ei == '' -%}
+                  {{ {'status': 'error', 'tool': 'zen_codex_plant_electrical', 'mode': 'electrical_inspect', 'reason': 'entity_id is required (a circuit current sensor or a panel sensor)', 'caller_token': _ec_token} }}
+                {%- elif _ei_row is mapping -%}
+                  {{ {'status': 'ok', 'tool': 'zen_codex_plant_electrical', 'mode': 'electrical_inspect', 'role': 'circuit', 'circuit': _ei_row, 'labels': labels(_ei), 'caller_token': _ec_token} }}
+                {%- elif _ei in _ei_known -%}
+                  {%- set st = (expand(_ei) | first) if expand(_ei) | count > 0 else none -%}
+                  {{ {'status': 'ok', 'tool': 'zen_codex_plant_electrical', 'mode': 'electrical_inspect', 'role': 'panel',
+                      'entity': {'entity_id': _ei, 'state': st.state if st else 'unknown', 'unit': state_attr(_ei, 'unit_of_measurement'),
+                                 'device_class': state_attr(_ei, 'device_class'), 'area': area_name(area_id(_ei)) if area_id(_ei) else '',
+                                 'last_changed': st.last_changed.isoformat() if st else none},
+                      'labels': labels(_ei), 'caller_token': _ec_token} }}
+                {%- else -%}
+                  {{ {'status': 'error', 'tool': 'zen_codex_plant_electrical', 'mode': 'electrical_inspect', 'reason': _ei ~ ' is not a labeled electrical source (main_panel, sub_panel, utility_main, utility_meter, utility_billing, consumed_energy)', 'caller_token': _ec_token} }}
+                {%- endif -%}
+
+      - if: "{{ _ec_result is not defined }}"
+        then:
+          - variables:
+              _ec_result:
+                status: error
+                tool: zen_codex_plant_electrical
+                reason: "{{ _ec_mode }} is not an electrical codex mode. Modes: electric, circuits, circuit_draw, electrical_summary, electrical_inspect, help."
+                caller_token: "{{ _ec_token }}"
+
+      - stop: zen_codex_plant_electrical response
+        response_variable: _ec_result

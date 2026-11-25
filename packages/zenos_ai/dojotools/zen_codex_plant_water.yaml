@@ -1,0 +1,307 @@
+###############################################################################
+# ZenOS-AI DojoTools: Plant Codex -- Water
+# zen_codex_plant_water (v1.0.2)
+#
+# NOT MCP-exposed. Plant (zen_dojotools_plant) dispatches mode=water_summary
+# and mode=water_inspect here when this codex is installed; without it those
+# Plant modes answer not_configured and nothing else changes.
+#
+# Read-only. Nothing here opens or closes a valve. zen_plant_leak_watch
+# (Plant's automation) stays the one deterministic leak responder: it acts
+# with no model and no network, and this codex never replaces or races it.
+# Water heaters belong to zen_dojotools_water_heater; this codex points there.
+#
+# Everything is found by label (zero hardcoded entities):
+#   zen_plant_leak_sensor    leak / moisture sensors
+#   zen_plant_auto_shutoff   shutoff valves (switch.* or valve.*)
+#   droplet, water_usage, zen_plant_water   flow and usage sources
+#   zen_plant_water_softener softener salt / service
+#   sump_pump                sump pump
+#   water_heater             pointer only
+#
+# v1.0.2: the leak watch closes valve.* shutoffs too (Plant 5.14.1), so the
+#   shutoff_not_watched reason and the leak_watch_closes field are gone.
+# v1.0.1: flow is a sensor reporting a rate or volume (the flow labels also cover
+#   leak sensors, valves and rates); a flow monitor's own alert binary sensors score
+#   when on; the overnight window reads "HH:MM-HH:MM" or {start, end}; the water
+#   heater is a pointer and a count.
+# v1.0.0 (#10751): water_summary (urgency 0-5, reasons, freshness, evidence,
+#   explicit unknown) and water_inspect (one entity). Seeds the Plant 'water'
+#   KFC component (cert zenos.water.read).
+###############################################################################
+
+script:
+
+  zen_codex_plant_water:
+    alias: "Zen Codex Plant Water"
+    description: >-
+      Plant codex: water. Not MCP-exposed; call through zen_dojotools_plant
+      mode=water_summary or mode=water_inspect.
+    mode: parallel
+    max: 10
+    fields:
+      mode:
+        description: "water_summary | water_inspect | help"
+        selector:
+          text:
+      entity_id:
+        description: "water_inspect: the entity to look at"
+        selector:
+          text:
+      caller_token:
+        description: "Echoed back."
+        selector:
+          text:
+
+    sequence:
+      - variables:
+          _wc_mode: "{{ mode | default('water_summary', true) | string | lower | trim }}"
+          _wc_token: "{{ caller_token | default('', true) }}"
+          _wc_now: "{{ now().timestamp() | int(0) }}"
+          _wc_leaks: "{{ label_entities('zen_plant_leak_sensor') | list }}"
+          _wc_shutoffs: "{{ label_entities('zen_plant_auto_shutoff') | select('match', '^(switch|valve)\\.') | list }}"
+          _wc_flow_all: "{{ (label_entities('droplet') + label_entities('water_usage') + label_entities('zen_plant_water')) | unique | list }}"
+          _wc_softener: "{{ label_entities('zen_plant_water_softener') | list }}"
+          _wc_sump: "{{ label_entities('sump_pump') | list }}"
+          _wc_heater: "{{ label_entities('water_heater') | list }}"
+          _wc_hh: "{{ states('sensor.zen_default_household_cabinet_resolved') }}"
+
+      - variables:
+          # A flow source is a sensor reporting a rate or a volume; the labels
+          # also cover leak sensors, valves and rates, which are not flow.
+          _wc_flow: >-
+            {%- set ns = namespace(l=[]) -%}
+            {%- for e in _wc_flow_all if e.startswith('sensor.') -%}
+              {%- set dc = state_attr(e, 'device_class') -%}
+              {%- set u = (state_attr(e, 'unit_of_measurement') or '') | string | lower -%}
+              {%- if dc in ['volume_flow_rate', 'water'] or u in ['gal/min', 'l/min', 'gal/h', 'l/h', 'gal', 'l', 'm³', 'ft³'] -%}{%- set ns.l = ns.l + [e] -%}{%- endif -%}
+            {%- endfor -%}
+            {{ ns.l }}
+          _wc_flow_alerts: "{{ _wc_flow_all | select('match', '^binary_sensor\\.') | reject('in', _wc_leaks) | list }}"
+      - variables:
+          _wc_configured: "{{ (_wc_leaks + _wc_shutoffs + _wc_flow + _wc_flow_alerts + _wc_softener + _wc_sump) | count > 0 }}"
+          _wc_auto_shutoff: >-
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set _raw = CABS.cabinet_drawer_value_mounted(_wc_hh, 'plant_auto_shutoff_config') if _wc_hh not in ['', 'unknown', 'unavailable'] else none -%}
+            {%- set _cfg = (_raw | from_json) if _raw not in [none, ''] else {} -%}
+            {{ ((_cfg.enabled | default(false)) if _cfg is mapping else false) | string | lower == 'true' }}
+          # Household tuning (household cabinet drawer water_config, optional):
+          # overnight_flow_window "HH:MM-HH:MM", long_flow_alert_minutes,
+          # daily_baseline_gallons. Defaults when unset.
+          _wc_cfg: >-
+            {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+            {%- set _raw = CABS.cabinet_drawer_value_mounted(_wc_hh, 'water_config') if _wc_hh not in ['', 'unknown', 'unavailable'] else none -%}
+            {%- set c = (_raw | from_json) if _raw not in [none, ''] else {} -%}
+            {%- set c = c if c is mapping else {} -%}
+            {%- set ow = c.get('overnight_flow_window') -%}
+            {%- set win = (ow.get('start', '02:00') ~ '-' ~ ow.get('end', '05:00')) if ow is mapping else ((ow or '02:00-05:00') | string) -%}
+            {{ {'window': win, 'long_flow_min': (c.get('long_flow_alert_minutes') or 30) | int(30),
+                'baseline_gal': (c.get('daily_baseline_gallons') | float(none)) if c.get('daily_baseline_gallons') not in [none, ''] else none,
+                'source': 'water_config' if c | count > 0 else 'defaults'} }}
+
+      - if: "{{ _wc_mode == 'help' }}"
+        then:
+          - variables:
+              _wc_result:
+                status: ok
+                tool: zen_codex_plant_water
+                modes:
+                  water_summary: "One scored, read-only water answer: urgency 0-5, reasons, leaks, shutoffs, flow, softener, sump, unknowns."
+                  water_inspect: "One labeled water entity: its role, state, freshness, area and what the summary makes of it."
+                labels: [zen_plant_leak_sensor, zen_plant_auto_shutoff, droplet, water_usage, zen_plant_water, zen_plant_water_softener, sump_pump, water_heater]
+                note: "Read-only. zen_plant_leak_watch is the leak responder; water heaters belong to zen_dojotools_water_heater."
+                caller_token: "{{ _wc_token }}"
+
+      - if: "{{ _wc_result is not defined and _wc_mode in ['water_summary', 'water_inspect'] and not _wc_configured }}"
+        then:
+          - variables:
+              _wc_result:
+                status: not_configured
+                tool: zen_codex_plant_water
+                mode: "{{ _wc_mode }}"
+                component: water
+                message: "No water sources are labeled. Label leak sensors zen_plant_leak_sensor, shutoff valves zen_plant_auto_shutoff, flow or usage sensors droplet / water_usage / zen_plant_water, the softener zen_plant_water_softener and the sump sump_pump."
+                caller_token: "{{ _wc_token }}"
+
+      # One row per labeled entity, the same shape for summary and inspect.
+      # fresh: hours since it last reported (none when it never has).
+      - if: "{{ _wc_result is not defined and _wc_mode in ['water_summary', 'water_inspect'] }}"
+        then:
+          - variables:
+              _wc_rows: >-
+                {%- set ns = namespace(r=[]) -%}
+                {%- set roles = [['leak', _wc_leaks], ['shutoff', _wc_shutoffs], ['flow', _wc_flow], ['flow_alert', _wc_flow_alerts], ['softener', _wc_softener], ['sump', _wc_sump]] -%}
+                {%- for role, ents in roles -%}
+                  {%- for eid in ents -%}
+                    {%- set st = (expand(eid) | first) if expand(eid) | count > 0 else none -%}
+                    {%- set s = st.state if st else 'unknown' -%}
+                    {%- set seen = (st.last_reported if (st and st.last_reported is defined) else (st.last_updated if st else none)) -%}
+                    {%- set age_h = ((_wc_now - (as_timestamp(seen, 0) | int(0))) / 3600) | round(1) if seen else none -%}
+                    {%- set a = area_id(eid) or '' -%}
+                    {%- set ns.r = ns.r + [{
+                          'entity_id': eid, 'role': role,
+                          'name': state_attr(eid, 'friendly_name') or eid,
+                          'area': (area_name(a) if a else ''),
+                          'state': s,
+                          'no_data': s in ['unavailable', 'unknown', ''],
+                          'unit': state_attr(eid, 'unit_of_measurement'),
+                          'device_class': state_attr(eid, 'device_class'),
+                          'hours_since_report': age_h}] -%}
+                  {%- endfor -%}
+                {%- endfor -%}
+                {{ ns.r }}
+
+      - if: "{{ _wc_result is not defined and _wc_mode == 'water_summary' }}"
+        then:
+          - variables:
+              _wc_eval: >-
+                {%- set rows = _wc_rows -%}
+                {%- set ns = namespace(u=0, reasons=[], unknown=[]) -%}
+                {%- set leak = rows | selectattr('role', 'eq', 'leak') | list -%}
+                {%- set wet = leak | selectattr('no_data', 'eq', false) | selectattr('state', 'eq', 'on') | list -%}
+                {%- set leak_nodata = leak | selectattr('no_data', 'eq', true) | list -%}
+                {%- set shut = rows | selectattr('role', 'eq', 'shutoff') | list -%}
+                {%- set shut_nodata = shut | selectattr('no_data', 'eq', true) | list -%}
+                {#- valve.* reports its own position; a switch only says what it was told. -#}
+                {%- set shut_closed = shut | selectattr('state', 'in', ['off', 'closed']) | list -%}
+                {%- if wet | count > 0 -%}
+                  {%- set ns.u = [ns.u, 5] | max -%}
+                  {%- set ns.reasons = ns.reasons + [{'urgency': 5, 'key': 'leak_wet', 'message': 'Wet: ' ~ (wet | map(attribute='name') | join(', ')) ~ '. Shutoff ' ~ ('closed: ' ~ (shut_closed | map(attribute='name') | join(', ')) if shut_closed | count > 0 else ('not closed' if shut | count > 0 else 'none labeled')) ~ '.', 'entities': wet | map(attribute='entity_id') | list}] -%}
+                {%- endif -%}
+                {%- if shut | count > 0 and shut_nodata | count == shut | count -%}
+                  {%- set ns.u = [ns.u, 3] | max -%}
+                  {%- set ns.reasons = ns.reasons + [{'urgency': 3, 'key': 'shutoff_unreachable', 'message': 'No shutoff valve is reporting (' ~ (shut_nodata | map(attribute='name') | join(', ')) ~ '); a leak could not be shut off automatically.', 'entities': shut_nodata | map(attribute='entity_id') | list}] -%}
+                {%- elif shut_nodata | count > 0 -%}
+                  {%- set ns.u = [ns.u, 2] | max -%}
+                  {%- set ns.reasons = ns.reasons + [{'urgency': 2, 'key': 'shutoff_no_data', 'message': 'Shutoff valve not reporting: ' ~ (shut_nodata | map(attribute='name') | join(', ')) ~ '.', 'entities': shut_nodata | map(attribute='entity_id') | list}] -%}
+                {%- endif -%}
+                {%- if leak_nodata | count > 0 -%}
+                  {%- set ns.u = [ns.u, 2] | max -%}
+                  {%- set ns.reasons = ns.reasons + [{'urgency': 2, 'key': 'leak_sensor_no_data', 'message': 'Leak sensor not reporting: ' ~ (leak_nodata | map(attribute='name') | join(', ')) ~ '. A leak there would go unseen.', 'entities': leak_nodata | map(attribute='entity_id') | list}] -%}
+                {%- endif -%}
+                {%- if leak | count > 0 and shut | count == 0 -%}
+                  {%- set ns.u = [ns.u, 1] | max -%}
+                  {%- set ns.reasons = ns.reasons + [{'urgency': 1, 'key': 'no_shutoff', 'message': 'Leak sensors are labeled but no shutoff valve is; a leak can only be reported, not stopped.', 'entities': []}] -%}
+                {%- elif shut | count > 0 and not _wc_auto_shutoff -%}
+                  {%- set ns.reasons = ns.reasons + [{'urgency': 0, 'key': 'auto_shutoff_off', 'message': 'Auto-shutoff is off: on a leak the watch asks before closing the valve.', 'entities': []}] -%}
+                {%- endif -%}
+                {%- for r in rows | selectattr('role', 'eq', 'softener') | selectattr('no_data', 'eq', false) -%}
+                  {%- set su = (r.unit or '') | string | lower -%}
+                  {%- set sv = r.state | float(none) -%}
+                  {%- if sv is not none and su == '%' and sv <= 20 -%}
+                    {%- set ns.u = [ns.u, 1] | max -%}
+                    {%- set ns.reasons = ns.reasons + [{'urgency': 1, 'key': 'softener_low', 'message': r.name ~ ' at ' ~ r.state ~ '%.', 'entities': [r.entity_id]}] -%}
+                  {%- elif sv is not none and su in ['in', 'inch', 'inches'] and sv < 8 -%}
+                    {%- set su2 = 2 if sv < 4 else 1 -%}
+                    {%- set ns.u = [ns.u, su2] | max -%}
+                    {%- set ns.reasons = ns.reasons + [{'urgency': su2, 'key': 'softener_low', 'message': r.name ~ ' at ' ~ r.state ~ ' in of salt' ~ (': refill now' if sv < 4 else ': refill soon') ~ '.', 'entities': [r.entity_id]}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {#- A shutoff reading closed with nothing wet: closed unexpectedly. -#}
+                {%- if shut_closed | count > 0 and wet | count == 0 -%}
+                  {%- set ns.u = [ns.u, 4] | max -%}
+                  {%- set ns.reasons = ns.reasons + [{'urgency': 4, 'key': 'shutoff_closed', 'message': 'Shutoff closed with no leak reported: ' ~ (shut_closed | map(attribute='name') | join(', ')) ~ '. The house may be without water.', 'entities': shut_closed | map(attribute='entity_id') | list}] -%}
+                {%- endif -%}
+                {#- Flow: a rate sensor (volume_flow_rate, or a per-minute / per-hour unit). -#}
+                {%- set hm = now().strftime('%H:%M') -%}
+                {%- set w = _wc_cfg.window.split('-') -%}
+                {%- set in_win = (w | count == 2) and ((w[0] <= hm < w[1]) if w[0] <= w[1] else (hm >= w[0] or hm < w[1])) -%}
+                {%- set nobody = (states('zone.home') | int(0)) == 0 -%}
+                {%- for r in rows | selectattr('role', 'eq', 'flow') | selectattr('no_data', 'eq', false) -%}
+                  {%- set u = (r.unit or '') | string | lower -%}
+                  {%- set is_rate = r.device_class == 'volume_flow_rate' or '/min' in u or '/h' in u -%}
+                  {%- set v = r.state | float(0) -%}
+                  {%- if is_rate and v > 0 -%}
+                    {%- set gpm = v if 'gal/min' in u else ((v / 3.785) if 'l/min' in u else ((v / 60) if 'gal/h' in u else none)) -%}
+                    {%- set st = (expand(r.entity_id) | first) if expand(r.entity_id) | count > 0 else none -%}
+                    {%- set mins = ((_wc_now - (as_timestamp(st.last_changed, 0) | int(0))) / 60) | round(0) if st else 0 -%}
+                    {%- if gpm is not none and gpm > 5 -%}
+                      {%- set ns.u = [ns.u, 3] | max -%}
+                      {%- set ns.reasons = ns.reasons + [{'urgency': 3, 'key': 'flow_high', 'message': r.name ~ ' at ' ~ (gpm | round(1)) ~ ' gal/min: irrigation, or a possible break.', 'entities': [r.entity_id]}] -%}
+                    {%- endif -%}
+                    {%- if mins >= _wc_cfg.long_flow_min -%}
+                      {%- set lu = 4 if nobody else 2 -%}
+                      {%- set ns.u = [ns.u, lu] | max -%}
+                      {%- set ns.reasons = ns.reasons + [{'urgency': lu, 'key': 'flow_continuous', 'message': r.name ~ ' has shown flow for ' ~ (mins | int) ~ ' min' ~ (' with nobody home' if nobody else '') ~ '.', 'entities': [r.entity_id]}] -%}
+                    {%- elif in_win -%}
+                      {%- set ns.u = [ns.u, 3] | max -%}
+                      {%- set ns.reasons = ns.reasons + [{'urgency': 3, 'key': 'flow_overnight', 'message': r.name ~ ' shows flow in the overnight window (' ~ _wc_cfg.window ~ '): a running toilet or a leak.', 'entities': [r.entity_id]}] -%}
+                    {%- endif -%}
+                  {%- endif -%}
+                  {#- Daily total against the household baseline, when one is set. -#}
+                  {%- if not is_rate and r.device_class == 'water' and _wc_cfg.baseline_gal is not none and _wc_cfg.baseline_gal > 0 and 'gal' in u and v > 2 * _wc_cfg.baseline_gal -%}
+                    {%- set ns.u = [ns.u, 3] | max -%}
+                    {%- set ns.reasons = ns.reasons + [{'urgency': 3, 'key': 'usage_over_baseline', 'message': r.name ~ ' at ' ~ v ~ ' gal, over twice the ' ~ _wc_cfg.baseline_gal ~ ' gal baseline.', 'entities': [r.entity_id]}] -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- set fa_on = rows | selectattr('role', 'eq', 'flow_alert') | selectattr('state', 'eq', 'on') | list -%}
+                {%- if fa_on | count > 0 -%}
+                  {%- set ns.u = [ns.u, 3] | max -%}
+                  {%- set ns.reasons = ns.reasons + [{'urgency': 3, 'key': 'flow_alert', 'message': 'Flow monitor alert: ' ~ (fa_on | map(attribute='name') | join(', ')) ~ '.', 'entities': fa_on | map(attribute='entity_id') | list}] -%}
+                {%- endif -%}
+                {%- set fa_nd = rows | selectattr('role', 'eq', 'flow_alert') | selectattr('no_data', 'eq', true) | list -%}
+                {%- if fa_nd | count > 0 -%}{%- set ns.unknown = ns.unknown + ['flow monitor alerts not reporting: ' ~ (fa_nd | map(attribute='entity_id') | join(', '))] -%}{%- endif -%}
+                {%- set sump = rows | selectattr('role', 'eq', 'sump') | list -%}
+                {%- if sump | selectattr('no_data', 'eq', true) | list | count > 0 -%}
+                  {%- set ns.u = [ns.u, 2] | max -%}
+                  {%- set ns.reasons = ns.reasons + [{'urgency': 2, 'key': 'sump_no_data', 'message': 'Sump pump not reporting.', 'entities': sump | selectattr('no_data', 'eq', true) | map(attribute='entity_id') | list}] -%}
+                {%- endif -%}
+                {%- if leak | count == 0 -%}{%- set ns.unknown = ns.unknown + ['leak detection: no zen_plant_leak_sensor labeled'] -%}{%- endif -%}
+                {%- if _wc_cfg.baseline_gal is none -%}{%- set ns.unknown = ns.unknown + ['daily usage vs baseline: no daily_baseline_gallons in water_config'] -%}{%- endif -%}
+                {%- set ns.unknown = ns.unknown + ['freeze risk: not assessed (no freeze source)'] -%}
+                {{ {'urgency': ns.u, 'reasons': ns.reasons | sort(attribute='urgency', reverse=true), 'unknown': ns.unknown} }}
+          - variables:
+              _wc_result:
+                status: ok
+                tool: zen_codex_plant_water
+                mode: water_summary
+                component: water
+                urgency: "{{ _wc_eval.urgency }}"
+                level: "{{ ['nominal', 'attention', 'attention', 'warning', 'warning', 'critical'][_wc_eval.urgency | int(0)] }}"
+                reasons: "{{ _wc_eval.reasons }}"
+                leaks: "{{ _wc_rows | selectattr('role', 'eq', 'leak') | list }}"
+                shutoffs: >-
+                  {%- set ns = namespace(r=[]) -%}
+                  {%- for r in _wc_rows | selectattr('role', 'eq', 'shutoff') -%}
+                    {%- set ns.r = ns.r + [dict(r, feedback=('reported' if r.entity_id.startswith('valve.') else 'commanded_only'))] -%}
+                  {%- endfor -%}
+                  {{ ns.r }}
+                auto_shutoff_enabled: "{{ _wc_auto_shutoff }}"
+                flow: "{{ _wc_rows | selectattr('role', 'eq', 'flow') | list }}"
+                flow_alerts: "{{ _wc_rows | selectattr('role', 'eq', 'flow_alert') | list }}"
+                softener: "{{ _wc_rows | selectattr('role', 'eq', 'softener') | list }}"
+                sump: "{{ _wc_rows | selectattr('role', 'eq', 'sump') | list }}"
+                water_heater: "{{ {'see': 'zen_dojotools_water_heater', 'labeled_entities': _wc_heater | count} }}"
+                unknown: "{{ _wc_eval.unknown }}"
+                config: "{{ _wc_cfg }}"
+                generated_at: "{{ now().isoformat() }}"
+                caller_token: "{{ _wc_token }}"
+
+      - if: "{{ _wc_result is not defined and _wc_mode == 'water_inspect' }}"
+        then:
+          - variables:
+              _wc_eid: "{{ entity_id | default('', true) | string | trim }}"
+              _wc_row: "{{ (_wc_rows | selectattr('entity_id', 'eq', _wc_eid) | list | first) | default(none) }}"
+          - variables:
+              _wc_result: >-
+                {%- if _wc_row is mapping -%}
+                  {{ {'status': 'ok', 'tool': 'zen_codex_plant_water', 'mode': 'water_inspect', 'entity': _wc_row,
+                      'labels': labels(_wc_eid), 'attributes': dict((expand(_wc_eid) | first).attributes) if expand(_wc_eid) | count > 0 else {},
+                      'caller_token': _wc_token} }}
+                {%- else -%}
+                  {{ {'status': 'error', 'tool': 'zen_codex_plant_water', 'mode': 'water_inspect',
+                      'reason': ('entity_id is required' if _wc_eid == '' else _wc_eid ~ ' is not a labeled water source (zen_plant_leak_sensor, zen_plant_auto_shutoff, droplet, water_usage, zen_plant_water, zen_plant_water_softener, sump_pump)'),
+                      'caller_token': _wc_token} }}
+                {%- endif -%}
+
+      - if: "{{ _wc_result is not defined }}"
+        then:
+          - variables:
+              _wc_result:
+                status: error
+                tool: zen_codex_plant_water
+                reason: "{{ _wc_mode }} is not a water codex mode. Modes: water_summary, water_inspect, help."
+                caller_token: "{{ _wc_token }}"
+
+      - stop: zen_codex_plant_water response
+        response_variable: _wc_result

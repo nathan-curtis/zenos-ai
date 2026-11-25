@@ -1,7 +1,21 @@
 ###############################################################################
 # ZenOS-AI: FileCabinet DojoTool + FileCabinet Sutra
 # File: dojotools_filecabinet.yaml
-# Version: 6.40.0
+# Version: 6.43.0
+# v6.43.0: no split trees. A cross-cabinet mount and its tree live in one place: set_mount, a
+#   create/update/upsert whose value is a mount pointer is refused
+#   (code split_tree_refused, before any write, no force_action bypass) when it would leave
+#   the tree's data in two cabinets. The caller moving a location moves its data first. fleet
+#   reports any existing split as a broken mount (tree split).
+# v6.42.0: every cross-cabinet mount carries its whole tree (CABS 1.8.0). A child path under a
+#   softlink (set_mount to another cabinet) resolves in the target, as one under an expanded root
+#   already did: writes land there, get/list/move/copy/delete reach it. Pointer rules unchanged:
+#   a softlink is still managed by set_mount/remove_mount and deleting it never touches the
+#   target. The history mounts (household/family/user/ai_user -> their history cabinets) never
+#   offloaded anything before this: history/<x> stayed in the parent cabinet.
+# v6.41.0: drawer sizes for cabinet triage (#10754). list gives each drawer's bytes, tree_bytes
+#   for a drawer with children, total_bytes and the ten largest keys; fleet names the five
+#   largest drawers of every cabinet over 70% full.
 # v6.40.0: the wiki stack is optional and now stays optional. Every call to
 #   zen_sutra_wikijs is skipped when that script is not installed, so
 #   FileCabinet's bare call, tool_manifest, and every cabinet operation work on a
@@ -1002,7 +1016,13 @@ script:
             {%- set _hops = _t.visited[:-1] if _through and (_t.depth | int(0)) > 0 else [] -%}
             {#- set_mount / remove_mount under an expanded root act in the
                 expansion: the host's hop needs r, the drawer there the op. -#}
-            {%- set _xsm = (CABS.expansion_root_of(_vol, _key) | from_json({})) if _action in ['set_mount', 'remove_mount'] and _key not in (state_attr(_vol, 'variables') or {}) else {} -%}
+            {#- 6.42.0: the same for delete / move / copy / relabel of a key under any
+                cross-cabinet mount: it lives in the target, so the target's ACL
+                decides (a softlink target keeps its own; an expansion answers with
+                its host's). A move / copy destination under a mount likewise. -#}
+            {%- set _xsm = (CABS.expansion_root_of(_vol, _key) | from_json({})) if _action in ['set_mount', 'remove_mount', 'delete', 'move', 'copy', 'relabel'] and _key not in (state_attr(_vol, 'variables') or {}) else {} -%}
+            {%- set _dv0 = _dest_vol if _dest_vol != '' else _vol -%}
+            {%- set _xdst = ((CABS.expansion_root_of(_dv0, _dest) | from_json({})).get('target', '')) if _action in ['move', 'copy'] and _dest != '' and _dest not in (state_attr(_dv0, 'variables') or {}) else '' -%}
             {%- set _xsm_t = _xsm.get('target', '') -%}
             {%- set _hops = [_vol ~ '/' ~ _key] if _xsm_t != '' else _hops -%}
             {%- set nh = namespace(c=[]) -%}
@@ -1011,7 +1031,8 @@ script:
             {%- endfor -%}
             {%- set _checks = ([{'op': 'a', 'vol': _xd_src, 'key': ''}] if _xd_src != '' else
                                nh.c + [{'op': CABS.acl_op_class(_action) | trim, 'vol': (_t.vol if _through else (_xsm_t if _xsm_t != '' else _vol)), 'key': _key}]
-                               + ([{'op': 'w', 'vol': (_dest_vol if _dest_vol != '' else _vol), 'key': _dest}] if _action in ['move', 'copy'] and _dest != '' else [])) -%}
+                               + ([{'op': 'r', 'vol': _dv0, 'key': _dest}] if _xdst != '' and _xdst != _dv0 else [])
+                               + ([{'op': 'w', 'vol': (_xdst if _xdst != '' else _dv0), 'key': _dest}] if _action in ['move', 'copy'] and _dest != '' else [])) -%}
             {%- set ns = namespace(out=[], deny=[], ack=false, who=none) -%}
             {%- for c in _checks -%}
               {%- set _acl = CABS.acl_for(c.vol, c.key) | from_json -%}
@@ -1113,6 +1134,56 @@ script:
               trace:
                 caller_token: "{{ _caller_token }}"
 
+    # ── No split trees (6.43.0). A cross-cabinet mount and its whole tree
+    #    live in one place. Writing a pointer over a key that has data at or
+    #    under it (set_mount, or a create/update/upsert whose value is a
+    #    pointer) would leave the data in two cabinets. Removing or repointing a
+    #    pointer moves no data (a link's data stays in its home), so it is not
+    #    a split.
+    #    Refused before anything is written; force_action does not bypass it.
+    #    The caller moving a location moves its data first (expand_drawer does;
+    #    so must any setup). Live drawers (fc_args) are not trees; a child that
+    #    is itself a pointer into the same target is not data.
+    - variables:
+        _ns_split: >-
+          {%- set _sv = (state_attr(_vol, 'variables') if _vol != '' else none) or {} -%}
+          {%- set _nv = value | default(none) -%}
+          {%- set _nv = (_nv | from_json(none)) if _nv is string and (_nv | trim)[:1] == '{' else _nv -%}
+          {%- set _is_ptr_write = _action in ['create', 'update', 'upsert'] and _nv is mapping
+                and _nv.get('mount_point', false) == true and _nv.get('fc_args') is none -%}
+          {%- set _is_sm = _action == 'set_mount' and not (_fc_args is mapping or (_fc_args | string | trim) not in ['', 'None', 'none']) -%}
+          {%- if result is defined or _key == '' or not (_is_ptr_write or _is_sm) -%}{{- '' -}}
+          {%- else -%}
+            {%- set e = _sv.get(_key) -%}
+            {%- set ev = e.get('value') if e is mapping else none -%}
+            {%- set ev = (ev | from_json(none)) if ev is string else ev -%}
+            {%- set old_ptr = ev is mapping and ev.get('mount_point', false) == true -%}
+            {%- set old_tgt = ((ev.get('target_entity_id') or '') | string) if old_ptr and ev.get('fc_args') is none else '' -%}
+            {%- set _pre = _key ~ '/' -%}
+            {%- set ns = namespace(kids=[]) -%}
+            {%- for k, ce in _sv.items() if k.startswith(_pre) -%}
+              {%- set cv = ce.get('value') if ce is mapping else none -%}
+              {%- set cv = (cv | from_json(none)) if cv is string else cv -%}
+              {%- if not (cv is mapping and cv.get('mount_point', false) == true and old_tgt != '' and cv.get('target_entity_id') == old_tgt) -%}{%- set ns.kids = ns.kids + [k] -%}{%- endif -%}
+            {%- endfor -%}
+            {%- if (_is_ptr_write or _is_sm) and e is mapping and not old_ptr -%}{{ _key }} holds data in {{ _vol }}; a mount written over it would strand that data. Move the drawer and its tree to the target first
+            {%- elif (_is_ptr_write or _is_sm) and ns.kids | count > 0 -%}{{ ns.kids | count }} drawer(s) under {{ _key }} ({{ ns.kids[:5] | join(', ') }}{{ ', ...' if ns.kids | count > 5 }}) live in {{ _vol }}; a mount over them would split the tree. Move them to the target first
+            {%- endif -%}
+          {%- endif -%}
+    - if: "{{ result is not defined and _ns_split | trim != '' }}"
+      then:
+        - variables:
+            result:
+              status: error
+              tool: zen_sutra_filecabinet
+              action: "{{ _action }}"
+              key: "{{ _key }}"
+              volume: "{{ _vol }}"
+              code: split_tree_refused
+              reason: "guarded: {{ _ns_split | trim }}. Nothing was written."
+              trace:
+                caller_token: "{{ _caller_token }}"
+
     # ── Expanded trees: an expansion is a permanent redirect for one drawer
     #    and its whole tree. A move, copy or delete that touches one (the key,
     #    an ancestor or anything below it) or lands in one runs here, on the
@@ -1131,7 +1202,8 @@ script:
             {%- set dp = (CABS.expansion_plan(dv, _dest) | from_json) if _action in ['move', 'copy'] and _dest != '' else {'mode': 'none'} -%}
             {#- xptr: the key is itself one of expand_drawer's pointers (the
                 root's or a child's), never a softlink to manage. -#}
-            {%- set xp = (CABS.expansion_root_of(_vol, _key ~ '/_') | from_json).root == _key -%}
+            {%- set _xr1 = CABS.expansion_root_of(_vol, _key ~ '/_') | from_json -%}
+            {%- set xp = _xr1.root == _key and _xr1.get('kind', 'expansion') == 'expansion' -%}
             {{- {'on': p.mode != 'none' or dr.target != '' or dp.mode != 'none', 'mode': p.mode, 'dv': dv, 'xptr': xp} -}}
           {%- else -%}{{- {'on': false, 'mode': 'none', 'dv': '', 'xptr': false} -}}{%- endif -%}
     - if: "{{ _xo.on and _action in ['remove_mount', 'set_mount'] and (_xo.mode == 'self' or _xo.xptr) }}"
@@ -2935,10 +3007,22 @@ script:
                       'updated_at': (drawer.get('timestamp', '') if drawer is mapping else '')
                     } -%}
                   {%- endif -%}
+                  {#- Size (#10754): the drawer's stored entry as JSON, what it costs the
+                      cabinet. -#}
+                  {%- set _item = _item | combine({'bytes': (drawer | to_json | length) if drawer is not none else 0}) -%}
                   {%- set ns.items = ns.items + [_item] -%}
                 {%- endif -%}
               {%- endfor -%}
-              {{ ns.items }}
+              {#- A drawer with children gets tree_bytes: itself plus every key under it/. -#}
+              {%- set out = namespace(items=[]) -%}
+              {%- for it in ns.items -%}
+                {%- set kid = namespace(n=0, b=0) -%}
+                {%- for x in ns.items if x.key.startswith(it.key ~ '/') -%}
+                  {%- set kid.n = kid.n + 1 -%}{%- set kid.b = kid.b + x.bytes -%}
+                {%- endfor -%}
+                {%- set out.items = out.items + [it | combine({'tree_bytes': it.bytes + kid.b}) if kid.n > 0 else it] -%}
+              {%- endfor -%}
+              {{ out.items }}
         - variables:
             result:
               status: success
@@ -2947,6 +3031,8 @@ script:
               volume: "{{ _vol }}"
               path_prefix: "{{ _path_prefix }}"
               count: "{{ _items | length }}"
+              total_bytes: "{{ _items | sum(attribute='bytes') }}"
+              largest: "{{ (_items | sort(attribute='bytes', reverse=true) | list)[:10] | map(attribute='key') | list }}"
               items: "{{ _items }}"
               trace:
                 caller_token: "{{ _caller_token }}"
@@ -3782,9 +3868,20 @@ script:
                         {%- set _tgt = _dval.get('target_entity_id', '') -%}
                         {%- set _tgt_vars = (state_attr(_tgt, 'variables') or {}) if _tgt != '' else {} -%}
                         {%- set _res = k in _tgt_vars -%}
-                        {%- set _ns_m.mounts = _ns_m.mounts + [{'key': k, 'type': 'cross_cabinet', 'target': _tgt, 'resolved': _res}] -%}
+                        {#- A split tree: data under the pointer still in this cabinet
+                            (a child pointer into the same target is not data). -#}
+                        {%- set _ns_sp = namespace(n=0) -%}
+                        {%- for ck, ce in _vars.items() if ck.startswith(k ~ '/') -%}
+                          {%- set cv = ce.get('value') if ce is mapping else none -%}
+                          {%- set cv = (cv | from_json(none)) if cv is string else cv -%}
+                          {%- if not (cv is mapping and cv.get('mount_point', false) == true and cv.get('target_entity_id') == _tgt) -%}{%- set _ns_sp.n = _ns_sp.n + 1 -%}{%- endif -%}
+                        {%- endfor -%}
+                        {%- set _ns_m.mounts = _ns_m.mounts + [{'key': k, 'type': 'cross_cabinet', 'target': _tgt, 'resolved': _res and _ns_sp.n == 0}] -%}
                         {%- if not _res -%}
                           {%- set ns.broken_mounts = ns.broken_mounts + [{'cabinet': _eid, 'key': k, 'type': 'cross_cabinet', 'target': _tgt, 'reason': 'key not found in target'}] -%}
+                        {%- endif -%}
+                        {%- if _ns_sp.n > 0 -%}
+                          {%- set ns.broken_mounts = ns.broken_mounts + [{'cabinet': _eid, 'key': k, 'type': 'cross_cabinet', 'target': _tgt, 'reason': 'tree split: ' ~ _ns_sp.n ~ ' drawer(s) under the pointer still in this cabinet'}] -%}
                         {%- endif -%}
                       {%- endif -%}
                     {%- endif -%}
@@ -3808,8 +3905,18 @@ script:
                   'mounts_out': _ns_m.mounts
                 } -%}
                 {%- set ns.cabs = ns.cabs + [_rec] -%}
-                {%- if _pct >= 90 -%}{%- set ns.critical = ns.critical + [{'entity_id': _eid, 'pct_full': _pct, 'guid': _guid}] -%}
-                {%- elif _pct >= 70 -%}{%- set ns.fat = ns.fat + [{'entity_id': _eid, 'pct_full': _pct, 'guid': _guid}] -%}
+                {#- A full cabinet names its five largest drawers, so triage starts with
+                    numbers (#10754). -#}
+                {%- if _pct >= 70 -%}
+                  {%- set _cv = state_attr(_eid, 'variables') if state_attr(_eid, 'variables') is mapping else {} -%}
+                  {%- set _sz = namespace(l=[]) -%}
+                  {%- for _k, _d in _cv.items() if _k != 'AI_Cabinet_VolumeInfo' -%}
+                    {%- set _sz.l = _sz.l + [{'key': _k, 'bytes': _d | to_json | length}] -%}
+                  {%- endfor -%}
+                  {%- set _top = (_sz.l | sort(attribute='bytes', reverse=true) | list)[:5] -%}
+                {%- endif -%}
+                {%- if _pct >= 90 -%}{%- set ns.critical = ns.critical + [{'entity_id': _eid, 'pct_full': _pct, 'guid': _guid, 'largest': _top}] -%}
+                {%- elif _pct >= 70 -%}{%- set ns.fat = ns.fat + [{'entity_id': _eid, 'pct_full': _pct, 'guid': _guid, 'largest': _top}] -%}
                 {%- endif -%}
                 {%- if _in_exp -%}
                   {%- if _cab_class == 'expansion' -%}{%- set ns.exp_stamped = ns.exp_stamped + [_eid] -%}
@@ -5783,7 +5890,7 @@ script:
                 summary='Read and write cabinet drawers and the wiki',
                 display_name='FileCabinet — Knowledge Stack Surface',
                 tier='dojotools',
-                version='6.40.0',
+                version='6.43.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['cabinet', 'wiki_js', 'knowledge', 'documents'],
@@ -5923,7 +6030,7 @@ script:
                       "delete": "Cascades to all children via prefix scan. All keys sharing the prefix are removed.",
                       "copy": "Cascades subtree to destination. Source untouched.",
                       "list_with_prefix": "Use path_prefix to enumerate a subtree: action_type=list, path_prefix=parent/key.",
-                      "mounts_with_children": "A mount point drawer can have children. get returns both mount_traversal (the redirect) and subdrawers. The mount resolves normally; subdrawers are additive."
+                      "mounts_with_children": "A cross-cabinet mount carries its whole tree: a child path under it (key/child) lives in the target cabinet, so create/update/get/delete/move/copy of key/child act there and list shows the target's children. Deleting a softlink removes the link only; the target keeps its data. A child still stored beside the pointer in the source (written before 6.42.0) is read there first."
                     },
                     "syscab_hard_readonly": "sensor.zenos_system_cabinet is HARD READ-ONLY. All writes blocked, no override.",
                     "resolver_sensors": "sensor.zen_*_cabinet_resolved holds entity ID in state — pass the ID it resolves to, not the resolver sensor itself.",

@@ -1,4 +1,13 @@
-{#- zenos_cabinets.jinja -- Version: 1.7.2 -#}
+{#- zenos_cabinets.jinja -- Version: 1.8.0 -#}
+{#- 1.8.0: every cross-cabinet mount carries its whole tree. A key under a
+    softlink (a set_mount pointer to another cabinet, not a live drawer)
+    resolves in the softlink's target, as a key under an expanded root does in
+    its expansion: a child written through the link lands in the target, get
+    and list see the target's children. expansion_root_of names the nearest such
+    ancestor with kind expansion | mount. Ownership stays with expansions only:
+    a softlink's pointer is managed by set_mount/remove_mount, deleting it
+    removes the link and never the target's data, and no teardown touches a
+    softlink target. -#}
 {#- 1.7.2: safe_get_nested walks the path; it returned the object it was
     given (the walk was lost inside the loop). -#}
 {#- 1.7.0: acl_enforce_mode, the FileCabinet ACL gate's switch (#10633): the
@@ -770,6 +779,10 @@ has no ACL of its own: its cabinet record is its host's.
     {%- set O = {'cert': '', 'ack': false, 'who': ['*']} -%}
     {%- set DOOR = {'cert': '', 'ack': false, 'who': []} -%}
     {%- set ADM = 'zenos.system.cabinet_admin:1' -%}
+    {#- Shared cabinets (household, family): administering them (expand, mount,
+        set acl) is open to any caller that holds cabinet_admin and gets the live
+        ack; the cert and the ack are the gate, not ownership. Personal (user)
+        cabinets stay owner-only. -#}
     {%- set T = {
         'system':     {'r': O, 'w': DOOR, 'd': DOOR, 'a': DOOR},
         'vault':      {'r': DOOR,
@@ -784,10 +797,10 @@ has no ACL of its own: its cabinet record is its host's.
                        'd': {'cert': '', 'ack': true, 'who': ['@internal']}, 'a': DOOR},
         'household':  {'r': O, 'w': {'cert': '', 'ack': false, 'who': ['@prime', '@internal']},
                        'd': {'cert': '', 'ack': true, 'who': ['@prime']},
-                       'a': {'cert': ADM, 'ack': true, 'who': ['@owner']}},
+                       'a': {'cert': ADM, 'ack': true, 'who': ['*']}},
         'family':     {'r': O, 'w': {'cert': '', 'ack': false, 'who': ['@prime', '@internal']},
                        'd': {'cert': '', 'ack': true, 'who': ['@prime']},
-                       'a': {'cert': ADM, 'ack': true, 'who': ['@owner']}},
+                       'a': {'cert': ADM, 'ack': true, 'who': ['*']}},
         'user':       {'r': {'cert': '', 'ack': false, 'who': ['@self', '@partner', '@prime', '@internal']},
                        'w': {'cert': '', 'ack': false, 'who': ['@self', '@partner', '@prime', '@internal']},
                        'd': {'cert': '', 'ack': true, 'who': ['@partner', '@prime']},
@@ -1030,15 +1043,17 @@ has no ACL of its own: its cabinet record is its host's.
 {#-
 @macro: expansion_root_of
 @desc: The nearest ancestor of drawer_key (a/b/c -> a/b, then a) that is a
-       mount pointer into an expansion this cabinet hosts (expand_drawer's
-       permanent redirect). The key itself is not checked.
-@returns: JSON {root, target}, both '' when no ancestor is expanded.
+       cross-cabinet mount pointer: into an expansion this cabinet hosts
+       (expand_drawer's permanent redirect, kind expansion) or a softlink to
+       another cabinet (set_mount, kind mount). Either carries the whole tree.
+       Live drawers (fc_args) are not. The key itself is not checked.
+@returns: JSON {root, target, kind}, all '' when no ancestor is a mount.
 -#}
 {%- macro expansion_root_of(entity_id, drawer_key) -%}
     {%- set _v = state_attr(entity_id, 'variables') if entity_id else none -%}
     {%- set _v = _v if _v is mapping else {} -%}
     {%- set _parts = (drawer_key | string).split('/') -%}
-    {%- set ns = namespace(root='', target='') -%}
+    {%- set ns = namespace(root='', target='', kind='') -%}
     {%- for i in range((_parts | count) - 1, 0, -1) if ns.target == '' -%}
         {%- set a = _parts[:i] | join('/') -%}
         {%- set e = _v.get(a) -%}
@@ -1052,10 +1067,15 @@ has no ACL of its own: its cabinet record is its host's.
             {%- if tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id -%}
                 {%- set ns.root = a -%}
                 {%- set ns.target = tg -%}
+                {%- set ns.kind = 'expansion' -%}
+            {%- elif tg != '' and tg != entity_id and state_attr(tg, 'variables') is mapping -%}
+                {%- set ns.root = a -%}
+                {%- set ns.target = tg -%}
+                {%- set ns.kind = 'mount' -%}
             {%- endif -%}
         {%- endif -%}
     {%- endfor -%}
-    {{- {'root': ns.root, 'target': ns.target} | tojson -}}
+    {{- {'root': ns.root, 'target': ns.target, 'kind': ns.kind} | tojson -}}
 {%- endmacro -%}
 
 {#-
@@ -1075,7 +1095,7 @@ has no ACL of its own: its cabinet record is its host's.
     {%- set ns = namespace(roots=[], mode='none') -%}
     {%- if anc.get('target', '') != '' -%}
         {%- set ns.mode = 'ancestor' -%}
-        {%- set ns.roots = [{'root': anc.root, 'target': anc.target, 'scope': drawer_key}] -%}
+        {%- set ns.roots = [{'root': anc.root, 'target': anc.target, 'scope': drawer_key, 'kind': anc.get('kind', 'expansion')}] -%}
     {%- else -%}
         {%- set _pre = drawer_key ~ '/' -%}
         {%- for k in _v.keys() | list | sort if k == drawer_key or k.startswith(_pre) -%}
@@ -1101,12 +1121,20 @@ has no ACL of its own: its cabinet record is its host's.
 
 {#-
 @macro: cabinet_hosts_expansion
-@desc: Whether any expansion slot is stamped as hosted by this cabinet (a
-       cheap check over the slots before building cabinet_expanded_view).
+@desc: Whether the cabinet has any tree behind a mount: an expansion slot
+       stamped as hosted by it, or a softlink of its own to another cabinet (a
+       cheap check before building cabinet_expanded_view).
 @returns: 'true' | 'false'.
 -#}
 {%- macro cabinet_hosts_expansion(entity_id) -%}
     {%- set ns = namespace(hit=false) -%}
+    {%- set _ov = state_attr(entity_id, 'variables') if entity_id else none -%}
+    {%- for k, e in (_ov if _ov is mapping else {}).items() if not ns.hit -%}
+        {%- set ev = e.get('value') if e is mapping else none -%}
+        {%- set ev = (ev | from_json(none)) if ev is string else ev -%}
+        {%- if ev is mapping and ev.get('mount_point', false) == true and ev.get('fc_args') is none
+              and ((ev.get('target_entity_id') or '') | string) not in ['', entity_id] -%}{%- set ns.hit = true -%}{%- endif -%}
+    {%- endfor -%}
     {%- for eid in (cabinet_slot_candidates() | from_json([])) if not ns.hit -%}
         {%- set te = (state_attr(eid, 'variables') or {}).get('AI_Cabinet_VolumeInfo') -%}
         {%- set tvi = te.get('value') if te is mapping else none -%}
@@ -1118,9 +1146,9 @@ has no ACL of its own: its cabinet record is its host's.
 
 {#-
 @macro: cabinet_expanded_view
-@desc: A cabinet's drawers as one tree: its own, plus, under each expanded
-       root (a mount pointer into an expansion it hosts), the expansion's keys
-       of that tree it does not hold itself (children added after the move).
+@desc: A cabinet's drawers as one tree: its own, plus, under each
+       cross-cabinet mount (an expanded root or a softlink), the target's keys
+       of that tree it does not hold itself (children written through it).
 @returns: JSON {key: envelope}.
 -#}
 {%- macro cabinet_expanded_view(entity_id) -%}
@@ -1137,7 +1165,8 @@ has no ACL of its own: its cabinet record is its host's.
             {%- set te = tvars.get('AI_Cabinet_VolumeInfo') -%}
             {%- set tvi = te.get('value') if te is mapping else none -%}
             {%- set tvi = (tvi | from_json(none)) if tvi is string else tvi -%}
-            {%- if tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id -%}
+            {%- if (tvi is mapping and tvi.get('cabinet_class') == 'expansion' and tvi.get('hosted_by') == entity_id)
+                  or (tg not in ['', entity_id] and tvars | count > 0) -%}
                 {%- set _pre = k ~ '/' -%}
                 {%- for tk, tvv in tvars.items() if tk.startswith(_pre) and tk not in ns.d -%}
                     {%- set ns.d = dict(ns.d, **{tk: tvv}) -%}

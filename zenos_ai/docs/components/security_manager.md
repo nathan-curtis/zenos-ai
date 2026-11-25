@@ -124,10 +124,42 @@ The garage family, by label. **Watched covers** are every cover labeled `secure_
 | `cover_secure_close_enabled` | on | (5.25.1) The secure-stance close handler, acting only while `cover_watch_enabled` is on. On: `cover_armed_policy` applies in a secure stance, and a cover left open while the house sleeps, or still open at the Night transition, closes quietly. Off: a secure stance uses `cover_day_policy`, and nothing closes overnight unless `cover_night_close_enabled` is on. |
 | `cover_armed_policy` | `ask_then_close` | (5.25.0) With `cover_secure_close_enabled` on, used instead of `cover_day_policy` in a **secure stance**: the alarm panel armed in any mode, or the home mode Away, Night or Night-Late. The same four choices. While the house sleeps, `ask_then_close` and `close` close quietly with a note on waking, and the Night transition closes an open cover the same way. `auto_arm_config` shows `secure_stance_now`. |
 | `cover_night_close_enabled` | off | Close quietly when the home mode turns Night, or when one is left open while the house sleeps. A note goes out when the house wakes. |
-| `cover_wind_close_enabled` | off | Act on damaging wind lasting five minutes with a watched cover open, by `cover_wind_policy` (default `ask_then_close`). |
+| `cover_wind_close_enabled` | off | The weather close: act on bad weather lasting five minutes with a watched cover open, by `cover_wind_policy` (default `ask_then_close`). |
 | `cover_wind_threshold` | 50 mph / 80 | For a `wind_speed` sensor labeled `cover_wind`. |
+| `cover_camera_look_enabled` | off | (5.27.0) When a watched cover opens, every camera labeled `cover_camera` takes a look through the camera tool, so who arrived or left is on record. |
 
-**Wind source, in order:** a `binary_sensor` labeled `cover_wind` (on means close), a `wind_speed` sensor labeled `cover_wind` against `cover_wind_threshold`, else the weather entity's gust or wind speed against the damaging threshold for its unit.
+**What counts as bad weather (5.28.0):** any entity labeled `cover_close_signal` that reads `on`, in any domain. That is the household's own "close the garage" switch: a template, a rain sensor, a weather alert. Otherwise the wind source, in order: a `binary_sensor` labeled `cover_wind` (on means close), a `wind_speed` sensor labeled `cover_wind` against `cover_wind_threshold`, else the weather entity's gust or wind speed against the damaging threshold for its unit.
+
+#### Example close signal: headwind into the door
+
+Nothing direction-aware ships by default. Raw wind speed is a poor guide for a garage: wind along the house does little, wind blowing straight into an open door does a lot. This template scores only the wind blowing **into** the opening and turns on past a threshold. Put it in your own configuration, then label `sensor.garage_headwind_close` with `cover_close_signal`.
+
+You need two helpers (Settings > Devices & services > Helpers > Number): `input_number.garage_facing` (the compass bearing the door opening faces, 0 to 359) and `input_number.garage_headwind_limit` (the headwind that should close the door, for example 10 mph). Use your own weather entity in place of `weather.home`.
+
+```yaml
+template:
+  - sensor:
+      # Wind speed scaled by how squarely it blows into the opening:
+      # full speed head-on, zero at 90 degrees or more off the facing.
+      - name: "Garage Headwind"
+        unique_id: garage_headwind
+        unit_of_measurement: "mph"
+        state: >-
+          {%- set spd   = state_attr('weather.home', 'wind_speed') | float(0) -%}
+          {%- set wbear = state_attr('weather.home', 'wind_bearing') | float(0) -%}
+          {%- set face  = states('input_number.garage_facing') | float(0) -%}
+          {%- set ang   = (face - wbear) | abs -%}
+          {%- set ang   = ang if ang <= 180 else 360 - ang -%}
+          {{ [((90 - ang) / 90) * spd, 0] | max | round(1) }}
+
+      # The close signal: on when the headwind reaches the limit.
+      - name: "Garage Headwind Close"
+        unique_id: garage_headwind_close
+        state: >-
+          {{ 'on' if states('sensor.garage_headwind') | float(0) >= states('input_number.garage_headwind_limit') | float(0) else 'off' }}
+```
+
+Then turn on `cover_wind_close_enabled`. Security closes by `cover_wind_policy` once the signal has been on for five minutes with a watched cover open. Note that `wind_bearing` is where the wind comes **from**, so a door facing the same bearing takes the wind head-on.
 
 **How it runs:** triggers on the Auto-Arm Watcher (`cover_left_open`, `cover_closed`, `cover_night`, `cover_wake`, `cover_wind`, `cover_ack`). A question goes out through the dispatcher **without waiting**, because the watcher is queued and must never hold a security event behind a five-minute question; its answer comes back as a `postman_ack` (`ack_owner: security_manager`), and the policy rides in its `ack_context`. While the house sleeps (Postman's sleep rule) nothing is asked: a close is logged and told on waking. Every close writes a ledger line; while a watched cover stays open past its time the agent has a Priority Inject line (`security_cover_open`), cleared when every watched cover is closed. `auto_arm_config` (no patch) shows `cover_settings` with the watched covers and the wind source. A cover labeled through `zen_dojotools_labels` is picked up at once (the tool re-arms the watcher, Labels 5.11.0); one labeled in the Home Assistant UI is seen once the watcher is turned off and on, or after a restart (#10716).
 

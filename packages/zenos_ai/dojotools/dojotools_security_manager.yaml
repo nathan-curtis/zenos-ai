@@ -1,6 +1,20 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Security Manager
-# Version: 5.26.2
+# Version: 5.29.0
+# v5.29.0: the headwind math is not built in. cover_facing / cover_headwind_threshold are
+#   gone; a headwind-into-the-door template labeled cover_close_signal is the documented
+#   way (docs/components/security_manager.md), so nothing direction-specific ships by default.
+# v5.28.0 (#10761): the weather close takes any close signal and headwind. While a watched
+#   cover is open, any entity labeled cover_close_signal reading on for five minutes closes it
+#   (a household template, a weather alert, a rain sensor), and a cover with a bearing in
+#   cover_facing is measured by headwind into its opening (wind_speed x (90 - angle off the
+#   facing) / 90) against cover_headwind_threshold (default 10 mph) instead of raw wind.
+#   Same setting (cover_wind_close_enabled) and policy (cover_wind_policy).
+# v5.27.0: cover_camera_look_enabled (default off). When a watched cover opens (the cover
+#   watch's set: secure_on_arm, or exterior with device class garage, gate or door), every
+#   camera labeled cover_camera takes a look through the camera tool, so who arrived or left
+#   is on record. Watcher trigger: a template edge on those covers (Home Assistant has no
+#   cover.opened purpose trigger). Replaces a house automation.
 # v5.26.2: the security_manager KFC seeds with mode=summary (was action=summary; the tool
 #   reads mode first, so the call is the same), so the derived zenos_agent_parity bundle,
 #   which matches a seed's mode against seed_modes, counts it. zenos.security.read is
@@ -588,7 +602,7 @@ script:
                     summary='Alarm panel, perimeter, and auto-arm',
                     display_name='Security Manager',
                     tier='dojotools',
-                    version='5.26.2',
+                    version='5.29.0',
                     health={'configured': true, 'status': 'ok', 'notes': []},
                     required_labels=['dojotools', 'zen_kfc_provider'],
                     optional_labels=['security_manager', 'alarm', 'secure_on_arm', 'exterior', 'cover_wind', 'appliance', 'appliance_sentry'],
@@ -2153,12 +2167,18 @@ script:
                                 cover_night_close_enabled:
                                   value: "{{ _sm_val.get('_auto_arm_config', {}).get('cover_night_close_enabled', false) | bool(false) }}"
                                   means: "Close watched covers quietly when the home mode turns Night, or when one is left open while the house sleeps; a note goes out when the house wakes. Default off."
+                                cover_camera_look_enabled:
+                                  value: "{{ _sm_val.get('_auto_arm_config', {}).get('cover_camera_look_enabled', false) | bool(false) }}"
+                                  means: "When a watched cover opens, every camera labeled cover_camera takes a look and what it saw goes on record (who arrived or left, any vehicle). Default off."
                                 cover_wind_close_enabled:
                                   value: "{{ _sm_val.get('_auto_arm_config', {}).get('cover_wind_close_enabled', false) | bool(false) }}"
                                   means: "Act when damaging wind lasts five minutes with a watched cover open. Default off."
                                 cover_wind_policy:
                                   value: "{{ _sm_val.get('_auto_arm_config', {}).get('cover_wind_policy', 'ask_then_close') }}"
                                   means: "ask, ask_then_close (default: wind is damage prevention), close or notify. While the house sleeps, ask_then_close and close close quietly; ask does nothing."
+                                close_signals:
+                                  value: "{{ label_entities('cover_close_signal') | list }}"
+                                  means: "Entities labeled cover_close_signal. Any of them reading on for five minutes with a watched cover open closes it (cover_wind_close_enabled, cover_wind_policy)."
                                 cover_wind_threshold:
                                   value: "{{ _sm_val.get('_auto_arm_config', {}).get('cover_wind_threshold', none) }}"
                                   means: "For a wind_speed sensor labeled cover_wind: the speed, in that sensor's unit, that counts as damaging (default 50 for mph, 80 otherwise)."
@@ -2428,6 +2448,52 @@ script:
                     # a close made then is logged and told when the house wakes. A cover's
                     # own obstruction sensing is the door's job; cover_day_policy
                     # ask_then_close (close unless someone says no) is the household's call.
+                    # A watched cover opened: every camera labeled cover_camera looks, and
+                    # what it saw goes on record (the camera tool keeps the look and its
+                    # cooldown). Only covers the cover watch watches (secure_on_arm, or
+                    # exterior with device class garage, gate or door). Off by default.
+                    - conditions: "{{ _aa_trigger == 'cover_opened' }}"
+                      sequence:
+                        - variables:
+                            # The watched cover that opened most recently (within two minutes).
+                            _co_eid: >-
+                              {%- set sa = label_entities('secure_on_arm') -%}
+                              {%- set ns = namespace(e='', t=0) -%}
+                              {%- for s in expand(sa + label_entities('exterior')) if s.domain == 'cover' and s.state in ['open', 'opening']
+                                    and (s.entity_id in sa or s.attributes.get('device_class') in ['garage', 'gate', 'door']) -%}
+                                {%- set ts = as_timestamp(s.last_changed) -%}
+                                {%- if ts > ns.t and (as_timestamp(now()) - ts) < 120 -%}{%- set ns.e = s.entity_id -%}{%- set ns.t = ts -%}{%- endif -%}
+                              {%- endfor -%}
+                              {{ ns.e }}
+                            _co_watched: "{{ _co_eid != '' }}"
+                            _co_on: "{{ _aa_cfg.get('cover_camera_look_enabled', false) | bool(false) }}"
+                            _co_cams: "{{ label_entities('cover_camera') | select('match', 'camera\\.') | list }}"
+                            _co_name: "{{ (state_attr(_co_eid, 'friendly_name') or _co_eid) if _co_eid != '' else 'A watched cover' }}"
+                        - if: "{{ _co_on and _co_watched and _co_cams | count > 0 and states('script.zen_dojotools_camera') in ['on', 'off'] }}"
+                          then:
+                            - repeat:
+                                for_each: "{{ _co_cams }}"
+                                sequence:
+                                  - action: script.zen_dojotools_camera
+                                    continue_on_error: true
+                                    data:
+                                      tool: look
+                                      camera_entity: "{{ repeat.item }}"
+                                      instructions: >-
+                                        {{ _co_name }} just opened. Describe what you see: any vehicle
+                                        arriving or leaving, any person in view, whether a car is pulling
+                                        in or out. Note the time of day. Two or three sentences.
+                                      caller_token: "security_manager/cover_opened"
+                        - variables:
+                            result:
+                              status: ok
+                              action: auto_arm_check
+                              trigger: cover_opened
+                              result: "{{ 'looked' if (_co_on and _co_watched and _co_cams | count > 0) else 'nothing' }}"
+                              cover: "{{ _co_eid }}"
+                              cameras: "{{ _co_cams if (_co_on and _co_watched) else [] }}"
+                              reason: >-
+                                {{ 'cover_camera_look_enabled is off' if not _co_on else ('not a watched cover' if not _co_watched else ('no camera labeled cover_camera' if _co_cams | count == 0 else 'looked')) }}
                     - conditions: "{{ _aa_trigger in ['cover_left_open', 'cover_closed', 'cover_night', 'cover_wake', 'cover_wind', 'cover_ack'] }}"
                       sequence:
                         - variables:
@@ -4282,6 +4348,19 @@ automation:
             {%- set c = ((sm.get('value', sm) if sm is mapping else {}).get('_auto_arm_config', {})) -%}
             {{ [c.get('cover_left_open_minutes', 15) | int(15), 1] | max }}
         id: cover_left_open
+      # A watched cover opened (cover_camera_look_enabled, default off): the cameras
+      # labeled cover_camera take a look, so who arrived or left is on record.
+      # (A template edge, not a purpose trigger: Home Assistant has no cover.opened, and
+      # one invalid trigger disables this whole automation.)
+      - trigger: template
+        value_template: >-
+          {%- set sa = label_entities('secure_on_arm') -%}
+          {%- set ns = namespace(n=0) -%}
+          {%- for s in expand(sa + label_entities('exterior')) if s.domain == 'cover' and s.state in ['open', 'opening']
+                and (s.entity_id in sa or s.attributes.get('device_class') in ['garage', 'gate', 'door'])
+                and (as_timestamp(now()) - as_timestamp(s.last_changed)) < 60 -%}{%- set ns.n = ns.n + 1 -%}{%- endfor -%}
+          {{ ns.n > 0 }}
+        id: cover_opened
       # Every watched cover closed: clears the "left open" line in the agent's context.
       - trigger: template
         value_template: >-
@@ -4318,18 +4397,27 @@ automation:
         value_template: >-
           {{ is_state(label_entities('zen_quiet_hours') | select('match', 'binary_sensor\\.') | list | first | default('none', true), 'off') }}
         id: cover_wake
-      # Damaging wind for five minutes with a watched cover open (cover_wind_close_enabled).
-      # The source, in order: a binary_sensor labeled cover_wind (on means close); a
-      # wind_speed sensor labeled cover_wind against cover_wind_threshold (default 50 in
-      # mph, else 80); else the weather entity's gust or wind speed against the damaging
-      # threshold for its unit (main_weather, then zen_weather, then the first weather.*).
+      # Bad weather for five minutes with a watched cover open (cover_wind_close_enabled).
+      # Any of, while a watched cover is open:
+      #   - a close signal: any entity labeled cover_close_signal reading on (a household
+      #     template, a weather alert, a rain sensor: whatever says "close the garage");
+      #     A headwind-into-the-door template is the documented example
+      #     (docs/components/security_manager.md); none ships by default.
+      #   - the wind source: a binary_sensor labeled cover_wind (on), a
+      #     wind_speed sensor labeled cover_wind against cover_wind_threshold (default 50
+      #     in mph, else 80), else the weather entity's gust or wind speed against the
+      #     damaging threshold for its unit (main_weather, then zen_weather, then the first
+      #     weather.*).
       - trigger: template
         value_template: >-
           {%- set sa = label_entities('secure_on_arm') -%}
-          {%- set ns = namespace(n=0) -%}
-          {%- for s in expand(sa + label_entities('exterior')) if s.domain == 'cover' and s.state in ['open', 'opening'] and (s.entity_id in sa or s.attributes.get('device_class') in ['garage', 'gate', 'door']) -%}{%- set ns.n = ns.n + 1 -%}{%- endfor -%}
+          {%- set ns = namespace(open=[]) -%}
+          {%- for s in expand(sa + label_entities('exterior')) if s.domain == 'cover' and s.state in ['open', 'opening'] and (s.entity_id in sa or s.attributes.get('device_class') in ['garage', 'gate', 'door']) -%}{%- set ns.open = ns.open + [s.entity_id] -%}{%- endfor -%}
           {%- set sm = (state_attr(states('sensor.zen_default_household_cabinet_resolved'), 'variables') or {}).get('security_manager', {}) -%}
           {%- set c = ((sm.get('value', sm) if sm is mapping else {}).get('_auto_arm_config', {})) -%}
+          {%- set signal = expand(label_entities('cover_close_signal')) | selectattr('state', 'in', ['on', 'true', 'True']) | list | count > 0 -%}
+          {%- set we = ((label_entities('main_weather') + label_entities('zen_weather')) | select('match', 'weather\\.') | list | first) or (states.weather | map(attribute='entity_id') | list | first) or '' -%}
+          {%- set wu = state_attr(we, 'wind_speed_unit') or 'mph' if we != '' else 'mph' -%}
           {%- set wb = label_entities('cover_wind') | select('match', 'binary_sensor\\.') | list -%}
           {%- set ws = label_entities('cover_wind') | select('match', 'sensor\\.') | list -%}
           {%- if wb | count > 0 -%}
@@ -4339,13 +4427,11 @@ automation:
             {%- set thr = c.get('cover_wind_threshold', 50 if u == 'mph' else 80) | float(50) -%}
             {%- set windy = (expand(ws) | map(attribute='state') | map('float', 0) | max) >= thr -%}
           {%- else -%}
-            {%- set we = ((label_entities('main_weather') + label_entities('zen_weather')) | select('match', 'weather\\.') | list | first) or (states.weather | map(attribute='entity_id') | list | first | default('')) -%}
-            {%- set u = state_attr(we, 'wind_speed_unit') or 'mph' -%}
-            {%- set thr = {'mph': 50, 'km/h': 80, 'm/s': 22, 'kn': 43, 'ft/s': 73}.get(u, 80) -%}
+            {%- set thr = {'mph': 50, 'km/h': 80, 'm/s': 22, 'kn': 43, 'ft/s': 73}.get(wu, 80) -%}
             {%- set w = [state_attr(we, 'wind_gust_speed') | float(0), state_attr(we, 'wind_speed') | float(0)] | max if we != '' else 0 -%}
             {%- set windy = w >= thr -%}
           {%- endif -%}
-          {{ ns.n > 0 and windy }}
+          {{ ns.open | count > 0 and (signal or windy) }}
         for: "00:05:00"
         id: cover_wind
       # Appliance sentry (appliance_sentry_enabled, default off, #10703): an appliance

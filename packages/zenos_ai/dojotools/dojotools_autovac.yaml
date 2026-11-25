@@ -1,6 +1,41 @@
 ###############################################################################
 # DojoTools — Autovac
-# zen_dojotools_autovac (v5.12.0)
+# zen_dojotools_autovac (v5.14.2)
+# v5.14.2: swap_robot finish and rollback keep a compact history entry (dates, robot keys, entity
+#   ids, labels moved) and at most the last 10; the full migration snapshot (the old catalog,
+#   already kept on the old robot's entry) no longer goes into history, which had grown the
+#   household cabinet by ~10 KB per swap.
+# v5.14.1: maintenance tickets belong to the physical robot (#10757). With a fleet registry they
+#   carry an avrobot_<key> tag and are matched by the active robot's key, so a retired robot's
+#   ticket never takes the new one out of service; name-only matching stays for installs
+#   without a registry. swap_robot plan lists the old robot's open maintenance tickets.
+# v5.14.0: clean answers dispatched, not ok: the robot accepting a call is not the robot
+#   starting. A background start_check waits up to 90 seconds; if the robot never starts it clears
+#   the run and pushes 'Run Didn't Start'. Nobody waits on it.
+# v5.13.6: the cause of the drawer wipes (#10758): the controller automation read the autovac
+#   drawer with CABS.cabinet_drawer_value, which does not follow mounts, so after the drawer was
+#   expanded it read the mount pointer and wrote empty rooms back. Its three reads now use
+#   cabinet_drawer_value_mounted, and its three writes only run when the read is a real drawer.
+# v5.13.5: the drawer read retries once after a second when it fails (not when the drawer is
+#   absent), and the drawer_unreadable event carries the read status and mount traversal (#10758).
+# v5.13.4: fail closed when the autovac drawer exists but the read does not return a real
+#   drawer: writing modes refuse with drawer_unreadable instead of replacing it with empties.
+# v5.13.3: consumables status keeps fractional stock (half a bottle reads 0.5, not 0), and a part
+#   with no SKU gets its name as the buy hint instead of 'Roborock None' (#10753).
+# v5.13.2: summary reported out_of_service whenever the robot had a name: it tested that the
+#   maintenance status was non-empty, and the no-ticket status is non-empty too. It now reads
+#   out_of_service itself, as status and maintenance_get already did (#10745).
+# v5.13.1: consumables provision reads the autovac drawer back and answers catalog_not_saved
+#   if the catalog did not save; the stored catalog no longer carries the evidence lists (they
+#   stay in the preset), which made the drawer too big to save (#10744).
+# v5.13.0: replacing the robot (#10743, #10744). New mode=swap_robot (plan, commit, finish,
+#   rollback, status) moves Autovac to a new vacuum and keeps the old one's records in a new
+#   autovac_fleet drawer. Exactly one vacuum may carry the autovac label; with two, none is used.
+#   Consumables provision never reuses the old robot's model, never takes a Home Assistant
+#   device ID as a serial number, reads wear sensors only from the robot's own device, refuses
+#   a vacuum with no area (it used to fall back to a fixed one), and refuses to overwrite
+#   another robot's catalog. New preset roborock_qrevo_edge_3_pro: each part records the
+#   evidence for its fit, and a part not confirmed for the exact model is never reordered.
 # v5.12.0: flush the election when the house goes Away. New system option run_on_away
 #   (mode=configure, default off): five minutes after the home mode turns Away, the
 #   controller calls the new mode=run_away (zenos.autovac.operate) with trigger_id=away,
@@ -153,7 +188,7 @@ script:
       setup/configure/preset (room+system config) |
       queue/dequeue/skip/unskip/ready/unready/mark_cleaned (per-room state ops) | clean/run_elected (manual dispatch) | run_away (run the elected rooms now; the controller calls it five minutes after Away) | stop (cancel the run: empty the queue, send the vacuum home) | run_state (active, queued or idle) |
       pause/unpause (gate today) | consumables (ERP: status/add_to_shopping/log_replaced/log_purchased/provision) |
-      check_wear (IoT wear alert).
+      check_wear (IoT wear alert) | swap_robot (replace the robot: plan/commit/finish/rollback).
     fields:
       mode:
         name: Mode
@@ -196,6 +231,7 @@ script:
               - schedule_add
               - schedule_remove
               - summary
+              - swap_robot
               - kfc_manifest
               - stacks_by_anchor
               - register
@@ -256,6 +292,21 @@ script:
           number:
             min: 1
             step: 1
+      new_entity_id:
+        name: New Robot
+        description: "swap_robot: the replacement vacuum entity (vacuum.x)."
+        selector:
+          text:
+      old_entity_id:
+        name: Old Robot
+        description: "swap_robot: the robot being replaced. Default: the vacuum Autovac uses now."
+        selector:
+          text:
+      confirm_action:
+        name: Confirm
+        description: "swap_robot commit, finish and rollback: true after reviewing action=plan."
+        selector:
+          boolean:
       wear_entity:
         name: Wear Entity
         description: "HA entity_id of wear sensor for check_wear. Omit to scan all."
@@ -356,6 +407,7 @@ script:
       - variables:
           _av_required_cert: >-
             {%- if _mode in ['configure', 'setup', 'preset', 'schedule_edit', 'schedule_add', 'schedule_remove'] -%}zenos.autovac.setup
+            {%- elif _mode == 'swap_robot' and (action | default('plan', true) | string | lower | trim) in ['commit', 'finish', 'rollback'] -%}zenos.autovac.setup
             {%- elif _mode in ['clean', 'run_elected', 'run_away', 'stop', 'queue', 'dequeue', 'clear', 'skip', 'unskip', 'ready', 'unready', 'mark_cleaned', 'pause', 'unpause', 'maintenance_set', 'maintenance_clear'] -%}zenos.autovac.operate
             {%- elif _mode == 'summary' -%}zenos.autovac.status
             {%- else -%}{%- endif -%}
@@ -404,9 +456,16 @@ script:
           # label_entities()|select('match',...) chains -- same result
           # shape, single source of truth for the label->entity filter
           # logic every DojoTools setter/getter should share.
+          # Exactly one vacuum may carry the autovac label. With two (a robot swap
+          # half done, or a stray label) none is chosen: Autovac answers as if no
+          # vacuum were set up rather than drive the wrong robot.
           _vac_ent: >-
             {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
-            {{ TARGET.resolve_targets(label='autovac', domain_pattern='vacuum\\.') | from_json | first | default('') }}
+            {%- set _vs = TARGET.resolve_targets(label='autovac', domain_pattern='vacuum\\.') | from_json -%}
+            {{ _vs | first if _vs | count == 1 else '' }}
+          _vac_ent_count: >-
+            {%- import 'zenos_ai/zen_target_resolve.jinja' as TARGET -%}
+            {{ TARGET.resolve_targets(label='autovac', domain_pattern='vacuum\\.') | from_json | count }}
           # The vacuum's live coverage map is an image.* entity under the core
           # roborock integration, not camera.* —
           # zen_dojotools_camera now handles image.* domains too, so widen
@@ -568,6 +627,14 @@ script:
                     'remove_schedule': 'mode=schedule_remove schedule_entity_id=<schedule.x> — delete one Autovac schedule (irreversible). Only a schedule with an Autovac label can be removed. dry_run=true previews. Needs zenos.autovac.setup.'
                   },
 
+                  'swap_robot': {
+                    'plan': 'mode=swap_robot new_entity_id=vacuum.<new> (action=plan is the default; read only). Shows both robots, blockers, warnings and the autovac label moves. old_entity_id defaults to the vacuum Autovac uses now.',
+                    'commit': 'mode=swap_robot action=commit new_entity_id=vacuum.<new> confirm_action=true (zenos.autovac.setup). Turns Autovac off, files the old robot and its catalog as retired in the autovac_fleet drawer, moves the labels, clears the active catalog. Rooms, schedules and last_cleaned are untouched. Nothing is cleaned. config={"label_map": {"<old entity>": "<new entity>"}} pairs entities the names do not.',
+                    'then': 'Assign the new robot an HA area, map its segments to areas in HA, then mode=consumables action=provision model_preset=<key> for its own catalog.',
+                    'finish': 'mode=swap_robot action=finish confirm_action=true: restores the prior enabled value and returns a safe_to_decommission checklist.',
+                    'rollback': 'mode=swap_robot action=rollback confirm_action=true: labels and catalog back on the old robot; Autovac stays off if the old robot is unavailable.',
+                    'status': 'mode=swap_robot action=status: registry and any swap in progress.'
+                  },
                   'consumables': {
                     'status': 'mode=consumables action=status — stock levels for all parts. Returns consumables[] (part/name/amount/status ok|low|out) + shopping_actions[] listing what needs ordering.',
                     'add_to_shopping': 'mode=consumables action=add_to_shopping — auto-queue all low/out parts to Grocy shopping list in one call.',
@@ -851,6 +918,20 @@ script:
           volume_entity_id: "{{ _hh_cabinet }}"
           key: autovac
         response_variable: _fc_av
+      # One retry: a read through the expansion mount can miss in the moment.
+      # Only when the drawer is not simply absent.
+      - if: >-
+          {{ not (_fc_av is mapping and _fc_av.get('status', '') == 'success')
+             and not (_fc_av is mapping and _fc_av.get('status', '') == 'not_found') }}
+        then:
+          - delay:
+              seconds: 1
+          - action: script.zen_sutra_filecabinet
+            data:
+              mode: get
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac
+            response_variable: _fc_av
       - variables:
           _av_rooms: >-
             {%- set val = _fc_av.get('value', {}) -%}
@@ -861,6 +942,40 @@ script:
             {%- set cfg = (val | from_json) if val is string else val -%}
             {{ cfg.get('system', {}) }}
 
+
+      # -- 0.65 Unreadable-drawer guard (fail closed) --------------------------
+      # Every write below replaces the whole drawer with {rooms, system} built
+      # from this read. If the drawer exists but the read did not come back as a
+      # real drawer, writing would replace it with empties. Writing modes refuse instead; read-only
+      # modes still answer from what was read.
+      - variables:
+          _av_read_val: >-
+            {%- set val = _fc_av.get('value', none) if _fc_av is mapping else none -%}
+            {{ (val | from_json(none)) if val is string else val }}
+          _av_drawer_missing: "{{ _hh_cabinet == '' or (_fc_av is mapping and _fc_av.get('status', '') == 'not_found') }}"
+      - variables:
+          _av_read_ok: >-
+            {{ _fc_av is mapping and _fc_av.get('status', '') == 'success'
+               and _av_read_val is mapping and ('rooms' in _av_read_val or 'system' in _av_read_val) }}
+      - if: >-
+          {{ response is not defined and not _av_drawer_missing and not _av_read_ok
+             and _mode not in ['help', 'status', 'health', 'inspect', 'tool_manifest', 'kfc_manifest', 'summary', 'run_state', 'schedule', 'schedule_blocks', 'maintenance_get', 'register', 'unregister', 'stacks_by_anchor'] }}
+        then:
+          - variables:
+              response:
+                status: error
+                mode: "{{ _mode }}"
+                error: drawer_unreadable
+                message: "The autovac drawer exists but could not be read, so nothing was written (writing would replace it with empties). Try again; if it persists, check the cabinet mount."
+                read_status: "{{ _fc_av.get('status', '') if _fc_av is mapping else 'no_response' }}"
+          - event: zen_event
+            event_data:
+              event:
+                kind: autovac_drawer_unreadable
+                mode: "{{ _mode }}"
+                read_status: "{{ _fc_av.get('status', '') if _fc_av is mapping else 'no_response' }}"
+                mount_traversal: "{{ _fc_av.get('mount_traversal') if _fc_av is mapping else none }}"
+                reason: "{{ _fc_av.get('reason', _fc_av.get('message', '')) if _fc_av is mapping else '' }}"
 
       # -- 0.7 Drawer guard -----------------------------------------------------
       # The state-writing modes write the autovac drawer with an update, which
@@ -895,8 +1010,26 @@ script:
       - variables:
           _avm_robot_slug: "{{ (_av_system.get('grocy_catalog', {}).get('robot_name', '') if _av_system is mapping else '') | string | trim | slugify(separator='_') }}"
           _avm_status: {}
+          _avm_key_tag: ""
+      # Maintenance tickets belong to the physical robot, not its name (#10757): two
+      # robots can share a name (old and new Rosie). With a fleet registry, tickets
+      # carry and are matched by the active robot's key tag; name-only tickets match
+      # only on installs without a registry.
       - if: "{{ response is not defined and _avm_robot_slug != '' and _mode in ['status', 'summary', 'health', 'briefing', 'maintenance_get', 'maintenance_set', 'maintenance_clear'] }}"
         then:
+          - action: script.zen_sutra_filecabinet
+            continue_on_error: true
+            data:
+              mode: get
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac_fleet
+            response_variable: _avm_fleet_raw
+          - variables:
+              _avm_key_tag: >-
+                {%- set v = _avm_fleet_raw.get('value') if _avm_fleet_raw is mapping else none -%}
+                {%- set f = (v | from_json(none)) if v is string else v -%}
+                {%- set k = (f.get('active_robot_key') if f is mapping else none) or '' -%}
+                {{ ('avrobot_' ~ (k | string | slugify(separator='_'))) if k != '' else '' }}
           - action: script.zen_dojotools_servicedesk
             enabled: "{{ states('script.zen_dojotools_servicedesk') in ['on', 'off'] }}"
             continue_on_error: true
@@ -904,7 +1037,7 @@ script:
             data:
               mode: ticket_search
               input_json: >-
-                {{ {'tags': ['autovac', _avm_robot_slug, 'maintenance'], 'states': ['new', 'open']} | tojson }}
+                {{ {'tags': ['autovac', (_avm_key_tag if _avm_key_tag != '' else _avm_robot_slug), 'maintenance'], 'states': ['new', 'open']} | tojson }}
           - variables:
               _avm_search: "{{ _avm_search_raw.get('result', _avm_search_raw) if _avm_search_raw is mapping else {} }}"
               _avm_ticket_ids: "{{ _avm_search.get('ticket_ids', []) if _avm_search is mapping else [] }}"
@@ -1601,6 +1734,469 @@ script:
       # -- 6 Write / action ops (clear/skip/unskip/ready/unready/mark_cleaned
       #    live in the shared choose: block below) --
 
+      # ---- start_check (internal, fired by clean in the background) -----------
+      # Waits up to 90 seconds for the robot to actually start. If it never
+      # does, and the run clean recorded is still there, the run is cleared
+      # (a fresh read, so nothing written in between is lost) and a push says
+      # so. Nobody waits on this: clean answers dispatched straight away.
+      - if: "{{ response is not defined and _mode == 'start_check' }}"
+        then:
+          - wait_template: "{{ _vac_ent != '' and states(_vac_ent) in ['cleaning', 'returning', 'paused'] }}"
+            timeout: "00:01:30"
+            continue_on_timeout: true
+          - variables:
+              _sc_started: "{{ wait.completed if wait is defined else false }}"
+          - if: "{{ not _sc_started }}"
+            then:
+              - action: script.zen_sutra_filecabinet
+                data:
+                  mode: get
+                  volume_entity_id: "{{ _hh_cabinet }}"
+                  key: autovac
+                response_variable: _sc_fc
+              - variables:
+                  _sc_val: >-
+                    {%- set v = _sc_fc.get('value') if _sc_fc is mapping else none -%}
+                    {{ (v | from_json(none)) if v is string else v }}
+              - variables:
+                  _sc_ok: "{{ _sc_fc is mapping and _sc_fc.get('status', '') == 'success' and _sc_val is mapping and 'rooms' in _sc_val and 'system' in _sc_val }}"
+                  _sc_run: "{{ (_sc_val.get('system', {}) if _sc_val is mapping else {}).get('current_run', {}) }}"
+              - if: "{{ _sc_ok and _sc_run is mapping and _sc_run | length > 0 and states(_vac_ent) not in ['cleaning', 'returning', 'paused'] }}"
+                then:
+                  - action: script.zen_sutra_filecabinet
+                    data:
+                      mode: update
+                      write_mode: replace
+                      volume_entity_id: "{{ _hh_cabinet }}"
+                      key: autovac
+                      value: "{{ {'rooms': _sc_val.rooms, 'system': _sc_val.system | combine({'current_run': {}})} | tojson }}"
+                  - action: script.zen_dojotools_postman
+                    continue_on_error: true
+                    data:
+                      mode: resolve_and_dispatch
+                      title: "Autovac — Run Didn't Start"
+                      message: >-
+                        {{ (state_attr(_vac_ent, 'friendly_name') or 'The vacuum') }} was sent to clean
+                        {{ rooms | default('', true) | replace(',', ', ') }} but has not started after 90 seconds
+                        (it is {{ states(_vac_ent) }}). The run was cleared; nothing was marked cleaned.
+                        Check the robot, or that each room's area is mapped to the robot's segments.
+                      urgency: 4
+                      channel_hint: push
+                      tag: autovac_start_failed
+          - variables:
+              response: >-
+                {{ {'mode': 'start_check', 'result': 'started' if _sc_started else 'did_not_start',
+                    'rooms': rooms | default('', true), 'vacuum_state': states(_vac_ent) if _vac_ent != '' else none} }}
+
+      # ---- swap_robot: replace the household robot (#10743) ---------------------
+      # action=plan (default, read only) | commit | finish | rollback | status.
+      # The robot registry and the migration record live in their own drawer,
+      # autovac_fleet: every autovac drawer write replaces its root with exactly
+      # {rooms, system}, so a key added there would be lost.
+      # commit: needs a fresh plan with no blockers, the zenos.autovac.setup cert and
+      #   confirm_action. It turns Autovac off (enabled false), files the old robot
+      #   and its consumables catalog in the registry as retired, moves the autovac
+      #   labels from the old robot's entities to the new robot's, and clears the
+      #   active catalog so the new robot is provisioned with its own model. Rooms,
+      #   schedules and last_cleaned are not touched. Nothing is cleaned.
+      # finish: after the new robot is provisioned and checked; restores the prior
+      #   enabled value. rollback: moves the labels back and restores the old
+      #   catalog; Autovac stays off when the old robot is unavailable.
+      - if: "{{ response is not defined and _mode == 'swap_robot' }}"
+        then:
+          - action: script.zen_sutra_filecabinet
+            data:
+              mode: get
+              volume_entity_id: "{{ _hh_cabinet }}"
+              key: autovac_fleet
+            response_variable: _sw_fc
+          - variables:
+              _sw_action: "{{ action | default('plan', true) | string | lower | trim }}"
+              _sw_cfg: "{{ _config if _config is mapping else (_config | from_json(default={})) }}"
+              _sw_fleet: >-
+                {%- set val = _sw_fc.get('value', {}) if _sw_fc is mapping else {} -%}
+                {%- set f = (val | from_json(default={})) if val is string else val -%}
+                {{ f if f is mapping and f | length > 0 else {'schema_version': 1, 'active_robot_key': none, 'robots': {}, 'migration': none} }}
+          - variables:
+              _sw_mig: "{{ _sw_fleet.get('migration') if _sw_fleet.get('migration') is mapping else none }}"
+              _sw_old: >-
+                {%- if _sw_fleet.get('migration') is mapping -%}{{ _sw_fleet.migration.get('old_entity_id', '') }}
+                {%- else -%}{{ (old_entity_id | default('', true) | string | trim) or _vac_ent }}{%- endif -%}
+              _sw_new: >-
+                {%- if _sw_fleet.get('migration') is mapping -%}{{ _sw_fleet.migration.get('new_entity_id', '') }}
+                {%- else -%}{{ new_entity_id | default('', true) | string | trim }}{%- endif -%}
+          - variables:
+              _sw_od: "{{ device_id(_sw_old) | default('', true) if _sw_old != '' else '' }}"
+              _sw_nd: "{{ device_id(_sw_new) | default('', true) if _sw_new != '' else '' }}"
+          - variables:
+              _sw_robot_old: >-
+                {%- set d = _sw_od -%}
+                {%- set sn = state_attr(_sw_old, 'sn') | default(state_attr(_sw_old, 'serial_number'), true) | default('', true) | string -%}
+                {{ {'entity_id': _sw_old, 'ha_device_id': d,
+                    'device_name': (device_attr(d, 'name_by_user') or device_attr(d, 'name') or '') if d else '',
+                    'model_id': (device_attr(d, 'model') or '') if d else '',
+                    'manufacturer': (device_attr(d, 'manufacturer') or '') if d else '',
+                    'physical_serial': sn if sn != '' else none,
+                    'serial_confidence': 'high' if sn != '' else 'none',
+                    'state': states(_sw_old), 'area_id': (area_id(_sw_old) | default(none, true)) if _sw_old != '' else none,
+                    'robot_key': (('sn:' ~ sn) if sn != '' else ('ha:' ~ d)) if d else none} }}
+              _sw_robot_new: >-
+                {%- set d = _sw_nd -%}
+                {%- set sn = state_attr(_sw_new, 'sn') | default(state_attr(_sw_new, 'serial_number'), true) | default('', true) | string -%}
+                {{ {'entity_id': _sw_new, 'ha_device_id': d,
+                    'device_name': (device_attr(d, 'name_by_user') or device_attr(d, 'name') or '') if d else '',
+                    'model_id': (device_attr(d, 'model') or '') if d else '',
+                    'manufacturer': (device_attr(d, 'manufacturer') or '') if d else '',
+                    'physical_serial': sn if sn != '' else none,
+                    'serial_confidence': 'high' if sn != '' else 'none',
+                    'state': states(_sw_new), 'area_id': (area_id(_sw_new) | default(none, true)) if _sw_new != '' else none,
+                    'robot_key': (('sn:' ~ sn) if sn != '' else ('ha:' ~ d)) if d else none} }}
+          # Each autovac* label on the old robot's entities, paired with the new
+          # robot's entity of the same domain and the same name within its device
+          # ("Rosie (Old) Battery" -> "Rosie Battery"). config.label_map
+          # {"<old entity>": "<new entity>"} settles any pair the names do not.
+          - variables:
+              _sw_moves: >-
+                {%- set ns = namespace(mv=[]) -%}
+                {%- set lmap = _sw_cfg.get('label_map', {}) if _sw_cfg is mapping else {} -%}
+                {%- set on = _sw_robot_old.device_name | string -%}
+                {%- set nn = _sw_robot_new.device_name | string -%}
+                {%- set new_ents = device_entities(_sw_nd) if _sw_nd != '' else [] -%}
+                {%- for e in (device_entities(_sw_od) if _sw_od != '' else []) -%}
+                  {%- set al = labels(e) | select('match', 'autovac') | list -%}
+                  {%- if al | count > 0 -%}
+                    {%- set fn = state_attr(e, 'friendly_name') | default('', true) | string -%}
+                    {%- set tail = (fn[on | length:] if on != '' and fn.startswith(on) else fn) | trim | lower -%}
+                    {%- set dom = e.split('.')[0] -%}
+                    {%- set m = namespace(x=lmap.get(e)) -%}
+                    {%- for n in new_ents if m.x is none and n.split('.')[0] == dom -%}
+                      {%- set nf = state_attr(n, 'friendly_name') | default('', true) | string -%}
+                      {%- set nt = (nf[nn | length:] if nn != '' and nf.startswith(nn) else nf) | trim | lower -%}
+                      {%- if fn != '' and nt == tail -%}{%- set m.x = n -%}{%- endif -%}
+                    {%- endfor -%}
+                    {%- for l in al -%}
+                      {%- set ns.mv = ns.mv + [{'label': l, 'old_entity': e, 'new_entity': m.x}] -%}
+                    {%- endfor -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {{ ns.mv }}
+          - variables:
+              _sw_blockers: >-
+                {%- set ns = namespace(b=[]) -%}
+                {%- if _sw_new == '' -%}{%- set ns.b = ns.b + [{'code': 'new_entity_required', 'resource': 'new_entity_id', 'detail': 'Pass new_entity_id=vacuum.<new robot>.'}] -%}
+                {%- elif not _sw_new.startswith('vacuum.') or states(_sw_new) in ['unknown'] or _sw_nd == '' -%}{%- set ns.b = ns.b + [{'code': 'new_robot_not_found', 'resource': _sw_new, 'detail': 'Not a vacuum entity on an HA device.'}] -%}
+                {%- endif -%}
+                {%- if _sw_old == '' or _sw_od == '' -%}{%- set ns.b = ns.b + [{'code': 'old_robot_not_found', 'resource': _sw_old, 'detail': 'No current Autovac robot resolved. Pass old_entity_id.'}] -%}{%- endif -%}
+                {%- if _sw_old != '' and _sw_old == _sw_new -%}{%- set ns.b = ns.b + [{'code': 'same_robot', 'resource': _sw_new, 'detail': 'Old and new are the same entity.'}] -%}{%- endif -%}
+                {%- if _sw_od != '' and _sw_od == _sw_nd -%}{%- set ns.b = ns.b + [{'code': 'same_device', 'resource': _sw_nd, 'detail': 'Old and new are the same HA device: that is a reconnect, not a swap.'}] -%}{%- endif -%}
+                {%- if states(_sw_new) in ['cleaning', 'returning'] -%}{%- set ns.b = ns.b + [{'code': 'new_robot_busy', 'resource': _sw_new, 'detail': 'The new robot is ' ~ states(_sw_new) ~ '. Wait until it is docked.'}] -%}{%- endif -%}
+                {%- if states(_sw_old) in ['cleaning', 'returning', 'paused'] -%}{%- set ns.b = ns.b + [{'code': 'run_in_progress', 'resource': _sw_old, 'detail': 'The old robot is ' ~ states(_sw_old) ~ '.'}] -%}{%- endif -%}
+                {%- if _vac_ent_count | int(0) > 1 and _sw_mig is none -%}{%- set ns.b = ns.b + [{'code': 'duplicate_autovac_label', 'resource': 'autovac', 'detail': 'More than one vacuum carries the autovac label. Remove the extra label first.'}] -%}{%- endif -%}
+                {%- if _sw_moves | selectattr('label', 'equalto', 'autovac') | selectattr('old_entity', 'match', 'vacuum\\.') | list | count == 0 and _sw_mig is none -%}{%- set ns.b = ns.b + [{'code': 'old_robot_not_labeled', 'resource': _sw_old, 'detail': 'The old robot does not carry the autovac label.'}] -%}{%- endif -%}
+                {{ ns.b }}
+              _sw_warnings: >-
+                {%- set ns = namespace(w=[]) -%}
+                {%- if _sw_robot_new.area_id is none -%}{%- set ns.w = ns.w + ['The new robot has no HA area. Assign it to the dock area before consumables provision.'] -%}{%- endif -%}
+                {%- if _sw_robot_new.physical_serial is none -%}{%- set ns.w = ns.w + ['The new robot reports no serial number. It is keyed by its HA device (' ~ _sw_robot_new.robot_key ~ '), which is not a serial.'] -%}{%- endif -%}
+                {%- set um = _sw_moves | selectattr('new_entity', 'none') | list -%}
+                {%- if um | count > 0 -%}{%- set ns.w = ns.w + ['No matching entity on the new robot for: ' ~ (um | map(attribute='old_entity') | unique | join(', ')) ~ '. Those labels are removed from the old robot only. Pass config.label_map to pair them.'] -%}{%- endif -%}
+                {%- set ns.w = ns.w + ['Room maps are per robot: confirm each room area is mapped to the new robot in HA (Map vacuum segments to areas) before finish.'] -%}
+                {{ ns.w }}
+          - choose:
+              # ---- status --------------------------------------------------
+              - conditions: "{{ _sw_action == 'status' }}"
+                sequence:
+                  - variables:
+                      response: >-
+                        {{ {'mode': 'swap_robot', 'action': 'status', 'status': 'ok', 'caller_token': _caller_token,
+                            'phase': _sw_mig.get('phase') if _sw_mig else 'idle',
+                            'active_robot_key': _sw_fleet.get('active_robot_key'),
+                            'migration': _sw_mig, 'robots': _sw_fleet.get('robots', {})} }}
+              # ---- plan (read only) ----------------------------------------
+              - conditions: "{{ _sw_action == 'plan' }}"
+                sequence:
+                  # The old robot's open maintenance tickets (by its key tag, and by
+                  # name for tickets made before the registry). They stay with the
+                  # old robot: commit never moves or closes them (#10757).
+                  - action: script.zen_dojotools_servicedesk
+                    enabled: "{{ states('script.zen_dojotools_servicedesk') in ['on', 'off'] }}"
+                    continue_on_error: true
+                    response_variable: _sw_mt_raw
+                    data:
+                      mode: ticket_search
+                      input_json: >-
+                        {%- set _ok = _sw_robot_old.get('robot_key') or '' -%}
+                        {%- set _tag = ('avrobot_' ~ (_ok | string | slugify(separator='_'))) if _ok != '' else (_avm_robot_slug or 'none') -%}
+                        {{ {'tags': ['autovac', _tag, 'maintenance'], 'states': ['new', 'open']} | tojson }}
+                  - variables:
+                      _sw_old_tickets: >-
+                        {%- set r = _sw_mt_raw.get('result', _sw_mt_raw) if _sw_mt_raw is mapping else {} -%}
+                        {{ r.get('ticket_ids', []) if r is mapping else [] }}
+                  - variables:
+                      response: >-
+                        {{ {'mode': 'swap_robot', 'action': 'plan', 'caller_token': _caller_token,
+                            'status': 'blocked' if _sw_blockers | count > 0 else 'ready',
+                            'phase': _sw_mig.get('phase') if _sw_mig else 'idle',
+                            'old_robot_maintenance_tickets': _sw_old_tickets,
+                            'old_robot': _sw_robot_old, 'new_robot': _sw_robot_new,
+                            'blockers': _sw_blockers, 'warnings': _sw_warnings,
+                            'label_moves': _sw_moves,
+                            'rooms': _av_rooms.keys() | list, 'room_count': _av_rooms | count,
+                            'autovac_enabled': _av_system.get('enabled', true),
+                            'old_catalog': {'entity_id': _av_system.get('grocy_catalog', {}).get('entity_id'),
+                                            'model': _av_system.get('grocy_catalog', {}).get('model'),
+                                            'model_preset': _av_system.get('grocy_catalog', {}).get('model_preset'),
+                                            'machine_product_id': _av_system.get('grocy_catalog', {}).get('machine_product_id')},
+                            'changes_on_commit': ['autovac off until finish', 'old robot and its catalog filed as retired in autovac_fleet', 'labels moved as listed', 'active catalog cleared for the new robot'],
+                            'unchanged': ['rooms, room settings and last_cleaned', 'schedules', 'Grocy products, stock and chores of the old robot', 'Radar tickets'],
+                            'next_actions': (['Resolve the blockers.'] if _sw_blockers | count > 0 else ['mode=swap_robot action=commit new_entity_id=' ~ _sw_new ~ ' confirm_action=true'])} }}
+              # ---- commit --------------------------------------------------
+              - conditions: "{{ _sw_action == 'commit' and (_sw_mig is not none or _sw_blockers | count > 0 or not (confirm_action | default(false, true) | bool)) }}"
+                sequence:
+                  - variables:
+                      response: >-
+                        {{ {'mode': 'swap_robot', 'action': 'commit', 'status': 'error', 'caller_token': _caller_token,
+                            'error': 'migration_in_progress' if _sw_mig is not none else ('blocked' if _sw_blockers | count > 0 else 'confirm_required'),
+                            'phase': _sw_mig.get('phase') if _sw_mig else 'idle',
+                            'blockers': _sw_blockers,
+                            'detail': ('A swap is already in progress: finish or rollback it first.' if _sw_mig is not none
+                                       else ('Resolve the blockers (action=plan lists them).' if _sw_blockers | count > 0
+                                       else 'Pass confirm_action=true after reviewing action=plan.'))} }}
+              - conditions: "{{ _sw_action == 'commit' }}"
+                sequence:
+                  - variables:
+                      _sw_old_catalog: "{{ _av_system.get('grocy_catalog', {}) }}"
+                      _sw_prior_enabled: "{{ _av_system.get('enabled', true) }}"
+                      _sw_started: "{{ now().isoformat() }}"
+                  # 1. Registry + migration record first, so a failure after this
+                  #    point can always be rolled back from the snapshot.
+                  - action: script.zen_sutra_filecabinet
+                    data:
+                      mode: upsert
+                      write_mode: replace
+                      volume_entity_id: "{{ _hh_cabinet }}"
+                      key: autovac_fleet
+                      value: >-
+                        {%- set robots = _sw_fleet.get('robots', {}) -%}
+                        {%- set ok = _sw_robot_old.robot_key -%}
+                        {%- set nk = _sw_robot_new.robot_key -%}
+                        {%- set robots = robots | combine({ok: (robots.get(ok, {}) | combine(_sw_robot_old) | combine({'status': 'retiring', 'catalog': _sw_old_catalog, 'model': _sw_old_catalog.get('model'), 'retired_at': _sw_started}))}) -%}
+                        {%- set robots = robots | combine({nk: (robots.get(nk, {}) | combine(_sw_robot_new) | combine({'status': 'candidate', 'first_seen': robots.get(nk, {}).get('first_seen', _sw_started)}))}) -%}
+                        {{ _sw_fleet | combine({'schema_version': 1, 'robots': robots, 'migration': {
+                             'phase': 'binding', 'started_at': _sw_started,
+                             'old_robot_key': ok, 'new_robot_key': nk,
+                             'old_entity_id': _sw_old, 'new_entity_id': _sw_new,
+                             'snapshot': {'prior_enabled': _sw_prior_enabled, 'grocy_catalog': _sw_old_catalog, 'label_moves': _sw_moves}}}) | tojson }}
+                    response_variable: _sw_w1
+                  # 2. Autovac off and the active catalog cleared. Rooms untouched.
+                  - action: script.zen_sutra_filecabinet
+                    data:
+                      mode: update
+                      write_mode: replace
+                      volume_entity_id: "{{ _hh_cabinet }}"
+                      key: autovac
+                      value: >-
+                        {%- set ns = namespace(sys={}) -%}
+                        {%- for k, v in _av_system.items() if k != 'grocy_catalog' -%}{%- set ns.sys = ns.sys | combine({k: v}) -%}{%- endfor -%}
+                        {{ {'rooms': _av_rooms, 'system': ns.sys | combine({'enabled': false})} | tojson }}
+                    response_variable: _sw_w2
+                  # 3. Labels: tag the new entities, then untag the old ones.
+                  - variables:
+                      _sw_tag_pairs: "{{ _sw_moves | selectattr('new_entity', 'string') | list }}"
+                      _sw_lbl_results: []
+                  - repeat:
+                      for_each: "{{ _sw_tag_pairs }}"
+                      sequence:
+                        - action: script.zen_dojotools_labels
+                          continue_on_error: true
+                          data:
+                            mode: tag
+                            label_list: ["{{ repeat.item.label }}"]
+                            target_entities: ["{{ repeat.item.new_entity }}"]
+                            confirm: true
+                            caller_token: "{{ _caller_token }}"
+                          response_variable: _sw_lr
+                        - variables:
+                            _sw_lbl_results: "{{ _sw_lbl_results + [{'op': 'tag', 'label': repeat.item.label, 'entity': repeat.item.new_entity, 'ok': repeat.item.label in labels(repeat.item.new_entity)}] }}"
+                  - repeat:
+                      for_each: "{{ _sw_moves }}"
+                      sequence:
+                        - action: script.zen_dojotools_labels
+                          continue_on_error: true
+                          data:
+                            mode: untag
+                            label_list: ["{{ repeat.item.label }}"]
+                            target_entities: ["{{ repeat.item.old_entity }}"]
+                            confirm: true
+                            caller_token: "{{ _caller_token }}"
+                          response_variable: _sw_lr
+                        - variables:
+                            _sw_lbl_results: "{{ _sw_lbl_results + [{'op': 'untag', 'label': repeat.item.label, 'entity': repeat.item.old_entity, 'ok': repeat.item.label not in labels(repeat.item.old_entity)}] }}"
+                  - variables:
+                      _sw_lbl_failed: "{{ _sw_lbl_results | rejectattr('ok') | list }}"
+                      _sw_phase: "{{ 'recovery_required' if (_sw_lbl_results | rejectattr('ok') | list | count > 0) else 'pending_verify' }}"
+                  # 4. Record the phase and the new active robot.
+                  - action: script.zen_sutra_filecabinet
+                    data:
+                      mode: get
+                      volume_entity_id: "{{ _hh_cabinet }}"
+                      key: autovac_fleet
+                    response_variable: _sw_fc2
+                  - variables:
+                      _sw_fleet2: >-
+                        {%- set val = _sw_fc2.get('value', {}) if _sw_fc2 is mapping else {} -%}
+                        {{ (val | from_json(default={})) if val is string else val }}
+                  - action: script.zen_sutra_filecabinet
+                    data:
+                      mode: upsert
+                      write_mode: replace
+                      volume_entity_id: "{{ _hh_cabinet }}"
+                      key: autovac_fleet
+                      value: >-
+                        {{ _sw_fleet2 | combine({
+                             'active_robot_key': _sw_robot_new.robot_key if _sw_phase == 'pending_verify' else _sw_fleet2.get('active_robot_key'),
+                             'migration': _sw_fleet2.get('migration', {}) | combine({'phase': _sw_phase, 'label_results': _sw_lbl_results})}) | tojson }}
+                  - variables:
+                      response: >-
+                        {{ {'mode': 'swap_robot', 'action': 'commit', 'caller_token': _caller_token,
+                            'status': 'ok' if _sw_phase == 'pending_verify' else 'error',
+                            'phase': _sw_phase, 'old_robot': _sw_robot_old, 'new_robot': _sw_robot_new,
+                            'changes': [{'resource': 'autovac.system.enabled', 'before': _sw_prior_enabled, 'after': false},
+                                        {'resource': 'autovac.system.grocy_catalog', 'before': _sw_old_catalog.get('model'), 'after': none}],
+                            'label_results': _sw_lbl_results, 'label_failures': _sw_lbl_failed,
+                            'warnings': _sw_warnings, 'rollback_available': true,
+                            'next_actions': ([
+                                'Assign ' ~ _sw_new ~ ' to the dock area in HA.' if _sw_robot_new.area_id is none else none,
+                                'mode=consumables action=provision model_preset=<new model> config={"robot_name": "..."}',
+                                'mode=status: confirm the new robot is the one Autovac sees',
+                                'mode=swap_robot action=finish confirm_action=true'] | select | list)
+                              if _sw_phase == 'pending_verify' else
+                              ['Some labels did not move (label_failures). Fix them by hand, or mode=swap_robot action=rollback confirm_action=true.']} }}
+              # ---- finish --------------------------------------------------
+              - conditions: "{{ _sw_action == 'finish' }}"
+                sequence:
+                  - variables:
+                      _sw_fin_ok: >-
+                        {{ _sw_mig is not none and _sw_mig.get('phase') == 'pending_verify'
+                           and (confirm_action | default(false, true) | bool) and _vac_ent == _sw_new }}
+                  - if: "{{ not _sw_fin_ok }}"
+                    then:
+                      - variables:
+                          response: >-
+                            {{ {'mode': 'swap_robot', 'action': 'finish', 'status': 'error', 'caller_token': _caller_token,
+                                'error': 'no_migration' if _sw_mig is none else ('wrong_phase' if _sw_mig.get('phase') != 'pending_verify' else ('confirm_required' if not (confirm_action | default(false, true) | bool) else 'robot_not_active')),
+                                'phase': _sw_mig.get('phase') if _sw_mig else 'idle',
+                                'detail': 'finish needs phase pending_verify, confirm_action=true, and Autovac resolving exactly the new robot (it resolves ' ~ (_vac_ent or 'none') ~ ').'} }}
+                    else:
+                      - variables:
+                          _sw_prior: "{{ _sw_mig.get('snapshot', {}).get('prior_enabled', true) }}"
+                          _sw_now: "{{ now().isoformat() }}"
+                      - action: script.zen_sutra_filecabinet
+                        data:
+                          mode: update
+                          write_mode: replace
+                          volume_entity_id: "{{ _hh_cabinet }}"
+                          key: autovac
+                          value: "{{ {'rooms': _av_rooms, 'system': _av_system | combine({'enabled': _sw_prior})} | tojson }}"
+                      - action: script.zen_sutra_filecabinet
+                        data:
+                          mode: upsert
+                          write_mode: replace
+                          volume_entity_id: "{{ _hh_cabinet }}"
+                          key: autovac_fleet
+                          value: >-
+                            {%- set robots = _sw_fleet.get('robots', {}) -%}
+                            {%- set ok = _sw_mig.old_robot_key -%}
+                            {%- set nk = _sw_mig.new_robot_key -%}
+                            {%- set robots = robots | combine({ok: robots.get(ok, {}) | combine({'status': 'retired'})}) -%}
+                            {%- set robots = robots | combine({nk: robots.get(nk, {}) | combine({'status': 'active', 'catalog_model': _av_system.get('grocy_catalog', {}).get('model'), 'last_active_at': _sw_now})}) -%}
+                            {{ _sw_fleet | combine({'robots': robots, 'active_robot_key': nk, 'migration': none,
+                                 'history': (_sw_fleet.get('history', []) + [{'phase': 'finished', 'started_at': _sw_mig.get('started_at'), 'finished_at': _sw_now, 'old_robot_key': _sw_mig.get('old_robot_key'), 'new_robot_key': _sw_mig.get('new_robot_key'), 'old_entity_id': _sw_mig.get('old_entity_id'), 'new_entity_id': _sw_mig.get('new_entity_id'), 'labels_moved': (_sw_mig.get('label_results', []) | selectattr('ok') | list | count)}])[-10:]}) | tojson }}
+                      - variables:
+                          response: >-
+                            {{ {'mode': 'swap_robot', 'action': 'finish', 'status': 'ok', 'caller_token': _caller_token,
+                                'phase': 'active', 'active_robot': _sw_new, 'autovac_enabled': _sw_prior,
+                                'consumables_provisioned': _av_system.get('grocy_catalog', {}).get('entity_id') == _sw_new,
+                                'safe_to_decommission': {
+                                  'old_robot': _sw_old,
+                                  'checklist': [
+                                    'Run one room from Autovac and confirm the new robot cleaned the right room.',
+                                    'The old robot records stay: its Grocy products, stock, chores and Radar tickets, and its entry in autovac_fleet.',
+                                    'Remove only the old DEVICE from the Roborock integration. Both robots may share one Roborock config entry; deleting or reconfiguring the integration would disconnect the new robot too.',
+                                    'Do not delete the old entities by bulk cleanup; remove them one at a time if wanted.']}} }}
+              # ---- rollback ------------------------------------------------
+              - conditions: "{{ _sw_action == 'rollback' }}"
+                sequence:
+                  - if: "{{ _sw_mig is none or not (confirm_action | default(false, true) | bool) }}"
+                    then:
+                      - variables:
+                          response: >-
+                            {{ {'mode': 'swap_robot', 'action': 'rollback', 'status': 'error', 'caller_token': _caller_token,
+                                'error': 'no_migration' if _sw_mig is none else 'confirm_required'} }}
+                    else:
+                      - variables:
+                          _sw_snap: "{{ _sw_mig.get('snapshot', {}) }}"
+                          _sw_rb_results: []
+                      - repeat:
+                          for_each: "{{ _sw_snap.get('label_moves', []) }}"
+                          sequence:
+                            - if: "{{ repeat.item.new_entity is string }}"
+                              then:
+                                - action: script.zen_dojotools_labels
+                                  continue_on_error: true
+                                  data:
+                                    mode: untag
+                                    label_list: ["{{ repeat.item.label }}"]
+                                    target_entities: ["{{ repeat.item.new_entity }}"]
+                                    confirm: true
+                                    caller_token: "{{ _caller_token }}"
+                                  response_variable: _sw_lr
+                            - action: script.zen_dojotools_labels
+                              continue_on_error: true
+                              data:
+                                mode: tag
+                                label_list: ["{{ repeat.item.label }}"]
+                                target_entities: ["{{ repeat.item.old_entity }}"]
+                                confirm: true
+                                caller_token: "{{ _caller_token }}"
+                              response_variable: _sw_lr
+                            - variables:
+                                _sw_rb_results: "{{ _sw_rb_results + [{'label': repeat.item.label, 'entity': repeat.item.old_entity, 'ok': repeat.item.label in labels(repeat.item.old_entity)}] }}"
+                      - variables:
+                          _sw_old_ok: "{{ states(_sw_old) not in ['unavailable', 'unknown'] }}"
+                          _sw_rb_enabled: "{{ _sw_snap.get('prior_enabled', true) if states(_sw_old) not in ['unavailable', 'unknown'] else false }}"
+                      - action: script.zen_sutra_filecabinet
+                        data:
+                          mode: update
+                          write_mode: replace
+                          volume_entity_id: "{{ _hh_cabinet }}"
+                          key: autovac
+                          value: "{{ {'rooms': _av_rooms, 'system': _av_system | combine({'grocy_catalog': _sw_snap.get('grocy_catalog', {}), 'enabled': _sw_rb_enabled})} | tojson }}"
+                      - action: script.zen_sutra_filecabinet
+                        data:
+                          mode: upsert
+                          write_mode: replace
+                          volume_entity_id: "{{ _hh_cabinet }}"
+                          key: autovac_fleet
+                          value: >-
+                            {%- set robots = _sw_fleet.get('robots', {}) -%}
+                            {%- set robots = robots | combine({_sw_mig.old_robot_key: robots.get(_sw_mig.old_robot_key, {}) | combine({'status': 'active'})}) -%}
+                            {%- set robots = robots | combine({_sw_mig.new_robot_key: robots.get(_sw_mig.new_robot_key, {}) | combine({'status': 'candidate'})}) -%}
+                            {{ _sw_fleet | combine({'robots': robots, 'active_robot_key': _sw_mig.old_robot_key, 'migration': none,
+                                 'history': (_sw_fleet.get('history', []) + [{'phase': 'rolled_back', 'started_at': _sw_mig.get('started_at'), 'rolled_back_at': now().isoformat(), 'old_robot_key': _sw_mig.get('old_robot_key'), 'new_robot_key': _sw_mig.get('new_robot_key'), 'old_entity_id': _sw_mig.get('old_entity_id'), 'new_entity_id': _sw_mig.get('new_entity_id'), 'labels_moved': (_sw_mig.get('label_results', []) | selectattr('ok') | list | count)}])[-10:]}) | tojson }}
+                      - variables:
+                          response: >-
+                            {{ {'mode': 'swap_robot', 'action': 'rollback', 'caller_token': _caller_token,
+                                'status': 'ok' if (_sw_rb_results | rejectattr('ok') | list | count == 0) else 'partial',
+                                'label_results': _sw_rb_results, 'autovac_enabled': _sw_rb_enabled,
+                                'error': none if _sw_old_ok else 'old_robot_unavailable',
+                                'detail': none if _sw_old_ok else 'Labels and catalog are back on the old robot, but it is unavailable, so Autovac stays off. Turn it on with mode=configure config={"enabled": true} once a robot can run.'} }}
+            default:
+              - variables:
+                  response: >-
+                    {{ {'mode': 'swap_robot', 'status': 'error', 'caller_token': _caller_token,
+                        'error': 'unknown_action', 'detail': 'action is plan, commit, finish, rollback or status.'} }}
+
       # ---- system configure (no room — sets water_low_action, enabled) --------
       # Two Security Manager settings are about the vacuum too (vac_arm_override_enabled,
       # vac_downgrade_dock_wait_min). They are shown and edited here so a person or agent
@@ -2101,48 +2697,67 @@ script:
                   _prov_robot_name: "{{ _prov_cfg.get('robot_name', _cons_robot) }}"
                   _prov_existing:   "{{ _gc }}"
               - variables:
+                  # A Home Assistant device ID or entity ID is not a physical serial
+                  # number. With no serial from the robot or the caller, serial_number
+                  # is empty and the HA device ID is kept in its own field.
                   _prov_sn: >-
                     {{ state_attr(_vac_ent, 'sn')
                        | default(state_attr(_vac_ent, 'serial_number'), true)
                        | default(state_attr(_vac_ent, 'serialNumber'), true)
                        | default(_prov_cfg.get('serial_number'), true)
-                       | default(device_id(_vac_ent), true)
-                       | default(_vac_ent, true) | string }}
+                       | default('', true) | string }}
                   _prov_sn_source: >-
                     {%- if state_attr(_vac_ent, 'sn') is not none -%}sn_attr
                     {%- elif state_attr(_vac_ent, 'serial_number') is not none -%}serial_number_attr
                     {%- elif state_attr(_vac_ent, 'serialNumber') is not none -%}serialNumber_attr
                     {%- elif _prov_cfg.get('serial_number') is not none -%}user_supplied
-                    {%- elif device_id(_vac_ent) is not none -%}ha_device_id
-                    {%- else -%}entity_id{%- endif -%}
+                    {%- else -%}none{%- endif -%}
+                  _prov_ha_device_id: "{{ device_id(_vac_ent) | default('', true) | string }}"
                   _prov_mpid: >-
                     {{ (_prov_cfg.get('machine_product_id')
                         | default(_gc.get('machine_product_id'), true)) | int(none) }}
               - variables:
                   _prov_sn_confidence: >-
                     {%- if _prov_sn_source in ['sn_attr', 'serial_number_attr', 'serialNumber_attr', 'user_supplied'] -%}high
-                    {%- elif _prov_sn_source == 'ha_device_id' -%}medium
-                    {%- else -%}low{%- endif -%}
+                    {%- else -%}none{%- endif -%}
+                  _prov_same_robot: >-
+                    {{ _prov_existing.get('entity_id', '') == _vac_ent
+                       or (_prov_sn not in ['unknown', ''] and _prov_existing.get('serial_number', '') == _prov_sn) }}
 
-              # Idempotency: entity_id OR SN — cross-ref survives integration swaps without stock rebuild
-              # entity_id changes if integration reinstalls; SN stays. SN changes if firmware hides it; entity_id stays.
-              - if: >-
-                  {{ _prov_existing and not _prov_cfg.get('force', false) and (
-                     _prov_existing.get('entity_id', '') == _vac_ent or (
-                     _prov_sn not in ['unknown', ''] and
-                     _prov_existing.get('serial_number', 'NOSN') == _prov_sn)) }}
+              # The active catalog belongs to a different robot: provisioning here would
+              # overwrite it. A replacement robot goes through mode=swap_robot, which
+              # files the old robot's catalog in the fleet registry first.
+              - if: "{{ _prov_existing and not _prov_same_robot }}"
                 then:
                   - variables:
                       response: >-
                         {{ {
                           'mode': 'consumables', 'action': 'provision',
-                          'result': 'already_provisioned', 'caller_token': _caller_token,
-                          'serial_number': _prov_sn,
-                          'sn_source': _prov_sn_source,
-                          'sn_confidence': _prov_sn_confidence,
-                          'note': 'Catalog already set up for SN: ' ~ _prov_sn ~ '. Pass config={"force":true} to re-provision.',
-                          'catalog': _prov_existing
+                          'result': 'error', 'error': 'robot_mismatch', 'caller_token': _caller_token,
+                          'message': 'The consumables catalog belongs to ' ~ _prov_existing.get('entity_id', 'another robot') ~ ', not ' ~ _vac_ent ~ '. Use mode=swap_robot to replace a robot; it keeps the old robot records.',
+                          'catalog_entity_id': _prov_existing.get('entity_id', ''),
+                          'vacuum_entity_id': _vac_ent
                         } }}
+
+              # Idempotency: the same robot (entity_id, or a real serial) is already provisioned.
+              # response defined here = the robot_mismatch refusal: take the then-branch
+              # so the provision steps in else never run.
+              - if: >-
+                  {{ response is defined or (_prov_existing and not _prov_cfg.get('force', false) and _prov_same_robot) }}
+                then:
+                  - if: "{{ response is not defined }}"
+                    then:
+                      - variables:
+                          response: >-
+                            {{ {
+                              'mode': 'consumables', 'action': 'provision',
+                              'result': 'already_provisioned', 'caller_token': _caller_token,
+                              'serial_number': _prov_sn,
+                              'sn_source': _prov_sn_source,
+                              'sn_confidence': _prov_sn_confidence,
+                              'note': 'Catalog already set up for ' ~ _vac_ent ~ '. Pass config={"force":true} to re-provision.',
+                              'catalog': _prov_existing
+                            } }}
                 else:
 
                   # Step 0: Load model preset library and resolve the requested preset
@@ -2156,6 +2771,7 @@ script:
                         roborock_s8_plus: !include .autovac_presets/roborock_s8_plus.yaml
                         roborock_s8_pro_ultra: !include .autovac_presets/roborock_s8_pro_ultra.yaml
                         roborock_q7_max_plus: !include .autovac_presets/roborock_q7_max_plus.yaml
+                        roborock_qrevo_edge_3_pro: !include .autovac_presets/roborock_qrevo_edge_3_pro.yaml
                   - variables:
                       _model_preset_key: >-
                         {%- set _mp_direct = model_preset | default('', true) | trim -%}
@@ -2164,7 +2780,11 @@ script:
                   - variables:
                       _prov_preset:     "{{ _preset_lib.get(_model_preset_key, {}) }}"
                       _prov_has_preset: "{{ _prov_preset | length > 0 }}"
-                  - if: "{{ not _prov_has_preset }}"
+                  # The dock's Grocy location hangs off the vacuum's HA area, so a vacuum
+                  # with no area is refused here, before anything is written.
+                  - variables:
+                      _prov_has_area: "{{ (area_id(_vac_ent) | default('', true) | string) != '' }}"
+                  - if: "{{ not _prov_has_preset or not _prov_has_area }}"
                     then:
                       - variables:
                           response: >-
@@ -2174,6 +2794,10 @@ script:
                               'message': 'model_preset is required. Pass model_preset=<key> with config.',
                               'available_presets': _preset_lib.keys() | list,
                               'hint': 'Example: model_preset=roborock_s7_maxv_ultra'
+                            } if not _prov_has_preset else {
+                              'mode': 'consumables', 'action': 'provision',
+                              'result': 'error', 'error': 'vacuum_has_no_area', 'caller_token': _caller_token,
+                              'message': _vac_ent ~ ' has no Home Assistant area. Assign the vacuum (or its device) to the area where the dock sits, then provision again.'
                             } }}
                     else:
                       - variables:
@@ -2181,7 +2805,8 @@ script:
                       # Derive model from preset brand/series/trim if not supplied in config
                       - variables:
                           _prov_model: >-
-                            {%- set from_cfg = _prov_cfg.get('model', _cons_model) | trim -%}
+                            {#- Never the active catalog's model: that may be a retired robot. -#}
+                            {%- set from_cfg = _prov_cfg.get('model', '') | trim -%}
                             {%- if from_cfg != '' -%}{{ from_cfg }}
                             {%- else -%}
                               {%- set b = _prov_preset.get('brand', '') | trim -%}
@@ -2199,9 +2824,9 @@ script:
 
                       # Step 1: Find dock parent location from HA area of vacuum entity
                       - variables:
-                          _prov_area:      "{{ area_id(_vac_ent) | default('dining_room', true) | string }}"
-                          _prov_area_name: "{{ area_name(_vac_ent) | default('Dining Room', true) | string }}"
-                          _prov_dock_name: "{{ _prov_area_name }} - {{ _prov_model }}"
+                          _prov_area:      "{{ area_id(_vac_ent) | default('', true) | string }}"
+                          _prov_area_name: "{{ area_name(_vac_ent) | default('', true) | string }}"
+                          _prov_dock_name: "{{ area_name(_vac_ent) | default('', true) }} - {{ _prov_model }}"
                       - action: script.zen_dojotools_inventory
                         enabled: "{{ states('script.zen_dojotools_inventory') in ['on', 'off'] }}"
                         data:
@@ -2374,17 +2999,22 @@ script:
                               {%- set _cat = pd.get('category', pd.get('location_category', 'bot')) -%}
                               {%- set _spare = _prov_dock_spare_lid if _cat == 'dock' else _prov_wear_spare_lid -%}
                               {%- set _inst = _prov_bot_lid if pd.location_category == 'bot' else _prov_dock_bins_lid -%}
+                              {#- A part only reorders when its fit is exact_confirmed (v1 presets
+                                  carry no compatibility_state and keep reordering). Otherwise Grocy
+                                  gets min_stock 0, so nothing lands on a shopping list. -#}
+                              {%- set _reorder = pd.get('compatibility_state', 'exact_confirmed') == 'exact_confirmed' -%}
+                              {%- set _csfx = pd.get('chore_name_suffix', '') | default('', true) | string -%}
                               {%- set ns.parts = ns.parts + [{
                                 'key':                pk,
                                 'name':               _prov_model ~ ' - ' ~ pd.name_suffix,
                                 'sku':                pd.sku,
-                                'unit':               'each',
+                                'unit':               pd.get('stock_unit', 'each') | default('each', true),
                                 'storage_location_id': _spare,
                                 'consume_location_id': _inst,
-                                'min_stock':           pd.min_stock | default(1) | int(1),
+                                'min_stock':           (pd.min_stock | default(1) | int(1)) if _reorder else 0,
                                 'ha_labels':           'autovac,autovac_part',
-                                'chore_name':          _prov_robot_name ~ ' - ' ~ pd.chore_name_suffix,
-                                'chore_period_days':   pd.chore_period_days | default(90),
+                                'chore_name':          (_prov_robot_name ~ ' - ' ~ _csfx) if _csfx != '' else '',
+                                'chore_period_days':   pd.chore_period_days | default(90, true),
                                 'chore_note':          pd.chore_note | default('')
                               }] -%}
                             {%- endfor -%}
@@ -2412,7 +3042,10 @@ script:
                           _prov_wear_map: >-
                             {%- set ns = namespace(m={}) -%}
                             {%- set keys = ['main_brush_time_left', 'side_brush_time_left', 'filter_time_left', 'dock_maintenance_brush_time_left', 'dock_strainer_time_left'] -%}
-                            {%- for ent in label_entities('autovac_wear') -%}
+                            {#- Only this robot's own sensors, read from its HA device: a wear
+                                sensor on another device (a retired robot) is never wired here. -#}
+                            {%- set _dev = device_id(_vac_ent) -%}
+                            {%- for ent in (device_entities(_dev) if _dev else []) | select('match', 'sensor\\.') -%}
                               {%- for k in keys -%}
                                 {%- if k in ent -%}
                                   {%- set ns.m = ns.m | combine({k: ent}) -%}
@@ -2444,12 +3077,21 @@ script:
                                 'wear_sensor_key':       pd.get('wear_sensor_key'),
                                 'wear_threshold':        pd.get('wear_threshold'),
                                 'wear_kind':             pd.get('wear_kind', 'percent'),
-                                'wear_entity':           we
+                                'wear_entity':           we,
+                                'compatibility_state':   pd.get('compatibility_state', 'exact_confirmed'),
+                                'reorder_enabled':       pd.get('compatibility_state', 'exact_confirmed') == 'exact_confirmed',
+                                'purchase_pack_quantity': pd.get('purchase_pack_quantity', 1),
+                                'replacement_consumes_quantity': pd.get('replacement_consumes_quantity', 1)
                               }}) -%}
+                            {#- The evidence stays in the preset file: the catalog is stored in
+                                the autovac drawer next to every room, and the evidence lists
+                                pushed that drawer past what the cabinet will save. -#}
                             {%- endfor -%}
                             {{ {
                               'entity_id':              _vac_ent,
+                              'ha_device_id':           _prov_ha_device_id,
                               'serial_number':          _prov_sn,
+                              'serial_source':          _prov_sn_source,
                               'model':                  _prov_model,
                               'robot_name':             _prov_robot_name,
                               'model_preset':           _model_preset_key,
@@ -2475,6 +3117,19 @@ script:
                           key: autovac
                           value: >-
                             {{ {'rooms': _av_rooms, 'system': _av_system | combine({'grocy_catalog': _prov_catalog})} | tojson }}
+                        response_variable: _prov_fc_write
+                      # Read the drawer back: the write answer alone is not proof it saved.
+                      - action: script.zen_sutra_filecabinet
+                        data:
+                          mode: get
+                          volume_entity_id: "{{ _hh_cabinet }}"
+                          key: autovac
+                        response_variable: _prov_fc_back
+                      - variables:
+                          _prov_saved: >-
+                            {%- set val = _prov_fc_back.get('value', {}) if _prov_fc_back is mapping else {} -%}
+                            {%- set cfg = (val | from_json(default={})) if val is string else val -%}
+                            {{ cfg is mapping and cfg.get('system', {}).get('grocy_catalog', {}).get('entity_id') == _vac_ent }}
 
                       # Step 7: Spares advisory — inform user what was seeded, ask about additional spares
                       - variables:
@@ -2502,7 +3157,10 @@ script:
                           response: >-
                             {{ {
                               'mode': 'consumables', 'action': 'provision',
-                              'result': 'provisioned', 'caller_token': _caller_token,
+                              'result': 'provisioned' if _prov_saved else 'error',
+                              'error': none if _prov_saved else 'catalog_not_saved',
+                              'cabinet_write': none if _prov_saved else _prov_fc_write,
+                              'caller_token': _caller_token,
                               'entity_id': _vac_ent,
                               'serial_number': _prov_sn,
                               'sn_source': _prov_sn_source,
@@ -2549,8 +3207,8 @@ script:
                     {%- set ns = namespace(idx={}) -%}
                     {%- for e in _all_entries -%}
                       {%- set k = e.product_id | string ~ ':' ~ e._loc_id | string -%}
-                      {%- set cur = ns.idx.get(k, 0) | int(0) -%}
-                      {%- set ns.idx = ns.idx | combine({k: cur + (e.amount | int(0))}) -%}
+                      {%- set cur = ns.idx.get(k, 0) | float(0) -%}
+                      {%- set ns.idx = ns.idx | combine({k: cur + (e.amount | float(0))}) -%}
                     {%- endfor -%}
                     {{ ns.idx }}
               - variables:
@@ -2560,8 +3218,8 @@ script:
                       {%- set pid = pv.product_id | string -%}
                       {%- set spare_k    = pid ~ ':' ~ (pv.get('storage_location_id') | string) -%}
                       {%- set install_k  = pid ~ ':' ~ (pv.get('installed_location_id', '') | string) -%}
-                      {%- set spare_amt  = _stock_by_loc.get(spare_k, 0) | int(0) -%}
-                      {%- set install_amt = _stock_by_loc.get(install_k, 0) | int(0) -%}
+                      {%- set spare_amt  = (_stock_by_loc.get(spare_k, 0) | float(0)) | round(2) -%}
+                      {%- set install_amt = (_stock_by_loc.get(install_k, 0) | float(0)) | round(2) -%}
                       {%- set min_s = pv.min_stock | int(1) -%}
                       {%- set status = 'ok' if spare_amt >= min_s else ('low' if spare_amt > 0 else 'out') -%}
                       {%- set ns.parts = ns.parts + [{
@@ -2572,17 +3230,17 @@ script:
                         'installed': install_amt,
                         'min_stock': min_s,
                         'status':    status,
-                        'buy_search':'Roborock ' ~ pv.sku,
+                        'buy_search': ('Roborock ' ~ pv.sku) if pv.sku else pv.get('name', pk),
                         'chore_id':  pv.get('chore_id', none)
                       }] -%}
-                      {%- if status in ['low', 'out'] -%}
+                      {%- if status in ['low', 'out'] and pv.get('reorder_enabled', true) -%}
                         {%- set needed = [min_s - spare_amt, 1] | max -%}
                         {%- set ns.shopping = ns.shopping + [{
                           'action':     'shopping_add_product',
                           'product_id': pv.product_id,
                           'product':    pv.get('name', pk),
                           'sku':        pv.sku,
-                          'buy_search': 'Roborock ' ~ pv.sku,
+                          'buy_search': ('Roborock ' ~ pv.sku) if pv.sku else pv.get('name', pk),
                           'needed':     needed
                         }] -%}
                       {%- endif -%}
@@ -2788,7 +3446,9 @@ script:
                         {%- set ns = namespace(worn=[]) -%}
                         {%- for k, v in _cw_parts.items() -%}
                           {%- set ent = v.get('wear_entity') -%}
-                          {%- if ent is not none and ent != '' -%}
+                          {#- No threshold (none published for the part): its value is shown,
+                              but no wear arithmetic or reorder runs on it. -#}
+                          {%- if ent is not none and ent != '' and v.get('wear_threshold') is not none -%}
                             {%- set val = states(ent) | float(-1) -%}
                             {%- set thr = v.get('wear_threshold', 20) | float(20) -%}
                             {%- set kind = v.get('wear_kind', 'percent') -%}
@@ -2818,7 +3478,7 @@ script:
                             _sw_stock_content: "{{ _sw_stock_raw['result']['content'] | default({}, true) }}"
                         - variables:
                             _sw_stock_amt: "{{ _sw_stock_content.get('stock_amount', 0) | int(0) }}"
-                        - if: "{{ _sw_stock_amt == 0 }}"
+                        - if: "{{ _sw_stock_amt == 0 and _sw_pv.get('reorder_enabled', true) }}"
                           then:
                             - action: script.zen_dojotools_inventory
                               enabled: "{{ states('script.zen_dojotools_inventory') in ['on', 'off'] }}"
@@ -2939,8 +3599,8 @@ script:
                           _cw_stock_content: "{{ _cw_stock_raw['result']['content'] | default({}, true) }}"
                       - variables:
                           _cw_stock_amt: "{{ _cw_stock_content.get('stock_amount', 0) | int(0) }}"
-                          _cw_alert:     "{{ _cw_wear_val >= 0 and _cw_wear_val <= _cw_threshold }}"
-                      - if: "{{ _cw_alert and _cw_stock_amt == 0 }}"
+                          _cw_alert:     "{{ _cw_part.get('wear_threshold') is not none and _cw_wear_val >= 0 and _cw_wear_val <= _cw_threshold }}"
+                      - if: "{{ _cw_alert and _cw_stock_amt == 0 and _cw_part.get('reorder_enabled', true) }}"
                         then:
                           - action: script.zen_dojotools_inventory
                             enabled: "{{ states('script.zen_dojotools_inventory') in ['on', 'off'] }}"
@@ -3149,12 +3809,24 @@ script:
                                               urgency: 5
                                               channel_hint: push
                                               title: "Autovac Unavailable"
+                                  # The robot accepting the call is not the robot starting: a
+                                  # background start_check watches for it and reports a run
+                                  # that never starts. The answer says dispatched, not ok.
+                                  - action: script.turn_on
+                                    target:
+                                      entity_id: script.zen_dojotools_autovac
+                                    data:
+                                      variables:
+                                        mode: start_check
+                                        rooms: "{{ _clean_rooms | join(',') }}"
+                                    continue_on_error: true
                                   - variables:
                                       response: >-
-                                        {{ {'mode': 'clean', 'result': 'ok', 'caller_token': _caller_token,
+                                        {{ {'mode': 'clean', 'result': 'dispatched', 'caller_token': _caller_token,
                                             'rooms': _clean_rooms, 'segments': _segments,
                                             'areas': _clean_areas if _use_clean_area else none,
-                                            'vacuum_state': _vacuum_state} }}
+                                            'vacuum_state': _vacuum_state,
+                                            'note': 'Sent to the robot. If it has not started within 90 seconds, Autovac clears the run and sends a push.'} }}
 
       # ---- run_away ----------------------------------------------------------
       # Flush whatever the next election would run, now, because nobody is home and it
@@ -4562,7 +5234,7 @@ script:
               - if: "{{ _avms_new_ticket_id != '' }}"
                 then:
                   - repeat:
-                      for_each: ['autovac', _avm_robot_slug, 'maintenance']
+                      for_each: "{{ ['autovac', _avm_robot_slug, 'maintenance'] + ([_avm_key_tag] if _avm_key_tag != '' else []) }}"
                       sequence:
                         - action: script.zen_dojotools_servicedesk
                           enabled: "{{ states('script.zen_dojotools_servicedesk') in ['on', 'off'] }}"
@@ -4670,7 +5342,7 @@ script:
                 summary='Robot vacuum control and status',
                 display_name='Autovac',
                 tier='dojotools',
-                version='5.12.0',
+                version='5.14.2',
                 health=_autovac_health,
                 required_labels=['autovac'],
                 optional_labels=['autovac_battery','autovac_dnd','autovac_water_low','autovac_schedule','autovac_current_room','autovac_wear','autovac_calendar','autovac_error_detail'],
@@ -4885,7 +5557,7 @@ script:
                 {%- if _vacuum_state == 'error' -%}{%- set ns.u = [ns.u, 4] | max -%}{%- set ns.why = ns.why + ['vacuum_error'] -%}{%- endif -%}
                 {%- if _water_low and mop_due | length > 0 and wla == 'stop' -%}{%- set ns.u = [ns.u, 3] | max -%}{%- set ns.why = ns.why + ['water_low_blocks_mop_rooms'] -%}{%- endif -%}
                 {%- if _vac_ent != '' and _vacuum_state in ['unavailable', 'unknown'] -%}{%- set ns.u = [ns.u, 2] | max -%}{%- set ns.why = ns.why + ['vacuum_unavailable'] -%}{%- endif -%}
-                {%- if _avm_status is mapping and _avm_status | length > 0 -%}{%- set ns.u = [ns.u, 2] | max -%}{%- set ns.why = ns.why + ['out_of_service_ticket_open'] -%}{%- endif -%}
+                {%- if _avm_status is mapping and _avm_status.get('out_of_service', false) -%}{%- set ns.u = [ns.u, 2] | max -%}{%- set ns.why = ns.why + ['out_of_service_ticket_open'] -%}{%- endif -%}
                 {%- if overdue.r | length > 0 -%}{%- set ns.u = [ns.u, 2] | max -%}{%- set ns.why = ns.why + ['rooms_overdue'] -%}{%- endif -%}
                 {%- if _water_low and wla != 'stop' -%}{%- set ns.u = [ns.u, 1] | max -%}{%- set ns.why = ns.why + ['water_low'] -%}{%- endif -%}
                 {%- if _battery_known and _battery < (_av_system.get('minimum_battery', 20) | int(20)) -%}{%- set ns.u = [ns.u, 1] | max -%}{%- set ns.why = ns.why + ['low_battery'] -%}{%- endif -%}
@@ -4909,7 +5581,7 @@ script:
                   'next_schedule': _next_schedule,
                   'dnd': _dnd,
                   'paused_today': _av_system.get('pause_today', false),
-                  'out_of_service': (_avm_status | length > 0) if _avm_status is mapping else false,
+                  'out_of_service': (_avm_status.get('out_of_service', false) | bool) if _avm_status is mapping else false,
                   'watch_entities': ([_vac_ent] + (label_entities('autovac_water_low') | list) + (label_entities('autovac_schedule') | list)) | reject('eq', '') | list
                 } }}
               {%- endif -%}
@@ -5165,7 +5837,7 @@ automation:
               - variables:
                   _dk_av: >-
                     {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                    {{- CABS.cabinet_drawer_value(_dk_hh, 'autovac') | from_json({}) -}}
+                    {{- CABS.cabinet_drawer_value_mounted(_dk_hh, 'autovac') | from_json({}) -}}
               - variables:
                   _dk_cancel_at: "{{ (_dk_av.get('system', {}) if _dk_av is mapping else {}).get('run_cancelled_at', '') }}"
               - variables:
@@ -5177,7 +5849,7 @@ automation:
                     data:
                       mode: analyze
                       trigger_id: docked
-              - if: "{{ _dk_cancel_at != '' }}"
+              - if: "{{ _dk_cancel_at != '' and _dk_av is mapping and 'rooms' in _dk_av }}"
                 then:
                   - action: script.zen_sutra_filecabinet
                     data:
@@ -5304,13 +5976,13 @@ automation:
               - variables:
                   _cs_av: >-
                     {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
-                    {{- CABS.cabinet_drawer_value(_cs_hc, 'autovac') | from_json() -}}
+                    {{- CABS.cabinet_drawer_value_mounted(_cs_hc, 'autovac') | from_json() -}}
                   _cs_updated_at: "{{ (_cs_av.get('system', {}) if _cs_av is mapping else {}).get('session_rooms_updated_at', '') }}"
               - variables:
                   _cs_stale: >-
                     {{ _cs_updated_at == '' or
                        (now() - as_datetime(_cs_updated_at)).total_seconds() > 10800 }}
-              - if: "{{ _cs_stale }}"
+              - if: "{{ _cs_stale and _cs_av is mapping and 'rooms' in _cs_av }}"
                 then:
                   - action: script.zen_sutra_filecabinet
                     data:
@@ -5335,6 +6007,13 @@ automation:
                   {%- set _room = trigger.event.data.event.get('room') if trigger.event is defined else none -%}
                   {{ _room not in [none, 'unknown', 'unavailable', '']
                      and (label_entities('autovac') | select('match', 'vacuum\\.') | list | map('states') | select('equalto', 'cleaning') | list | count > 0) }}
+              # Fail closed: write only when the drawer reads back as a real drawer.
+              - condition: template
+                value_template: >-
+                  {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
+                  {%- set _hc = label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') -%}
+                  {%- set _chk = CABS.cabinet_drawer_value_mounted(_hc, 'autovac') | from_json(none) -%}
+                  {{ _chk is mapping and 'rooms' in _chk }}
             sequence:
               - action: script.zen_sutra_filecabinet
                 data:
@@ -5345,7 +6024,7 @@ automation:
                   value: >-
                     {%- import 'zenos_ai/zenos_cabinets.jinja' as CABS -%}
                     {%- set _hc = label_entities('Zen Household Cabinet') | select('match', 'sensor\\.') | list | first | default('') -%}
-                    {%- set _av = CABS.cabinet_drawer_value(_hc, 'autovac') | from_json() -%}
+                    {%- set _av = CABS.cabinet_drawer_value_mounted(_hc, 'autovac') | from_json() -%}
                     {%- set _sys = _av.get('system', {}) -%}
                     {%- set _room = trigger.event.data.event.get('room', '') -%}
                     {%- set _slug = area_id(_room) | default('', true) -%}
