@@ -1,0 +1,656 @@
+###############################################################################
+# DojoTools: Oracle
+# zen_dojotools_oracle (v0.2.1)
+# The one judgment service (KF6.5, #10747). A host component asks a bounded,
+# typed question through Home Assistant's ai_task.evaluate (noul / choice /
+# score) and gets a typed decision back. Oracle judges; it never acts. A
+# consumer (an agent, later the Abbot) decides what to do with the answer.
+#
+# The host owns the template: its questions, its evidence and its policy
+# thresholds, declared in the host's kfc_manifest (component.decision), with
+# the evidence bound by the host's mode=decision_bind. A caller supplies only
+# the host, the template and the host's ordinary fields (area); never
+# question text, a provider or a follow-up.
+#
+# Gates, all required, or zero evaluation (KF6.5 spec, section 3):
+#   input_boolean.zen_decision_enabled   the operator's switch (default off; no agent tool writes it)
+#   zenos.decision.use                   may use decisions at all
+#   zenos.decision.component.<host>      may use this host's templates (by pattern)
+#   readiness                            an evaluation-capable ai_task entity
+#   the host's own seed cert             checked by the host in decision_bind
+# Evaluation and inference are separate branches: nothing here depends on the
+# summarizer switches, and a decision never requests or forces a summary.
+#
+# v0.2.1: the decision switch keeps the operator's setting across restarts (no `initial`,
+#   like the summarizer switches); `initial: false` turned it off on every boot.
+# v0.2.0: mode=ask (#10767): free-form questions the agent writes itself, over evidence it
+#   supplies. Needs zenos.decision.use LEVEL 2 (level 1 is host templates only). Same switch,
+#   size cap, readiness, one evaluation and answer validation; the structure is checked before
+#   anything is sent. Advisory only: raw answers, never keep/refresh or full_summary_required.
+# v0.1.0: prototype, stage 1: help, tool_manifest, templates and decide. With
+#   the switch off (the default), decide refuses before any other work.
+###############################################################################
+
+input_boolean:
+  # Decision mode master switch, modeled on the summarizer kill switches:
+  # YAML-defined, never exposed, written by no agent tool, checked at Oracle's
+  # execution boundary. No `initial`: like the summarizer switches it keeps the
+  # operator's setting across restarts (a new install starts off, since there is
+  # nothing to restore). `initial: false` reset it to off on every boot (0.2.1).
+  zen_decision_enabled:
+    name: Zen Decision Mode (Oracle)
+    icon: mdi:crystal-ball
+
+script:
+  zen_dojotools_oracle:
+    alias: Zen DojoTools Oracle
+    description: >-
+      Oracle: the decision service (KF6.5). A host component's declared template
+      asks a bounded, typed question about its own evidence and returns a typed
+      decision (for example whether a fresh summary is warranted). It judges
+      only and never acts. mode=templates lists the templates at zero inference.
+      mode=decide needs the operator's decision switch, zenos.decision.use and
+      the host's zenos.decision.component.<host>. CALL mode=help FIRST.
+      Aliases: ['Zen DojoTools Oracle', 'Oracle']
+    fields:
+      mode:
+        name: Mode
+        description: "help (default), tool_manifest, templates, decide, ask"
+        selector:
+          select:
+            options: [help, tool_manifest, templates, decide, ask]
+      host:
+        name: Host
+        description: "decide: the host component key (for example room_manager). templates: optional filter."
+        selector:
+          text:
+      decision_template:
+        name: Decision template
+        description: "decide: the template id the host declares (see mode=templates)."
+        selector:
+          text:
+      area:
+        name: Area
+        description: "decide: optional, for a template that declares area scope."
+        selector:
+          text:
+      questions:
+        name: Questions
+        description: >-
+          ask: your own questions, as {question_id: {type, instructions, criteria}}. type is
+          noul (probability of yes), choice (criteria = {option: description}, 2 or more) or
+          score (criteria = [level, ...], 2 or more, lowest first). 1 to 5 questions. See
+          mode=help for examples.
+        selector:
+          object:
+      evidence:
+        name: Evidence
+        description: "ask: the facts the questions are judged on, as an object. Only this is sent to the model."
+        selector:
+          object:
+      task_name:
+        name: Task name
+        description: "ask: a short label for the evaluation (shows in Home Assistant's log)."
+        selector:
+          text:
+      caller_token:
+        name: Caller token
+        description: "Opaque correlation token, passed through."
+        selector:
+          text:
+    mode: parallel
+    max: 10
+    sequence:
+
+    - variables:
+        _mode: "{{ mode | default('help', true) | string | lower | trim }}"
+        _host: "{{ host | default('', true) | string | lower | trim }}"
+        _tpl: "{{ decision_template | default('', true) | string | lower | trim }}"
+        _area: "{{ area | default('', true) | string | trim }}"
+        _or_ask_q: >-
+          {%- set q = questions | default({}, true) -%}
+          {%- set q = (q | from_json({})) if q is string else q -%}
+          {{ q if q is mapping else {} }}
+        _or_ask_ev: >-
+          {%- set e = evidence | default({}, true) -%}
+          {%- set e = (e | from_json(e)) if e is string else e -%}
+          {{ e if e is mapping else ({'text': e | string} if (e | string | trim) != '' else {}) }}
+        _cfg: >-
+          {%- set _hh = states('sensor.zen_default_household_cabinet_resolved') -%}
+          {%- set _raw = (state_attr(_hh, 'variables') or {}).get('zen_decision_config', {}) if _hh.startswith('sensor.') else {} -%}
+          {%- set _v = _raw.get('value', _raw) if _raw is mapping else {} -%}
+          {%- set _v = (_v | from_json({})) if _v is string else _v -%}
+          {{ _v if _v is mapping else {} }}
+    - variables:
+        _max_tokens: "{{ _cfg.get('max_evaluation_tokens', 6000) | int(6000) }}"
+        _eval_entity: "{{ _cfg.get('evaluate_entity_id', '') | default('', true) | string | trim }}"
+
+    # ── tool_manifest ───────────────────────────────────────────────────────
+    - if: "{{ _mode == 'tool_manifest' }}"
+      then:
+      - variables:
+          final_response:
+            mode: tool_manifest
+            status: ok
+            tool: zen_dojotools_oracle
+            display_name: Oracle
+            version: 0.2.1
+            tier: dojotools
+            required_labels: ['dojotools']
+            optional_labels: ['oracle']
+            health:
+              configured: "{{ is_state('input_boolean.zen_decision_enabled', 'on') }}"
+              status: "{{ 'ok' if is_state('input_boolean.zen_decision_enabled', 'on') else 'disabled' }}"
+              notes: "{{ [] if is_state('input_boolean.zen_decision_enabled', 'on') else ['decision mode is off (input_boolean.zen_decision_enabled, operator only)'] }}"
+            summary: The decision service. Typed judgments over a host component's own evidence; it never acts.
+            decision: true
+            inference:
+              calls_inference: true
+              ai_task_type: evaluate
+              requires_capabilities: ['zenos.decision.use']
+            dependencies:
+              - tool: zen_dojotools_identity
+                required: true
+                uses: resolve_caller_identity for zenos.decision.use and the host's decision cert
+            certs_required:
+              - cert: zenos.decision.use
+                display_name: Decision Use
+                description: Use decisions (Oracle); level 2 also asks free-form questions
+                detail: >-
+                  Level 1: ask a host component's declared templates (mode=decide); each
+                  host's templates also need zenos.decision.component.<component_key>.
+                  Level 2: also ask free-form questions the agent writes itself over
+                  evidence it supplies (mode=ask), advisory only. Holding this grants no
+                  inference and no summary. The operator's switch
+                  input_boolean.zen_decision_enabled must also be on.
+                max_level: 2
+                level: 1
+                modes: ['decide', 'ask']
+                st_ok: i
+                gates: ['mode=decide (level 1, interactive, stage i)', 'mode=ask (level 2, interactive, stage i)']
+                grant_via: "persona_editor mode=cert_req_grant cert_component=zenos.decision.use"
+            caller_token: "{{ caller_token | default('') }}"
+
+    # ── onboarding gate ─────────────────────────────────────────────────────
+    - if: "{{ final_response is not defined }}"
+      then:
+      - variables:
+          _or_gate: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {{ OS.entry_gate((context.user_id if context is defined else '') or '', 'zen_dojotools_oracle', (_mode or 'help')) | from_json({'pass': false, 'reason': 'guarded: the onboarding gate could not be read'}) }}
+      - if: "{{ not _or_gate.get('pass', false) }}"
+        then:
+          - variables:
+              final_response:
+                status: error
+                mode: "{{ _mode }}"
+                reason: "{{ _or_gate.reason }}"
+                next_step: "{{ _or_gate.next_step }}"
+          - action: system_log.write
+            data:
+              level: warning
+              logger: zen_entry_gate
+              message: "{{ _or_gate.get('log') or 'onboarding gate refused a call (gate result unreadable)' }}"
+
+    # ── help ────────────────────────────────────────────────────────────────
+    - if: "{{ final_response is not defined and _mode == 'help' }}"
+      then:
+      - variables:
+          final_response:
+            status: ok
+            mode: help
+            tool: zen_dojotools_oracle
+            summary: >-
+              Oracle judges; it never acts. A host component declares decision
+              templates (questions and policy) in its kfc_manifest and binds its
+              own evidence; Oracle gates, checks the size, asks ai_task.evaluate
+              once, validates the answers and applies the host's policy.
+            modes:
+              templates: "List every host's decision templates. Zero inference, schedules nothing. Optional host= filter."
+              decide: "host=<component_key> decision_template=<id> [area=<area>]. Gates, binds the host's evidence, evaluates once, returns a typed decision."
+              ask: "questions={...} evidence={...} [task_name=...]. Your own questions over evidence you supply. Needs zenos.decision.use level 2. Advisory only: raw answers, never keep/refresh."
+              help: This reference (the default; a bare call never acts).
+              tool_manifest: Tool identity, certs and inference declaration.
+            gates:
+              - "input_boolean.zen_decision_enabled on (operator only)"
+              - "zenos.decision.use level 1 (decide) or level 2 (ask)"
+              - "decide only: zenos.decision.component.<host> level 1"
+              - "an evaluation-capable ai_task entity (zen_decision_config.evaluate_entity_id, else Home Assistant's preferred one)"
+              - "decide only: the host's own seed cert (checked by the host when it binds evidence)"
+            outcomes: "decide: keep | refresh | insufficient_evidence. ask: answers (advisory). Typed failures: decision_disabled, denied, host_not_found, unknown_template, needs_input, unsupported_scope, invalid_questions, evaluation_context_overflow, evaluator_unavailable, evaluator_error"
+            size_cap: "max_evaluation_tokens in the household zen_decision_config drawer (default 6000, estimated as characters / 4). Over it, nothing is sent."
+            ask_structure:
+              questions: "{question_id: {type, instructions, criteria}}: 1 to 5 questions, ids are short snake_case"
+              noul: "{type: noul, instructions: '<a yes/no question>'}  answer: noul = probability of yes (0 to 1)"
+              choice: "{type: choice, instructions: '<question>', criteria: {<option>: '<what it means>', ...}}  2 or more options; answer: choice + probabilities per option"
+              score: "{type: score, instructions: '<question>', criteria: ['<lowest level>', ..., '<highest level>']}  2 or more levels, lowest first; answer: score + probabilities per level"
+              evidence: "an object holding only the facts needed; it is all the model sees. Keep it small (max_evaluation_tokens covers questions + evidence)."
+              rules: "Ask about the evidence, never for an action. A free-form answer is advice: it never requests a summary, never acts, and never overrides a deterministic or life-safety rule."
+            examples:
+              - mode=templates
+              - mode=decide host=room_manager decision_template=resummary_warranted
+              - mode=decide host=room_manager decision_template=resummary_warranted area=garage
+              - >-
+                mode=ask task_name=garage_left_open questions={"worth_mentioning": {"type": "noul",
+                "instructions": "Is the garage door being open worth mentioning to the household right now?"}}
+                evidence={"garage_door": "open", "open_minutes": 42, "home_mode": "Night", "people_home": 2}
+              - >-
+                mode=ask task_name=laundry_urgency questions={"urgency": {"type": "choice",
+                "instructions": "How soon should someone move the laundry?",
+                "criteria": {"now": "it will sour or wrinkle badly soon", "today": "it can wait a few hours", "whenever": "no harm in leaving it"}}}
+                evidence={"washer": "done", "minutes_since_done": 95, "load": "towels", "outdoor_temp_f": 88}
+              - >-
+                mode=ask task_name=room_tidy questions={"tidiness": {"type": "score",
+                "instructions": "How ready is the guest room for a guest arriving tonight?",
+                "criteria": ["not ready", "needs work", "mostly ready", "ready"]}}
+                evidence={"housekeeping": "dirty", "last_cleaned_days": 9, "bed_made": false, "arrival": "tonight 7pm"}
+
+    # ── decide: the operator's switch comes before any other work ───────────
+    - if: "{{ final_response is not defined and _mode in ['decide', 'ask'] and not is_state('input_boolean.zen_decision_enabled', 'on') }}"
+      then:
+        - variables:
+            final_response:
+              status: error
+              mode: "{{ _mode }}"
+              outcome: decision_disabled
+              message: Decision mode is off (input_boolean.zen_decision_enabled). Only the operator can turn it on.
+
+    # ── decide: zenos.decision.use ──────────────────────────────────────────
+    - if: "{{ final_response is not defined and _mode in ['decide', 'ask'] }}"
+      then:
+      - action: script.zen_dojotools_identity
+        response_variable: _or_use_raw
+        continue_on_error: true
+        data:
+          mode: resolve_caller_identity
+          required_cert: zenos.decision.use
+          required_cert_level: "{{ 2 if _mode == 'ask' else 1 }}"
+          caller_token: "{{ caller_token | default('') }}"
+      - variables:
+          _or_use: >-
+            {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+            {%- set _r = OS.resolve_identity_fields(_or_use_raw | default({})) -%}
+            {{- (_r | from_json) if _r is string else _r -}}
+      - if: "{{ not _or_use.authorized }}"
+        then:
+          - variables:
+              final_response: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {%- set _lvl = 2 if _mode == 'ask' else 1 -%}
+                {%- set d = OS.cert_denial(_or_use.policy_status, _or_use.authorized, _or_use.cert_level, 'zenos.decision.use', _lvl, 'mode=' ~ _mode, _or_use.block_reason) | from_json -%}
+                {{ d | combine({'mode': _mode, 'outcome': 'denied', 'gate': 'zenos.decision.use level ' ~ _lvl}) }}
+
+    # ── templates / decide: find the host and its declared templates ────────
+    - if: "{{ final_response is not defined and _mode in ['templates', 'decide'] }}"
+      then:
+      - variables:
+          _or_host_tool: >-
+            {%- set _dv = state_attr(states('sensor.zen_dojo_cabinet_resolved'), 'variables') or {} -%}
+            {%- set _d = _dv.get(_host, {}) if _host != '' else {} -%}
+            {%- set _v = _d.get('value', _d) if _d is mapping else {} -%}
+            {%- set _v = (_v | from_json({})) if _v is string else _v -%}
+            {%- set _t = ((_v.get('fc_args') or {}).get('tool', '') if _v is mapping else '') | string -%}
+            {{ ('script.' ~ _t) if _t != '' else '' }}
+          _or_providers: >-
+            {%- set ns = namespace(p=[]) -%}
+            {%- for e in label_entities('zen_kfc_provider') if e.startswith('script.') and states(e) in ['on', 'off'] -%}
+              {%- set ns.p = ns.p + [e] -%}
+            {%- endfor -%}
+            {{ ns.p }}
+      - variables:
+          _or_scan: >-
+            {{ ([_or_host_tool] if _or_host_tool != '' else [])
+               if _host != '' else (_or_providers if _mode == 'templates' else []) }}
+          _or_found: []
+      - repeat:
+          for_each: "{{ _or_scan }}"
+          sequence:
+            - action: "{{ repeat.item }}"
+              continue_on_error: true
+              response_variable: _or_mf
+              data:
+                mode: kfc_manifest
+            - variables:
+                _or_found: >-
+                  {%- set r = _or_mf if _or_mf is mapping else {} -%}
+                  {%- set r = r.get('result') if r.get('result') is mapping else r -%}
+                  {%- set k = r.get('kfc') if r is mapping else none -%}
+                  {%- set k = (k | from_json(none)) if k is string else k -%}
+                  {%- set k = [k] if k is mapping else (k if (k is sequence and k is not string) else []) -%}
+                  {%- set ns = namespace(f=_or_found) -%}
+                  {%- for c in k if c is mapping and c.get('decision') is mapping -%}
+                    {%- set ns.f = ns.f + [{'host': (c.get('kata_key') or c.get('component_key') or '') | string, 'tool': repeat.item | replace('script.', ''), 'decision': c.get('decision')}] -%}
+                  {%- endfor -%}
+                  {{ ns.f }}
+      - if: "{{ _mode == 'templates' }}"
+        then:
+          - variables:
+              final_response:
+                status: ok
+                mode: templates
+                decision_mode: "{{ 'on' if is_state('input_boolean.zen_decision_enabled', 'on') else 'off' }}"
+                hosts: >-
+                  {%- set ns = namespace(h=[]) -%}
+                  {%- for f in _or_found if _host == '' or f.host == _host -%}
+                    {%- set tns = namespace(t=[]) -%}
+                    {%- for t in (f.decision.get('templates', []) or []) if t is mapping -%}
+                      {%- set tns.t = tns.t + [{'id': t.get('id'), 'version': t.get('version'), 'purpose': t.get('purpose'),
+                                                 'scope': t.get('scope', ['house']), 'fields': t.get('fields', {}),
+                                                 'outcomes': t.get('outcomes', []), 'summary_target': t.get('summary_target', '')}] -%}
+                    {%- endfor -%}
+                    {%- set ns.h = ns.h + [{'host': f.host, 'tool': f.tool, 'requires': f.decision.get('requires', {}), 'templates': tns.t}] -%}
+                  {%- endfor -%}
+                  {{ ns.h }}
+                note: Listing is zero inference and schedules nothing. mode=decide host=<host> decision_template=<id> asks one.
+
+    # ── decide: the template, the host's cert, then bind ────────────────────
+    - if: "{{ final_response is not defined and _mode == 'decide' }}"
+      then:
+      - variables:
+          _or_hostdef: "{{ (_or_found | selectattr('host', 'eq', _host) | list | first) | default({}) }}"
+      - variables:
+          _or_t: >-
+            {%- set ts = (_or_hostdef.get('decision', {}).get('templates', []) or []) if _or_hostdef is mapping else [] -%}
+            {{ (ts | selectattr('id', 'eq', _tpl) | list | first) | default({}) }}
+          _or_req: "{{ _or_hostdef.get('decision', {}).get('requires', {}) if _or_hostdef is mapping else {} }}"
+      - if: "{{ _host == '' or _or_hostdef | length == 0 }}"
+        then:
+          - variables:
+              final_response:
+                status: error
+                mode: decide
+                outcome: host_not_found
+                message: "No host component '{{ _host }}' declares decision templates. mode=templates lists them."
+      - if: "{{ final_response is not defined and _or_t | length == 0 }}"
+        then:
+          - variables:
+              final_response:
+                status: error
+                mode: decide
+                outcome: unknown_template
+                message: "{{ _host }} declares no template '{{ _tpl }}'. mode=templates host={{ _host }} lists them."
+      # The host's decision cert is always zenos.decision.component.<host> (by
+      # pattern). A declaration naming anything else is refused, not honored.
+      - if: "{{ final_response is not defined and (_or_req.get('cert', '') | string) != 'zenos.decision.component.' ~ _host }}"
+        then:
+          - variables:
+              final_response:
+                status: error
+                mode: decide
+                outcome: denied
+                gate: component_cert
+                message: "{{ _host }} must declare decision.requires.cert zenos.decision.component.{{ _host }}; it declares '{{ _or_req.get('cert', '') }}'."
+      - if: "{{ final_response is not defined }}"
+        then:
+        - action: script.zen_dojotools_identity
+          response_variable: _or_cc_raw
+          continue_on_error: true
+          data:
+            mode: resolve_caller_identity
+            required_cert: "zenos.decision.component.{{ _host }}"
+            required_cert_level: "{{ _or_req.get('level', 1) | int(1) }}"
+            caller_token: "{{ caller_token | default('') }}"
+        - variables:
+            _or_cc: >-
+              {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+              {%- set _r = OS.resolve_identity_fields(_or_cc_raw | default({})) -%}
+              {{- (_r | from_json) if _r is string else _r -}}
+        - if: "{{ not _or_cc.authorized }}"
+          then:
+            - variables:
+                final_response: >-
+                  {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                  {%- set d = OS.cert_denial(_or_cc.policy_status, _or_cc.authorized, _or_cc.cert_level, 'zenos.decision.component.' ~ _host, _or_req.get('level', 1) | int(1), 'mode=decide host=' ~ _host, _or_cc.block_reason) | from_json -%}
+                  {{ d | combine({'mode': 'decide', 'outcome': 'denied', 'gate': 'zenos.decision.component.' ~ _host}) }}
+      # The host binds its own evidence (it checks its seed cert, scope and
+      # inputs). Oracle never calls the host's public decision entry.
+      - if: "{{ final_response is not defined }}"
+        then:
+        - action: "script.{{ _or_hostdef.tool }}"
+          continue_on_error: true
+          response_variable: _or_bind_raw
+          data:
+            mode: decision_bind
+            decision_template: "{{ _tpl }}"
+            area: "{{ _area }}"
+            caller_token: "{{ caller_token | default('') }}"
+        - variables:
+            _or_bind: >-
+              {%- set r = _or_bind_raw if _or_bind_raw is mapping else {} -%}
+              {%- set r = r.get('result') if r.get('result') is mapping else r -%}
+              {{ r if r is mapping else {} }}
+        - if: "{{ _or_bind.get('status', '') not in ['ok', 'success'] }}"
+          then:
+            - variables:
+                final_response:
+                  status: error
+                  mode: decide
+                  host: "{{ _host }}"
+                  template: "{{ _tpl }}"
+                  outcome: "{{ _or_bind.get('outcome') or 'bind_failed' }}"
+                  message: "{{ _or_bind.get('message') or 'The host could not bind its evidence.' }}"
+                  missing: "{{ _or_bind.get('missing', []) }}"
+        # A host that can settle the case without a model says so.
+        - if: "{{ final_response is not defined and (_or_bind.get('deterministic') or '') != '' }}"
+          then:
+            - variables:
+                final_response:
+                  status: ok
+                  mode: decide
+                  decision:
+                    host: "{{ _host }}"
+                    template: "{{ _tpl }}"
+                    template_version: "{{ _or_t.get('version', 1) }}"
+                    outcome: "{{ _or_bind.deterministic }}"
+                    basis: deterministic
+                    full_summary_required: "{{ _or_bind.deterministic == 'refresh' }}"
+                    evidence_revision: "{{ _or_bind.get('evidence_revision', '') }}"
+                    as_of: "{{ _or_bind.get('as_of', '') }}"
+                    reason: "{{ _or_bind.get('reason', '') }}"
+
+    # ── ask: check the question structure before anything is sent ───────────
+    - if: "{{ final_response is not defined and _mode == 'ask' }}"
+      then:
+      - variables:
+          _or_ask_bad: >-
+            {%- set q = _or_ask_q -%}
+            {%- set vals = q.values() | list -%}
+            {%- set ch = vals | select('mapping') | selectattr('type', 'eq', 'choice') | map(attribute='criteria') | list -%}
+            {%- set sc = vals | select('mapping') | selectattr('type', 'eq', 'score') | map(attribute='criteria') | list -%}
+            {{ ([] if q | count > 0 else ['questions is empty: give 1 to 5 questions'])
+               + ([] if q | count <= 5 else ['more than 5 questions'])
+               + ([] if (q.keys() | map('string') | map('trim') | select('eq', '') | list | count) == 0 else ['a question id is empty'])
+               + ([] if (vals | reject('mapping') | list | count) == 0 else ['every question must be an object {type, instructions, ...}'])
+               + ([] if (vals | select('mapping') | map(attribute='type') | map('default', '') | reject('in', ['noul', 'choice', 'score']) | list | count) == 0 else ['type must be noul, choice or score'])
+               + ([] if (vals | select('mapping') | map(attribute='instructions') | map('default', '') | map('string') | map('trim') | select('eq', '') | list | count) == 0 else ['every question needs instructions'])
+               + ([] if (ch | reject('mapping') | list | count) == 0 and (ch | map('length') | select('lt', 2) | list | count) == 0 else ['choice criteria must be {option: description} with 2 or more options'])
+               + ([] if (sc | select('string') | list | count) == 0 and (sc | select('mapping') | list | count) == 0 and (sc | map('length') | select('lt', 2) | list | count) == 0 else ['score criteria must be a list of 2 or more levels, lowest first'])
+               + ([] if _or_ask_ev | count > 0 else ['evidence is empty: give the facts the questions are judged on']) }}
+      - if: "{{ _or_ask_bad | count > 0 }}"
+        then:
+          - variables:
+              final_response:
+                status: error
+                mode: ask
+                outcome: invalid_questions
+                problems: "{{ _or_ask_bad }}"
+                message: Nothing was sent. mode=help shows the structure (ask_structure) and examples.
+
+    # ── decide / ask: size, readiness, one evaluation ───────────────────────
+    - if: "{{ final_response is not defined and _mode in ['decide', 'ask'] }}"
+      then:
+      - variables:
+          _or_questions: >-
+            {{ _or_ask_q if _mode == 'ask'
+               else (_or_t.get('questions', {}) if _or_t.get('questions') is mapping else {}) }}
+          _or_state: "{{ _or_ask_ev if _mode == 'ask' else _or_bind.get('evidence', {}) }}"
+          _or_label: "{{ ('ask ' ~ (task_name | default('question', true) | string | trim)) if _mode == 'ask' else (_host ~ ' ' ~ _tpl) }}"
+      - variables:
+          _or_tokens: "{{ ((({'questions': _or_questions, 'state': _or_state} | tojson) | length) / 4) | round(0) | int }}"
+          # Readiness: the configured entity supports EVALUATE (8). With none
+          # configured, Home Assistant uses its preferred evaluation entity, so at
+          # least one ai_task entity must support it.
+          _or_entity_ok: >-
+            {%- if _eval_entity == '' -%}
+              {{ states.ai_task | rejectattr('state', 'eq', 'unavailable') | map(attribute='attributes.supported_features') | map('int', 0) | map('bitwise_and', 8) | select('gt', 0) | list | count > 0 }}
+            {%- else -%}
+              {{ states(_eval_entity) != 'unavailable' and ((state_attr(_eval_entity, 'supported_features') | int(0)) | bitwise_and(8)) > 0 }}
+            {%- endif -%}
+      - if: "{{ _or_questions | length == 0 }}"
+        then:
+          - variables:
+              final_response:
+                status: error
+                mode: decide
+                outcome: unknown_template
+                message: "{{ _host }}/{{ _tpl }} declares no questions."
+      - if: "{{ final_response is not defined and _or_tokens | int > _max_tokens | int }}"
+        then:
+          - variables:
+              final_response:
+                status: error
+                mode: "{{ _mode }}"
+                host: "{{ _host }}"
+                template: "{{ _tpl }}"
+                outcome: evaluation_context_overflow
+                tokens_est: "{{ _or_tokens }}"
+                max_evaluation_tokens: "{{ _max_tokens }}"
+                largest: >-
+                  {%- set ns = namespace(s=[]) -%}
+                  {%- for k, v in (_or_state.items() if _or_state is mapping else []) -%}
+                    {%- set ns.s = ns.s + [{'key': k, 'tokens_est': (((v | tojson) | length) / 4) | round(0) | int}] -%}
+                  {%- endfor -%}
+                  {{ (ns.s | sort(attribute='tokens_est', reverse=true))[:3] }}
+                message: Nothing was sent. Narrow the template's evidence or raise max_evaluation_tokens in zen_decision_config.
+      - if: "{{ final_response is not defined and not _or_entity_ok }}"
+        then:
+          - variables:
+              final_response:
+                status: error
+                mode: "{{ _mode }}"
+                outcome: evaluator_unavailable
+                message: >-
+                  {{ (_eval_entity ~ ' is unavailable or does not support evaluation (AITaskEntityFeature.EVALUATE).')
+                     if _eval_entity != '' else
+                     'No ai_task entity supports evaluation (AITaskEntityFeature.EVALUATE). Nothing was sent.' }}
+      - if: "{{ final_response is not defined }}"
+        then:
+        - if: "{{ _eval_entity != '' }}"
+          then:
+            - action: ai_task.evaluate
+              continue_on_error: true
+              response_variable: _or_eval
+              data:
+                task_name: "oracle {{ _or_label }}"
+                entity_id: "{{ _eval_entity }}"
+                questions: "{{ _or_questions }}"
+                state: "{{ _or_state }}"
+          else:
+            - action: ai_task.evaluate
+              continue_on_error: true
+              response_variable: _or_eval
+              data:
+                task_name: "oracle {{ _or_label }}"
+                questions: "{{ _or_questions }}"
+                state: "{{ _or_state }}"
+        # Validate every declared question before reading any answer.
+        - variables:
+            _or_answers: "{{ (_or_eval.get('answers', {}) if _or_eval is defined and _or_eval is mapping else {}) }}"
+        - variables:
+            _or_invalid: >-
+              {%- set ns = namespace(bad=[]) -%}
+              {%- for qid, q in _or_questions.items() -%}
+                {%- set a = _or_answers.get(qid) -%}
+                {%- set qt = q.get('type', '') if q is mapping else '' -%}
+                {%- if a is not mapping -%}{%- set ns.bad = ns.bad + [qid ~ ': missing'] -%}
+                {%- elif qt == 'noul' and not (a.get('noul') is number and 0 <= a.get('noul') <= 1) -%}{%- set ns.bad = ns.bad + [qid ~ ': noul not a probability'] -%}
+                {%- elif qt == 'choice' and a.get('choice') not in ((q.get('criteria') or {}).keys() | list) -%}{%- set ns.bad = ns.bad + [qid ~ ': choice not an allowed option'] -%}
+                {%- elif qt == 'score' and not (a.get('score') is number) -%}{%- set ns.bad = ns.bad + [qid ~ ': score not a number'] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ ns.bad }}
+        - if: "{{ _or_answers | length == 0 }}"
+          then:
+            - variables:
+                final_response:
+                  status: error
+                  mode: "{{ _mode }}"
+                  host: "{{ _host }}"
+                  template: "{{ _tpl }}"
+                  outcome: evaluator_error
+                  message: The evaluation returned no answers (provider error or refusal). Nothing was decided.
+        - if: "{{ final_response is not defined and _or_invalid | length > 0 }}"
+          then:
+            - variables:
+                final_response:
+                  status: error
+                  mode: "{{ _mode }}"
+                  host: "{{ _host }}"
+                  template: "{{ _tpl }}"
+                  outcome: evaluator_error
+                  invalid: "{{ _or_invalid }}"
+                  message: The evaluation's answers failed validation. Nothing was decided.
+        # The host's policy: one noul question with keep/refresh thresholds
+        # (template defaults; tunable later in zen_decision_config). The band
+        # between them is insufficient_evidence, never a confident keep.
+        # ask: advisory only. The raw answers, never keep/refresh.
+        - if: "{{ final_response is not defined and _mode == 'ask' }}"
+          then:
+            - variables:
+                final_response:
+                  status: ok
+                  mode: ask
+                  advisory: true
+                  task_name: "{{ task_name | default('', true) }}"
+                  answers: "{{ _or_answers }}"
+                  tokens_est: "{{ _or_tokens }}"
+                  note: Advice only. It requests nothing, acts on nothing and never overrides a deterministic or life-safety rule.
+        - if: "{{ final_response is not defined and _mode == 'decide' }}"
+          then:
+            - variables:
+                _or_pol: "{{ _or_t.get('policy', {}) if _or_t.get('policy') is mapping else {} }}"
+            - variables:
+                _or_tune: "{{ ((_cfg.get('thresholds', {}) or {}).get(_host ~ '.' ~ _tpl, {})) if _cfg.get('thresholds') is mapping else {} }}"
+                _or_p: "{{ _or_answers.get(_or_pol.get('question', ''), {}).get('noul', none) }}"
+            - variables:
+                _or_refresh_at: "{{ _or_tune.get('refresh_at', _or_pol.get('refresh_at', 0.6)) | float(0.6) }}"
+                _or_keep_below: "{{ _or_tune.get('keep_below', _or_pol.get('keep_below', 0.35)) | float(0.35) }}"
+            - variables:
+                final_response:
+                  status: ok
+                  mode: decide
+                  decision:
+                    host: "{{ _host }}"
+                    template: "{{ _tpl }}"
+                    template_version: "{{ _or_t.get('version', 1) }}"
+                    outcome: "{%- if _or_p is not number -%}insufficient_evidence{%- elif _or_p >= _or_refresh_at -%}refresh{%- elif _or_p < _or_keep_below -%}keep{%- else -%}insufficient_evidence{%- endif -%}"
+                    basis: evaluated
+                    full_summary_required: "{{ _or_p is number and _or_p >= _or_refresh_at }}"
+                    evidence_revision: "{{ _or_bind.get('evidence_revision', '') }}"
+                    as_of: "{{ _or_bind.get('as_of', '') }}"
+                    answers: "{{ _or_answers }}"
+                    thresholds: {refresh_at: "{{ _or_refresh_at }}", keep_below: "{{ _or_keep_below }}"}
+                    tokens_est: "{{ _or_tokens }}"
+
+    # ── unknown mode ────────────────────────────────────────────────────────
+    - if: "{{ final_response is not defined }}"
+      then:
+        - variables:
+            final_response:
+              status: error
+              mode: "{{ _mode }}"
+              message: Unknown mode. mode=help lists them.
+
+    # ── SINGLE EXIT ─────────────────────────────────────────────────────────
+    - variables:
+        final_response: >-
+          {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+          {{- OS.envelope(
+            status='error' if (final_response is mapping and final_response.get('status') == 'error') else 'success',
+            mode=_mode,
+            result=final_response,
+            tool='zen_dojotools_oracle',
+            caller_token=caller_token | default('')
+          ) | from_json -}}
+    - stop: Return
+      response_variable: final_response
