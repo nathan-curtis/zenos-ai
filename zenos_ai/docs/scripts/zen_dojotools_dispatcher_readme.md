@@ -1,4 +1,4 @@
-# Zen DojoTool Dispatcher — v5.6.7
+# Zen DojoTool Dispatcher — v5.6.8
 
 > **2026.12.0 (5.6.x):** the [drain router](#zen_scheduler_drain_router) works out each component's staleness from its own schedule, recovers the `system` tier too, and sends a routine `summary_request`, never a force. It writes one log line per recovery saying why. Flynn's health resummarize sends `summary_request` too. Reload automations.
 

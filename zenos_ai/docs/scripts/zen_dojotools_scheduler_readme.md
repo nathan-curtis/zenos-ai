@@ -1,4 +1,4 @@
-# Zen DojoTools Scheduler — v5.7.0
+# Zen DojoTools Scheduler — v5.7.1
 
 > **2026.12.0 (5.7.0):** the file now holds three automations and a launcher. The Scheduler (the Abbot) only decides who runs. [`zen_abbot_launch`](#the-launcher-zen_abbot_launch) starts the work, so a scheduler run takes seconds and no longer holds its queue slot through delays. [Housekeeping](#housekeeping) and [Safety Admit](#safety-admit) are their own automations. Each housekeeping job now runs on its own: they used to share one first-match `choose`, so display session expiry, the resolver refresh, both Rolodex stay checks, the Identity Manifest and the Compact Index never ran from here. Routine refreshes are a [`summary_request`](#requesting-a-run); [force is for maintenance only](#maintenance-forces). SuperSummary runs [every quarter hour, at start and on request](#supersummary-cadence). A component with no kata is [admitted at start](#cold-start), and start-up launches are spaced 30 s apart. Reload scripts first (that creates the launcher), then automations.
 
