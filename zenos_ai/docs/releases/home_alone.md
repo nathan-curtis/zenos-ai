@@ -161,6 +161,7 @@ Grocy handles tare weights, but it expects every stock write as the total on the
 - **SuperSummary runs every quarter hour, at start, and when a component's urgency asks for it,** at most once every 5 minutes. It no longer runs just because a component did.
 - **Start-up is spaced out.** Components launch 30 seconds apart, and one with no summary yet is filled at start. Flynn's start-up force is gone.
 - **The recovery router works out when each summary is stale from that component's own schedule,** and recovers the `system` tier too. It logs why it ran one.
+- **The summarizer kill switches can't be exposed to an agent.** They carry `zen_never_expose`, so Ectoplasm refuses them and Flynn keeps them unexposed.
 - **`sensor.zen_scheduler_queue_depth` measures pressure: Scheduler runs plus Ninja runs.** A dashboard card on it shows different numbers. See [the sensor reference](../sensors/readme.md#sensorzen_scheduler_queue_depth).
 - **Autovac:**
   - Exactly one vacuum may carry the `autovac` label. With two, Autovac uses neither.
@@ -188,6 +189,8 @@ Grocy handles tare weights, but it expects every stock write as the total on the
 - **A covers set that was refused says so.** It answered success around the refusal.
 - **The background summaries stop re-running fresh components.** The recovery router aged every summary from its creation time.
 - **The Scheduler's housekeeping jobs all run.** They shared one first-match choice, so display session expiry, the resolver refresh, the Rolodex stay checks, the identity manifest and the compact index never ran from it.
+- **A healthy install gets new default labels.** Flynn's all-green exit came before it assigned them, so a label added in a release never reached an install with every gate green. It now assigns them at start.
+- **A background summary whose seed answers with a list finishes.** The Ninja stopped with "'list object' has no attribute 'get'" (Logistics intake).
 - **The recovery router leaves cache slots and views alone.** It re-ran Security's perimeter cache and a FileCabinet view every 10 minutes, which hid components that really were stale.
 - **Setting up a robot's parts no longer puts several parts on one product,** and finds a location on a house with more than 500.
 - **Editing a Grocy chore can turn it off or set its amount to 0.**

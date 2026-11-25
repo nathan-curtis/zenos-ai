@@ -1,4 +1,6 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.4.8
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.4.11
+
+> **2026.12.0 (5.4.9 to 5.4.11):** the three summarizer kill switches and the decision switch (`input_boolean.zen_decision_enabled`) carry `zen_system` and `zen_never_expose`, so Ectoplasm refuses to expose them and Flynn keeps them unexposed: operator-only, with no agent path. Flynn creates `zen_never_expose` if it's missing. On `ha_start`, an install where every gate is green now runs `flynn_assign_labels` before it exits, so default helper labels added in a release reach a healthy install too.
 
 > **2026.12.0 (5.4.8):** the boot warmup force (a full-fleet `summary_force` 30 s after start) is gone. Start-up already runs the rollup, and the Scheduler's [cold start](zen_dojotools_scheduler_readme.md#cold-start) fills any component with no kata.
 
