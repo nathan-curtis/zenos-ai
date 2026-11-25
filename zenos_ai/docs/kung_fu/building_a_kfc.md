@@ -33,7 +33,7 @@ Your component runs when a trigger it subscribes to fires. Reach for these in or
 1. **A scheduled sweep.** Subscribe to a time trigger (`hourly_trigger` is the usual one) in `trigger_subscriptions`. Every component that subscribes converges on current state even when nothing else fires. It isn't automatic: a component that subscribes to nothing never runs.
 2. **A label trigger.** `zen_leak`, `zen_smoke`, `zen_door`, `zen_power`, `zen_appliance` and `alarm_panel` fire on whatever carries their label. Label the device, subscribe to the trigger, and you're done: no YAML (see [Triggers](#triggers)).
 3. **A trigger pack, when your component owns its triggers.** A component you ship that needs triggers of its own carries them in its own package file, as an automation that registers them with `trigger_pack_register` (see [Triggers](#triggers)). Make it label-driven so it works in any house.
-4. **Wiring your own entity.** To make one specific device in your house wake a component, write a small automation in your installation, outside `packages/zenos_ai/`, that fires `summary_force` for the component. It names your entity IDs, so it never ships.
+4. **Wiring your own entity.** To make one specific device in your house wake a component, write a small automation in your installation, outside `packages/zenos_ai/`, that fires `summary_request` for the component (forces are for maintenance only). It names your entity IDs, so it never ships.
 
 **The rule: a trigger that names a label can ship; a trigger that names an entity ID is personal.**
 
@@ -397,7 +397,7 @@ automation:
   - id: '<unique_id>'
     alias: KFC Trigger — <Component Name>
     description: >-
-      Fires a targeted force_summary for <component_name> on <what triggers it>.
+      Sends a summary_request for <component_name> on <what triggers it>.
     triggers:
 
       # -- <Trigger group description> ------------------------------------------
@@ -415,7 +415,7 @@ automation:
       - event: zen_event
         event_data:
           event:
-            kind: summary_force
+            kind: summary_request
             component: <component_name>
 
     mode: queued

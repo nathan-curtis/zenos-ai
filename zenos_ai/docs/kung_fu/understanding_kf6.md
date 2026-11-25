@@ -153,7 +153,7 @@ The Scheduler doesn't run all components on every trigger. Under load, it defers
 
 **Shed work doesn't disappear.** The drain router runs on a low-water timer and a starvation guard. When the queue quiets down, the most-stale shed-eligible component gets a recovery dispatch. If a component's kata exceeds its `staleness_minutes` ceiling, it fires regardless of queue depth.
 
-A targeted `force_summary` for a specific component bypasses shedding entirely.
+A `summary_request` for a specific component goes through the same shedding. A targeted `force_summary` bypasses it, which is why force is for maintenance only.
 
 ---
 
@@ -187,7 +187,7 @@ In HA's entity registry, apply the label to every entity that belongs to this co
 
 **Step 4 — Dry run**
 
-Before going live, test it. Fire a `force_summary` zen_event targeting your component. Review the output:
+Before going live, test it. Fire a `summary_request` zen_event naming your component. Review the output:
 
 - Did it find the right entities?
 - Did it interpret states correctly?
@@ -221,7 +221,7 @@ automation:
   - id: 'YOUR_UNIQUE_ID'
     alias: KFC Trigger — [Component Name]
     description: >-
-      Fires a targeted force_summary for [component] on meaningful state changes.
+      Sends a summary_request for [component] on meaningful state changes.
     triggers:
       - trigger: state
         entity_id:
@@ -235,14 +235,14 @@ automation:
       - event: zen_event
         event_data:
           event:
-            kind: summary_force
+            kind: summary_request
             component: your_kata_key  # matches kata_key in the Dojo drawer
 
     mode: queued
     max: 3
 ```
 
-The core Scheduler picks up `zen_event` with `kind: summary_force` as a targeted `force_summary` for your component. Your hardware drives the dispatch. No Scheduler YAML needed.
+The core Scheduler picks up `zen_event` with `kind: summary_request` and admits your component through its normal gates, whether or not it subscribes to anything. Your hardware drives the dispatch. No Scheduler YAML needed.
 
 One file per KFC that needs instant dispatch. KFCs that are fine with scheduled sweeps need no trigger file at all.
 

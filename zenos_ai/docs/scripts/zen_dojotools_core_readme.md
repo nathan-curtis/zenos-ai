@@ -26,7 +26,7 @@ The GC is the custodian of cabinet hygiene. It runs daily at midnight (triggered
 | `key` | text | — | Drawer key (required for recycle, hide, unhide, repair) |
 | `dry_run` | boolean | `false` | Report what would change without making changes (gc and repair) |
 | `max_age_hours` | number | `24` | Legacy eviction threshold in hours (1–168) |
-| `post_supersummary` | boolean | `true` | Deprecated — field ignored. GC now fires a scoped `summary_force` event per kata key actually deleted (see below) instead of a blanket resummarize |
+| `post_supersummary` | boolean | `true` | Deprecated — field ignored. GC now sends a scoped `summary_request` per kata key actually deleted (see below) instead of a blanket resummarize |
 | `volume_entity_id` | entity (sensor) | — | Target cabinet. Defaults to Kata cabinet |
 
 ---
@@ -94,7 +94,7 @@ dry_run: true
 }
 ```
 
-After a real run with kata-cabinet evictions, GC emits a `summary_force` event scoped to each kata key it actually deleted this pass — a targeted per-key resummarize, not a blanket full-fleet one. The Scheduler and drain router handle re-dispatch for evictions on other cabinets. `post_supersummary` is deprecated and ignored.
+After a real run with kata-cabinet evictions, GC sends a `summary_request` scoped to each kata key it actually deleted this pass (the normal gates; nightly GC is routine) — a targeted per-key resummarize, not a blanket full-fleet one. The Scheduler and drain router handle re-dispatch for evictions on other cabinets. `post_supersummary` is deprecated and ignored.
 
 **Postman log GC (step 4d):** The `gc` run also sweeps `zen_postman_log` in the kata cabinet. Each log entry carries a `ttl_s` field — entries older than their TTL are evicted. Pending entries that were never acknowledged (orphaned by an HA restart mid-call) are marked `ack_timed_out: true` rather than deleted, so the caller can detect the timeout on the next `get_response` check.
 

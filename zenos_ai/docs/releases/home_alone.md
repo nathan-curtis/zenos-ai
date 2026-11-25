@@ -133,8 +133,10 @@ Grocy handles tare weights, but it expects every stock write as the total on the
   - An existing grant doesn't gain new members by itself.
   - With `seed_cert_mode` on enforce, a summary whose cert is missing stops. In audit, the default on an upgrade, it logs `seed_cert_audit` and keeps running.
 - **Restart, or run `zen_dojotools_systemtools mode=zen_resolver_refresh`, after upgrading.** Room timers now expire through Home Assistant's `timer.finished` trigger on their labels, and a TV sleep timer gets its new `tv_sleep_timer` label at the next resync. Until then, the TV sleep timer doesn't start.
-- **Reload automations, wait, then reload scripts, then reload custom templates.** Autovac's controller and the new watchers need the automations first, and cabinet mounts need the new cabinet templates.
-- **Two new automations:** the Zen Security Sentry and the Zen Climate Envelope Watcher.
+- **Reload automations, wait, then reload scripts, then reload custom templates.** Autovac's controller and the new watchers need the automations first, and cabinet mounts need the new cabinet templates. The Scheduler starts its work through a new script, `zen_abbot_launch`, so background summaries start once scripts are reloaded.
+- **Load the new prompt once:** run `zen_admintools_prompt_loader mode=load` after updating to move Friday to Cortex 48 'True North'. An install keeps the prompt it last loaded until you do.
+- **Four new automations:** the Zen Security Sentry, the Zen Climate Envelope Watcher, Zen DojoTools Housekeeping and Zen Safety Admit.
+- **Your own trigger automations should send `summary_request`, not `summary_force`.** A force still works, but it's for maintenance now. See [the Scheduler](../scripts/zen_dojotools_scheduler_readme.md#requesting-a-run).
 - **Autovac's `clean` answers `dispatched`, not `ok`.** Anything that reads `ok` from it needs updating.
 - **Includes 2026.11.1,** with its security fixes.
 
@@ -154,6 +156,12 @@ Grocy handles tare weights, but it expects every stock write as the total on the
 - **The agent switches any helper toggle or switch you ask for,** even ones not exposed to Assist.
 - **A mount carries its whole tree.** A drawer under a link to another cabinet now lives in that cabinet, and a link is never written over data that would leave it split between two. See [FileCabinet](../scripts/zen_dojotools_filecabinet_readme.md#virtualdrawer-mount-point).
 - **Household and family cabinet admin (expand, mount, ACL) is open to anyone holding `zenos.system.cabinet_admin` with the live approval,** not only the owner. Personal cabinets stay owner-only.
+- **The Scheduler only decides which background summaries run.** Maintenance (reloads, the manifests, garbage collection, display and Rolodex checks) has its own automation, so a script reload no longer waits behind summaries. A leak, alarm or smoke event starts its summaries at once, with no queue.
+- **A routine refresh is a `summary_request`; forces are for maintenance only.** A request goes through the Scheduler's normal gates. Autovac, garbage collection, Flynn's health refresh and the recovery router all send requests now.
+- **SuperSummary runs every quarter hour, at start, and when a component's urgency asks for it,** at most once every 5 minutes. It no longer runs just because a component did.
+- **Start-up is spaced out.** Components launch 30 seconds apart, and one with no summary yet is filled at start. Flynn's start-up force is gone.
+- **The recovery router works out when each summary is stale from that component's own schedule,** and recovers the `system` tier too. It logs why it ran one.
+- **`sensor.zen_scheduler_queue_depth` measures pressure: Scheduler runs plus Ninja runs.** A dashboard card on it shows different numbers. See [the sensor reference](../sensors/readme.md#sensorzen_scheduler_queue_depth).
 - **Autovac:**
   - Exactly one vacuum may carry the `autovac` label. With two, Autovac uses neither.
   - A bare call answers help (it answered `status`).
@@ -179,6 +187,8 @@ Grocy handles tare weights, but it expects every stock write as the total on the
 - **Autovac never empties its drawer.** After the drawer was expanded, the controller read it without following the mount and wrote empty rooms back. It now reads through the mount, and nothing writes over a drawer it couldn't read.
 - **A covers set that was refused says so.** It answered success around the refusal.
 - **The background summaries stop re-running fresh components.** The recovery router aged every summary from its creation time.
+- **The Scheduler's housekeeping jobs all run.** They shared one first-match choice, so display session expiry, the resolver refresh, the Rolodex stay checks, the identity manifest and the compact index never ran from it.
+- **The recovery router leaves cache slots and views alone.** It re-ran Security's perimeter cache and a FileCabinet view every 10 minutes, which hid components that really were stale.
 - **Setting up a robot's parts no longer puts several parts on one product,** and finds a location on a house with more than 500.
 - **Editing a Grocy chore can turn it off or set its amount to 0.**
 - **The leak watch closes shutoff valves,** not only switches.

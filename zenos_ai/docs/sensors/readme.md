@@ -330,6 +330,22 @@ Both `sensor.zen_prompt_health` and `sensor.zen_prompt_length` receive the `zen_
 
 ---
 
+## sensor.zen_scheduler_queue_depth
+
+**Cognitive pressure** (2026.12.0). **File:** `packages/zenos_ai/sensors/sensor_helpers.yaml`
+
+The Scheduler only admits, so its own queue sits near 0, and the Ninja Summarizer is the bottleneck. The state is Scheduler runs plus Ninja runs (queued and running), in `runs`. The [Scheduler's depth gate](../scripts/zen_dojotools_scheduler_readme.md#how-components-subscribe) sheds on it, and the [drain router](../scripts/zen_dojotools_dispatcher_readme.md#zen_scheduler_drain_router) waits for it to go quiet. The launcher's delayed jobs are planned spacing, not backlog, so they are an attribute, not part of the state. Before 2026.12.0 the state was the Scheduler's own queue.
+
+| Attribute | Contents |
+|---|---|
+| `scheduler`, `scheduler_max` | Scheduler runs, and its max |
+| `ninja`, `ninja_max`, `ninja_pct` | Ninja runs, its max (10), and runs as a percent of max |
+| `launcher` | `zen_abbot_launch` runs (delayed launches waiting their slot) |
+| `housekeeping` | Housekeeping runs |
+| `supersummary` | `true` while SuperSummary is running |
+
+---
+
 ## UI Selectors and Kill Switches
 
 ### Companion Input Selects
@@ -369,7 +385,7 @@ Master is checked first. If off, both summarizers exit immediately regardless of
 | `zen_ninja_summarizer_enabled` | `zen_event: {kind: ninja_force}` |
 | `zen_supersummarizer_enabled` | `zen_event: {kind: supersummary_force}` |
 
-This means the summarizer is live again within seconds of being re-enabled, not at the next quarter-hour or hourly tick.
+This means the summarizer is live again within seconds of being re-enabled, not at the next quarter-hour or hourly tick. These forces are maintenance: routine refreshes use `summary_request` (see the [Scheduler](../scripts/zen_dojotools_scheduler_readme.md#maintenance-forces)).
 
 ---
 

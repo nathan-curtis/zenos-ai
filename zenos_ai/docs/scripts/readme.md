@@ -104,14 +104,14 @@ Identity resolver for household members and AI constructs. MCP-exposed. Resolves
 ## 6. Zen DojoTools Scheduler — v5.3.1
 **File:** [`zen_dojotools_scheduler_readme.md`](zen_dojotools_scheduler_readme.md)
 
-Trigger orchestrator. 20+ trigger IDs, component subscription via Dojo drawer, heartbeat drawer, and manual force events (`summary_force`, `ninja_force`, `supersummary_force`). Hardware triggers strip to `zen_dojotools_scheduler_custom.yaml`.
+Trigger orchestrator (the Abbot). Admits components by their Dojo drawer subscriptions and hands them to the `zen_abbot_launch` launcher; requests (`summary_request`, `supersummary_request`), maintenance forces (`summary_force`, `ninja_force`, `supersummary_force`), heartbeat drawer. The same file holds the Housekeeping and Safety Admit automations. Hardware triggers strip to `zen_dojotools_scheduler_custom.yaml`.
 
 ---
 
 ## 6b. Pipeline Trigger Pattern
 **File:** [`zen_pipeline_trigger_pattern.md`](zen_pipeline_trigger_pattern.md)
 
-Guide: fire a component summarizer run from a real-world trigger and act on the monk's output. Covers `zen_event → summary_force`, wait-and-read patterns, and direct MCP path.
+Guide: fire a component summarizer run from a real-world trigger and act on the monk's output. Covers `zen_event → summary_request`, wait-and-read patterns, and direct MCP path.
 
 ---
 

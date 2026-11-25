@@ -329,7 +329,7 @@ Checklist when adding a component:
 1. Create the label (`create`)
 2. Tag all relevant entities (`tag`)
 3. Reference the label in the KFC drawer (`zen_dojotools_scribe`)
-4. Dry-run with `force_summary` (post=false) and verify the Kata has data
+4. Dry-run the Ninja (`post_to_kata_cabinet: false`) and verify the Kata has data
 
 ---
 

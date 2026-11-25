@@ -113,7 +113,7 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 - **Cert:** `zenos.autovac.status`, level 1, stages `isl` (interactive, background summary, live drawer), in the `zenos_agent_advanced` bundle. Without it the component drops out of the agent's prompt.
 - **What it returns:** `urgency` 0 to 5, `action_required` (urgency 3 or more), `reasons`, `vacuum_state`, `battery_pct`, `can_run_now`, `blockers`, `elected_rooms`, `due_rooms`, `overdue_rooms`, `next_schedule`, `dnd`, `paused_today`, `out_of_service`, and `watch_entities` (real entity IDs, from labels).
 - **Scoring:** a vacuum error 4; low water that stops mop rooms (`water_low_action=stop`) 3; the vacuum unavailable, an open out-of-service ticket, or a room overdue by twice its interval, 2 each; low water that only warns, or a low battery, 1. `suggested_act_event` is always null: the controller already alerts on a vacuum error, and the pre-run briefing covers low water.
-- **The component** seeds from `mode=summary`, names the cert in `meta.requires`, and subscribes to `force_summary`. The controller emits `summary_force` for it when the vacuum docks or errors; the component's 120-minute emission cooldown keeps that from repeating.
+- **The component** seeds from `mode=summary`, names the cert in `meta.requires`, and subscribes to `force_summary`. The controller sends a `summary_request` for it when the vacuum docks or errors; the component's 120-minute emission cooldown keeps that from repeating.
 
 ---
 

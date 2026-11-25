@@ -81,7 +81,7 @@ Components are handled by tier:
 
 Trapper Keeper exists to keep SuperSummary's prompt small. Most components are quiet most of the time, and a quiet component does not need its full Kata in the whole-house prompt. Trapper Keeper hands SuperSummary an index of breadcrumbs with pointers back to the full Katas, and SuperSummary only pulls in what is urgent.
 
-SuperSummary is bounded three ways: a run governor (`super_burnout_seconds`, default 600, so it runs at most once per window unless forced), a context budget (`max_context_tokens`, default 28,000, which drops ambient and system components before keeper ones), and a hard size guard (a prompt over 200,000 bytes aborts).
+SuperSummary is bounded three ways: a run governor (`super_burnout_seconds`, default 300, so it runs at most once per window unless forced), a context budget (`max_context_tokens`, default 28,000, which drops ambient and system components before keeper ones), and a hard size guard (a prompt over 200,000 bytes aborts).
 
 Here is what that synthesis reads like when Friday is asked for it:
 
@@ -95,7 +95,7 @@ Here is what that synthesis reads like when Friday is asked for it:
 
 A component Kata can say that something needs action: `action_required`, an `urgency` from 0 to 10, and optionally a `suggested_act_event` naming a tool call that would address it, with `suggested_act_args`. The Ninja Summarizer routes that three ways.
 
-**Refresh the whole house.** If urgency is at or above the component's `drift_threshold`, it fires `summary_force`, so `zen_summary` reflects the change now rather than at the next scheduled run.
+**Refresh the whole house.** If urgency is at or above the component's `drift_threshold`, it asks for the rollup (`supersummary_request`), so `zen_summary` reflects the change now rather than at the next quarter-hour run. If a rollup ran within the governor's window, the request is dropped and the next tick picks the change up.
 
 **Act autonomously**, through a gated path. A suggested action is emitted only if all of these hold: the component asserted `action_required`, urgency is at or above the push floor (default 4) or the life-safety threshold, and then three layers pass in order:
 

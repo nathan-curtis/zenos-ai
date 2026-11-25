@@ -69,7 +69,7 @@ automation:
   - id: 'YOUR_UNIQUE_ID'
     alias: KFC Trigger — Alert Manager
     description: >-
-      Fires a targeted force_summary for alert_manager on meaningful state changes.
+      Sends a summary_request for alert_manager on meaningful state changes.
     triggers:
       - trigger: state
         entity_id:
@@ -84,14 +84,14 @@ automation:
       - event: zen_event
         event_data:
           event:
-            kind: summary_force
+            kind: summary_request
             component: alert_manager
 
     mode: queued
     max: 3
 ```
 
-This file fires `zen_event` with `kind: summary_force`, which the core Scheduler handles as a targeted dispatch for `alert_manager`. No Scheduler changes needed.
+This file fires `zen_event` with `kind: summary_request`, which the core Scheduler admits as a routine run of `alert_manager`, through its normal gates. No Scheduler changes needed.
 
 ---
 

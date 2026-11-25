@@ -1,4 +1,6 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.4.7
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.4.8
+
+> **2026.12.0 (5.4.8):** the boot warmup force (a full-fleet `summary_force` 30 s after start) is gone. Start-up already runs the rollup, and the Scheduler's [cold start](zen_dojotools_scheduler_readme.md#cold-start) fills any component with no kata.
 
 > **2026.12.0 (5.4.7):** each mounted history cabinet gets its `history` root drawer, the drawer the parent's history mount points at. It was never created, so `fleet` showed the history mounts as broken. A missing root counts as history work, so an existing install gets it on the next pass.
 

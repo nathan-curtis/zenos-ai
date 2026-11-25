@@ -649,7 +649,7 @@ Print Shop (`dojotools_print.yaml`, 0.6.x) is the worked example of a new tool t
 4. **The component requires the same cert.** `meta.requires` names it, so the component runs and appears in the prompt only for an agent that holds it.
 5. **A scored seed.** Each item carries `urgency`, `action_required` and real entity IDs, and the instructions are short and exact. A seed without real IDs invites the model to invent them.
 6. **Every costly or noisy step is optional and off.** A vision call, a second summary or a push is a setting in the tool's own drawer, off by default, and not a new helper entity. Read modes never run an inference step.
-7. **Triggers go through the Scheduler.** A trigger fires `zen_event` `summary_force` with `component: <kata_key>`, or is a registered trigger the component subscribes to. Nothing calls the Ninja directly.
+7. **Triggers go through the Scheduler.** A trigger fires `zen_event` `summary_request` with `component: <kata_key>`, or is a registered trigger the component subscribes to. Forces are for maintenance only. Nothing calls the Ninja directly.
 8. **Help is the default.** A bare call returns help.
 9. **Proven before anything is written.** Built on the test box first and byte-identical to production, with a forced Ninja run using `post_to_kata_cabinet=false` before it writes a Kata.
 

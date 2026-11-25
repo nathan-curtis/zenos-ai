@@ -1,10 +1,13 @@
 # 22. The Abbot
 
-Parts II through V described what ZenOS is and what an agent may do inside it. Part VI is about keeping all of that running. The Monastery decides what a summary says. The Abbot decides when the system thinks at all. It is not one component: it is the name for the scheduling and dispatch function, carried out jointly by two automations.
+Parts II through V described what ZenOS is and what an agent may do inside it. Part VI is about keeping all of that running. The Monastery decides what a summary says. The Abbot decides when the system thinks at all. It is not one component: it is the name for the scheduling and dispatch function, carried out jointly by a few automations and one script.
 
-| File | Automation | Job |
+| File | Automation or script | Job |
 |---|---|---|
-| `dojotools_scheduler.yaml` | `zen_dojotools_scheduler` | Fires on schedules and state changes, decides which components run, sheds load |
+| `dojotools_scheduler.yaml` | `zen_dojotools_scheduler` | Fires on schedules and state changes, decides which components run, sheds load. It only admits |
+| `dojotools_scheduler.yaml` | `zen_abbot_launch` (script) | Starts what the Scheduler admitted: sleeps each component's delay, reads its prior Kata, starts the Ninja; also starts SuperSummary and writes the heartbeat |
+| `dojotools_scheduler.yaml` | Zen DojoTools Housekeeping | Maintenance jobs, off the cognitive queue (22.6) |
+| `dojotools_scheduler.yaml` | Zen Safety Admit | Leak, alarm and smoke events start their subscribers at once, with no queue (22.6) |
 | `dojotools_dispatcher.yaml` | `zen_dojotool_dispatcher` | Routes correlated tool calls over the event bus, and hosts the support routers |
 
 The Abbot started as the second version of the Ninja summarizer, which looked at the calendar and the hour ahead and chose which components the next hour's prompt should carry. That idea split in two as the system grew. Choosing what the agent sees became the frame (Chapter 17). Choosing when the Monastery works became the Scheduler, fired by triggers instead of the clock once local summarization made each run nearly free.
@@ -20,9 +23,10 @@ The Scheduler owns a core set of trigger IDs:
 | Openings | `door_opens_or_closes`, `window_opens_or_closes`, `garage_door`, `lock_changes` (legacy: they watch `group.all_doors` and its siblings) |
 | Labels | `zen_leak`, `zen_smoke`, `zen_door`, `zen_power`, `zen_appliance`, `alarm_panel` |
 | Devices | `vacuum_started`, `vacuum_docked`, `print_done`, `persistent_notification` |
-| System | `ha_start`, `force_summary`, `force_ninja`, `force_supersummary`, `force_gc`, `force_identity_manifest`, `deferred_script_reload`, `deferred_reload_all` |
+| Requests | `summary_request` (one named component), `supersummary_request` (a component asks for the whole-house rollup) |
+| System | `ha_start`, `force_summary`, `force_ninja`, `force_supersummary` |
 
-The force triggers correspond to `zen_event` kinds (`summary_force`, `ninja_force`, `supersummary_force`) that anything can fire to request a run now.
+A routine "run this now" is a request: `zen_event` kind `summary_request` naming the component. It goes through the same gates as any trigger (22.3) and skips the component's delay. The force kinds (`summary_force`, `ninja_force`, `supersummary_force`) are for maintenance only and are never part of normal operation.
 
 **Label triggers.** The six label triggers fire on whatever carries their label, so a device becomes a trigger without YAML: label a leak sensor `zen_leak` and a component subscribed to `zen_leak` runs when it gets wet. `zen_smoke` covers smoke, carbon monoxide and gas; `zen_door` doors and windows opening or closing; `zen_power` a circuit going dead; `zen_appliance` an appliance starting or finishing; `alarm_panel` an alarm panel going to triggered (not arming or disarming). Each is idle until an entity carries its label. They are the hypergraph routing again (Chapter 7).
 
@@ -32,7 +36,7 @@ The force triggers correspond to `zen_event` kinds (`summary_force`, `ninja_forc
 
 The Scheduler does not score triggers for relevance. Each KFC declares, in its own definition, the trigger IDs it cares about (`trigger_subscriptions`) and its `pipeline_tier`. When a trigger fires, the Scheduler finds the components subscribed to it and dispatches each one, in order of its `delay_seconds` (lower runs sooner).
 
-A component whose domain needs an instant response to one specific sensor does not add a Scheduler trigger. It ships its own small trigger that fires `zen_event` with `kind: summary_force` for that component.
+A component whose domain needs an instant response to one specific sensor does not add a Scheduler trigger. It ships its own small trigger that fires `zen_event` with `kind: summary_request` for that component.
 
 ## 22.3 Shedding load
 
@@ -41,12 +45,16 @@ Summarizer runs call a model, and a burst of state changes (a door opening and c
 | Tier | Dispatched | Shed when |
 |---|---|---|
 | `super`, `system` | Always, with no delay | Never |
-| `keeper` (the default) | On every subscribed trigger | Queue depth reaches `shed_keeper_at` (default 8) |
-| `ambient` | On slower triggers only | Any fast trigger (`quarter_hour`, `every_10_minutes`), or queue depth reaches `shed_ambient_at` (default 4) |
+| `keeper` (the default) | On every subscribed trigger | Pressure reaches `shed_keeper_at` (default 8) |
+| `ambient` | On slower triggers only | Any fast trigger (`quarter_hour`, `every_10_minutes`), or pressure reaches `shed_ambient_at` (default 4) |
+
+The pressure is `sensor.zen_scheduler_queue_depth`: Scheduler runs plus Ninja runs. The Scheduler only admits, so its own queue is nearly always empty, and the Ninja, which runs one summary at a time, is where work waits. At a pressure of 5 or more only `super` and `system` are admitted, except on the two daily anchors, which fire once with no retry.
 
 `system` is exempt for a reason: it carries core platform health, which is the signal most needed to explain why the queue backed up in the first place.
 
-Shed work is not lost. The drain router watches queue depth and, once it stays below `drain_below` (default 3) for a settling period, dispatches the most stale shed-eligible component. A starvation guard dispatches any component whose Kata has passed its maximum age, regardless of queue depth. The result is that bursts slow the Monastery down without letting any component go stale indefinitely.
+At start every component wakes at once, so start-up launches are spaced 30 seconds apart. A component that has no Kata at all (a fresh install, a reset) is admitted at start too, whatever it subscribes to.
+
+Shed work is not lost. The drain router works out when each component is stale from its own schedule: twice its shortest periodic trigger, a day for one that only listens for events, or a `staleness_minutes` the component declares. Once the pressure stays low, it requests the most overdue component that is at least half way to stale. A starvation check every ten minutes requests any component past its staleness, whatever the pressure. A component the Ninja just tried without producing a Kata waits for its next window instead of being retried every ten minutes. The router sends `summary_request`, never a force, and logs why. The result is that bursts slow the Monastery down without letting any component go stale indefinitely.
 
 There is no per-component cooldown timer and no quiet-hours policy in the Scheduler. Queue-depth shedding is what prevents storms. The per-component emission cooldown (Chapter 14) governs escalation, not summarization.
 
@@ -68,6 +76,14 @@ Several small routers ride alongside the Dispatcher, each doing one job:
 | `zen_flynn_health_resummarize` | Refreshes the system component when Flynn's health changes |
 | `zen_cabinet_vi_autorepair` | Repairs a cabinet header stored as a string instead of a mapping |
 
+## 22.6 Housekeeping and safety
+
+Two jobs used to share the Scheduler's queue and now have their own automations.
+
+**Housekeeping** runs the system's maintenance: the deferred reloads, the Manifest, the identity manifest, the compact index, FileCabinet garbage collection, display session expiry, the resolver refresh and the Rolodex stay checks. Each job starts as its own run, so one that fails or runs long holds up none of the others, and a script reload no longer waits behind summarization.
+
+**Safety Admit** takes the life-safety label triggers (`zen_leak`, `alarm_panel`, `zen_smoke`) and starts the subscribed components' summaries at once, in parallel, with no queue, no depth gate and no delay. The deterministic responders (the leak watch, the panel, Security Manager) are separate automations and never wait for a model. This is only the agent's awareness of the event.
+
 Daily, and on Home Assistant start, `zen_dojotools_manifest` also re-runs its bootstrap modes: KFC self-registration and Lens Bus provider registration (Chapter 13).
 
 > **Not yet built.** The Abbot does not yet route work to different inference providers. Tagging each job so it can go to the right model with the right metadata (keeping sensitive content on a local model, sending other work elsewhere) is stated direction, with the Abbot as the single dispatch point for all inference.
@@ -75,7 +91,7 @@ Daily, and on Home Assistant start, `zen_dojotools_manifest` also re-runs its bo
 When everything works, the Abbot keeps the twin current. The next chapter is what the system does when things do not work.
 
 <!-- where -->
-## 22.6 Where to look
+## 22.7 Where to look
 
 Every claim in this chapter can be checked in the code. These are the places to start.
 

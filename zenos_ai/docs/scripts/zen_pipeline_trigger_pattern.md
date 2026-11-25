@@ -14,12 +14,13 @@ The pattern is three steps:
 
 ```
 1. Your trigger fires
-2. zen_event → summary_force (component: your_component)
+2. zen_event → summary_request (component: your_component)
 3. Wait for the kata write → read it → act on it
 ```
 
-That's it. The Scheduler picks up the `summary_force` event and routes it to the Ninja
-Summarizer, which runs the monk and writes the kata drawer. You wait for the write, then
+That's it. The Scheduler picks up the `summary_request` event and admits the component
+through its normal gates (no subscription needed, no declared delay), then the Ninja
+Summarizer which runs the monk and writes the kata drawer. You wait for the write, then
 read the kata and branch on the result.
 
 ---
@@ -36,19 +37,18 @@ automation:
       entity_id: binary_sensor.water_flow_active
       to: "off"
   action:
-    - action: zen_event
-      data:
-        kind: summary_force
-        component: water_manager
-        caller_token: "water_flow_stop_{{ now().isoformat() }}"
+    - event: zen_event
+      event_data:
+        event:
+          kind: summary_request
+          component: water_manager
 ```
 
 The `component` field must match the drawer key (slugified) in the Dojo cabinet — exactly
 what you passed as `key` when you authored the KFC with Scribe.
 
-`caller_token` is optional but useful. It threads through the Ninja Summarizer response and
-the emitted event, so you can correlate which run was yours if multiple triggers fire close
-together.
+Use `summary_request`, not `summary_force`. A request is the routine path: it goes through the
+Scheduler's tier and depth gates like any trigger. Forces are for maintenance only.
 
 ---
 
@@ -71,8 +71,9 @@ to update. The simplest approach is a short `wait_template` watching the kata ca
 This watches for a newer timestamp in the kata drawer than whatever you stored from the
 previous run. Update `input_text.water_flow_last_summary_ts` after each successful read.
 
-**Simpler alternative:** Just wait a fixed delay. If your component's `delay_seconds` is
-30 and the AI task entity is responsive, 90 seconds is a safe upper bound for most installs:
+**Simpler alternative:** Just wait a fixed delay. A request skips the component's
+`delay_seconds`, so if the AI task entity is responsive, 90 seconds is a safe upper bound for
+most installs (longer if the Ninja's queue is busy):
 
 ```yaml
     - delay:
@@ -130,11 +131,11 @@ automation:
       to: "off"
   action:
     # 1. Fire the summarizer for this component
-    - action: zen_event
-      data:
-        kind: summary_force
-        component: water_manager
-        caller_token: "water_flow_stop_{{ now().isoformat() }}"
+    - event: zen_event
+      event_data:
+        event:
+          kind: summary_request
+          component: water_manager
 
     # 2. Wait for the kata to update (or timeout)
     - delay:

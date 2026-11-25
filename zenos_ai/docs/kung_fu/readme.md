@@ -72,7 +72,7 @@ Run with `mode=schema` to get the live `kfc_template` from the Dojo cabinet.
 | `delay_seconds` | yes | Seconds to delay after trigger (0 = immediate; used for ordering) |
 | `kata_key` | yes | Dojo drawer key where the Ninja writes this component's Kata |
 | `command` | no | Library command that activates this component (e.g. `~WATER~`). Omit for HyperIndex-only components. |
-| `schedules` | no | List of sub-schedule entries. Each entry has `kata_key` (string) and `index_call` (mapping). When present, the Scheduler expands the component into one Ninja run per schedule entry instead of a single run. A targeted `force_summary` with `schedule: <kata_key>` fires only the matching entry. |
+| `schedules` | no | List of sub-schedule entries. Each entry has `kata_key` (string) and `index_call` (mapping). When present, the Scheduler expands the component into one Ninja run per schedule entry instead of a single run. A `summary_request` (or a maintenance `force_summary`) with `schedule: <kata_key>` runs only the matching entry. |
 | `tool` | no | Specific DojoTools tool this component uses, if any |
 | `pipeline_tier` | no | Dispatch priority and SuperSummary routing. See tier table below. Default: `keeper`. |
 | `staleness_minutes` | no | Age threshold (minutes) at which the drain router will force a re-run regardless of queue depth. Default: `1440` (24 h). Set lower for components that must stay fresh. |
@@ -108,7 +108,7 @@ Omit `pipeline_tier` for standard components — `keeper` is the default.
 | `home_mode_updates` | `zen_home_mode` changes |
 | `home_occupancy_change` | `zone.home` count changes |
 | `alarm_panel` | An alarm panel labeled `alarm_panel` is triggered (not on arm or disarm) |
-| `force_summary` | Targeted force via zen_event |
+| `force_summary` | Maintenance force via zen_event (a routine refresh is a `summary_request`, which needs no subscription) |
 | `zen_leak` | A sensor labeled `zen_leak` detects water |
 | `zen_smoke` | A sensor labeled `zen_smoke` detects smoke, CO or gas |
 | `zen_door` | A door or window labeled `zen_door` opens or closes |

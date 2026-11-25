@@ -1,4 +1,6 @@
-# Zen DojoTool Dispatcher — v5.5.3
+# Zen DojoTool Dispatcher — v5.6.7
+
+> **2026.12.0 (5.6.x):** the [drain router](#zen_scheduler_drain_router) works out each component's staleness from its own schedule, recovers the `system` tier too, and sends a routine `summary_request`, never a force. It writes one log line per recovery saying why. Flynn's health resummarize sends `summary_request` too. Reload automations.
 
 > **2026.11.0:** The declared-act route. A tool with no hand-written route is called if its `tool_manifest` declares an `act`: the dispatcher reads the declaration itself and calls only that mode, with only the declared args (enum values checked) plus `kata_input`. The payload never picks the mode, and a hand-written route always wins. See [Declared acts](../kung_fu/building_a_kfc.md#declared-acts).
 
@@ -130,7 +132,7 @@ One flat `choose` block, one arm per `tool` + `version` pair — no tiering, no 
 
 ## Urgency Handler
 
-`zen_dojotools_urgency_handler` is the catch-all triage lane for `action_required=true` events that fall through both `summary_force` (needs `urgency >= drift_threshold`) and the four-layer autonomous-remediation gate (needs `urgency >= push_floor` **and** a non-empty `suggested_act_event`). Those low-urgency, no-automatable-action "needs a human" signals are routed to Taskmaster as a real task (priority scaled from urgency; no Postman push — anything push-worthy already went through the four-layer gate).
+`zen_dojotools_urgency_handler` is the catch-all triage lane for `action_required=true` events that fall through both the rollup request (`supersummary_request`, needs `urgency >= drift_threshold`) and the four-layer autonomous-remediation gate (needs `urgency >= push_floor` **and** a non-empty `suggested_act_event`). Those low-urgency, no-automatable-action "needs a human" signals are routed to Taskmaster as a real task (priority scaled from urgency; no Postman push — anything push-worthy already went through the four-layer gate).
 
 - **Dedup.** Every ticket it creates is tagged with a stable per-component tag. It also tags the ticket with the component slug, the anchor the Radar lens finds. Before creating, it searches for an already-open ticket carrying that tag: found → a recurrence note is added to the existing ticket; not found → create, then tag it so the next occurrence finds it. If the tag search finds nothing, it falls back to an exact-title search, since each ticket's title is set deterministically at creation. The tag write is checked after creation, and a failed tag fires `urgency_handler_dedup_tag_failed` so it can be traced.
 - **No-signal guard.** When there's no existing ticket **and** `urgency <= 0` **and** both `attention` and `suggested_act_event` are empty (missing, blank, or explicit `null`), `task_create` is skipped entirely and the handler returns `status: suppressed_no_signal` instead of opening an empty "Action required" ticket.
@@ -147,10 +149,25 @@ Listens for `zen_event(kind: identity_manifest_rebuild)` (fired by Provisioner a
 Listens for `zen_event(kind: label_mutation)` (fired by Labels on any successful write). Calls `zen_dojotools_index (mode: build_compact_index)` to rebuild `_compact_index`. Also rebuilds on HA start and at 06:00, 12:00, 18:00, 00:00. Mode: `queued` — burst label ops don't race each other.
 
 ### `zen_scheduler_drain_router`
-Trickle recovery for shed pipeline components. Fires `summary_force` for the most-stale shed-eligible component when queue depth stays below `drain_below` for `s_min_minutes`. Starvation guard at `/10` minutes forces recovery if any component's kata exceeds `s_max_minutes`. A kata's age runs from its last successful refresh: `last_run_at` or `generated`, whichever is newer, found by the drawer's `kata_key` (5.5.3, #10746; it read `generated` alone, so current KF6 katas looked stale and were re-run). Candidates carry `ts_source`. Config in `zen_scheduler_config` drawer of household root cabinet. Mode: `single`.
+Recovery for components the scheduler shed or missed. It sends a `summary_request` (the normal, gated path; see [Scheduler](zen_dojotools_scheduler_readme.md#requesting-a-run)) for one component at a time. Mode: `single`.
+
+**Candidates.** A dojo drawer is a candidate when it is:
+- a component drawer: it declares `kata_key` or `trigger_subscriptions` (views and mounts kept in the dojo cabinet are not);
+- tier `system`, `keeper`, `direct` or `ambient`;
+- enabled (`meta.enabled` not false);
+- not a cache slot (`role: cache`): the Ninja skips those, so they never get a timestamp;
+- not cooling down: if the Ninja tried it within its staleness window (`zen_ninja_last_run_<kata_key>`) and no fresh kata came of it, it waits for the next window.
+
+**Age and staleness.** Age runs from the last successful refresh: `last_run_at` or `generated` in the kata, whichever is newer, found by the drawer's `kata_key`. Stale is twice the component's shortest periodic subscription (`every_10_minutes` 10, `quarter_hour` 15, `hourly_trigger` 60, noon and midnight together 720, one daily 1440). A declared `staleness_minutes` wins, and an event-only component is stale after a day. `overdue` is age as a percent of stale.
+
+**Routes.**
+- **Quiet drain:** when `sensor.zen_scheduler_queue_depth` stays below 4 for 3 minutes (and below `drain_below`, default 3, from `zen_scheduler_config`), it takes the most overdue component that is at least half way to stale. `system` sorts first.
+- **Starvation check:** every 10 minutes, whatever the pressure, it takes the first component past its staleness.
+
+**Record.** The request carries `reason: drain_router`, `route`, `age_minutes`, `staleness_minutes`, `staleness_source` (`declared`, `cadence` or `default`), `tier`, `overdue_pct` and `pressure`, and one info line goes to the system log (logger `zen_drain_router`, "drain router requested ..."). Record only.
 
 ### `zen_flynn_health_resummarize`
-Fires `summary_force` for `zen_system` whenever `sensor.zen_flynn_health` changes state (not on its per-minute timestamp rewrite), debounced 30s. Ensures kata reflects Flynn recovery or degradation without waiting for the next scheduler cycle. Mode: `single`.
+Sends a `summary_request` for `zen_system` whenever `sensor.zen_flynn_health` changes state (not on its per-minute timestamp rewrite), debounced 30s. Ensures kata reflects Flynn recovery or degradation without waiting for the next scheduler cycle. Mode: `single`.
 
 ### `zen_cabinet_vi_autorepair`
 Catches `cabinet_vi_degraded` events emitted by Inspect when a cabinet VolumeInfo is stored as a JSON string. Calls `zen_admintools_cabinetadmin mode=repair_volumeinfo`. Emits `cabinet_vi_repaired` on success, `cabinet_vi_repair_failed` on error. Mode: `queued, max: 5`.

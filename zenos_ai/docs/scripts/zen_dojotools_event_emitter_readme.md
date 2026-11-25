@@ -211,7 +211,7 @@ The emitter is reachable by agents, so kinds the system acts on are internal-onl
 
 Reserved prefixes: deferred_, dojotool_, postman_, priority_inject_, gc_, cabinet_, identity_, alert_, label_, warmup_, image_, autovac_. Reserved exact kinds: kata_emit, room_control_request (Room Manager's override listener writes the room's control key from it, so an agent goes through room_control_set and its certs instead).
 
-Still open: summary_force, supersummary_force, ninja_force, and free-form kinds.
+Still open: summary_request, supersummary_request, summary_force, supersummary_force, ninja_force, and free-form kinds.
 
 Internal code fires its own kinds directly as zen_event and does not go through this tool. A new zen_event listener that acts on a privileged kind needs its prefix added to the reserved list in dojotools_systemtools.yaml.
 

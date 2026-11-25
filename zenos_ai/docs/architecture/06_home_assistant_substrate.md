@@ -34,7 +34,7 @@ ZenOS gets its predictability from those guarantees plus its own discipline: sin
 
 ## 6.3 zen_event
 
-ZenOS does not invent event types. Every event it emits is `event_type: zen_event`, and the specific occurrence is carried in a `kind` field inside the event data: `summary_force`, `kata_emit`, `ninja_failure`, `emission_suppressed`, `cabinet_mounted`, `dojotool_call`, `dojotool_return`, and others. A consumer listens for `zen_event` and switches on `kind`. `zen_dojotools_event_emitter mode=help` returns the current lexicon, and the appendix lists it.
+ZenOS does not invent event types. Every event it emits is `event_type: zen_event`, and the specific occurrence is carried in a `kind` field inside the event data: `summary_request`, `kata_emit`, `ninja_failure`, `emission_suppressed`, `cabinet_mounted`, `dojotool_call`, `dojotool_return`, and others. A consumer listens for `zen_event` and switches on `kind`. `zen_dojotools_event_emitter mode=help` returns the current lexicon, and the appendix lists it.
 
 The Dispatcher uses this for decoupled tool calls. A caller fires `zen_event` with `kind: dojotool_call`, a tool name, a correlation ID, and a payload. The Dispatcher routes it to the registered script and fires `kind: dojotool_return` with the same correlation ID. An unknown tool returns a structured error on the bus instead of faulting the caller's sequence.
 

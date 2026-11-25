@@ -316,7 +316,8 @@ Fires a `zen_event` on the EventBus and writes a structured entry to the system 
 | Kind | Usage |
 |---|---|
 | `summary` | Standard summary emission |
-| `summary_force` | Trigger immediate KFC summary (see Scheduler docs) |
+| `summary_request` | Routine: run one KFC summary now, through the normal gates (see Scheduler docs) |
+| `summary_force` | Maintenance only: forced KFC summary (see Scheduler docs) |
 | `kata_emit` | Kata state change |
 | `heartbeat` | Periodic component health signal |
 

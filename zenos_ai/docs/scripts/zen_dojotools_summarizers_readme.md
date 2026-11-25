@@ -1,4 +1,6 @@
-# Zen DojoTools Summarizers — Ninja Summarizer v5.9.0 · SuperSummary v4.9.1
+# Zen DojoTools Summarizers — Ninja Summarizer v5.9.3 · SuperSummary v4.9.2
+
+> **2026.12.0:** a component whose urgency reaches its `drift_threshold` asks for the rollup with `supersummary_request`; it no longer forces a re-run of itself. SuperSummary's minimum gap (`super_burnout_seconds`) defaults to 300 s, and a request inside it is dropped. The Ninja is queued with `max: 10` (was 5): it still runs one at a time, so this is a longer line, not more concurrency. A run past max is dropped with a log warning, and the [drain router](zen_dojotools_dispatcher_readme.md#zen_scheduler_drain_router) recovers stale components. Reload scripts, then automations.
 
 > **2026.11.1:** a reply that parses but has every value null, blank or empty isn't written as a summary. A number (urgency 0 is a real quiet reading), text, or a non-empty list or object counts; a true or false on its own doesn't. The Ninja logs "empty summary", keeps the previous summary, and records `outcome` (`ok`, `no_response`, `parse_failed`, `empty_content`) on its per-run record; SuperSummary's status drawer says `error` with `reason: empty_content`. The 11 seed and act bridges stay, still warning.
 
@@ -114,6 +116,7 @@ Summarizes a single Kung Fu Component. Called by the Scheduler for each componen
 12. **Post to Kata cabinet** — if `post_to_kata_cabinet` is true and the monk's output **parsed into a real, non-empty JSON object**, writes it to `kata_cabinet[component_slug]`. The JSON is extracted by first-`{`/last-`}` (surviving code fences and trailing model prose) and validated with `from_json`; a malformed or fence-stripped response is logged as a parse failure and **not written** — a raw non-empty string is never enough, so a bad run can't stamp a fresh timestamp on an empty drawer. Every successful write also stamps `last_run_at` (unix timestamp) unconditionally — unlike `last_emission_at`, which only updates when urgency crosses `drift_threshold`, so an ambient/low-urgency component like Trapper Keeper still shows it actually ran.
 13. **Emit event** — fires `zen_dojotools_event_emitter` with kata/monk excerpt fields
 13a. **Act gate** — when the kata calls for action, `suggested_act_event` passes four checks in order: the infrastructure deny (never the dispatcher or tool router), the `zen_action_emission_enabled` kill switch, the emit cert, then the send. See [The responsible agent and its certs](#the-responsible-agent-and-its-certs).
+13b. **Rollup request (5.9.3)** — when the run's urgency is at or above the component's `drift_threshold`, the Ninja sends `zen_event` `supersummary_request` so SuperSummary picks the change up now (subject to its [minimum gap](#supersummary-run-governor)).
 14. **Escalation (action_required components)** — before emitting a `dojotool_call` to `zen_dojotools_urgency_handler`, checks `zen_dojotools_alertmanager mode=check_ack` with `condition_key` = the component's `kata_key`. A live ack suppresses the escalation and fires `emission_suppressed` (`reason: acked`) instead. Coarse, whole-component suppression — see [AlertManager → Acknowledgements](../components/alertmanager.md#acknowledgements) for the key convention.
 
 ### Response
@@ -157,7 +160,7 @@ The run governor prevents duplicate runs within a configurable burnout window. I
 - If elapsed time since last run is less than `burnout_seconds`, the script stops and fires a `summarizer_run_blocked` event with `reason: dedup_window`.
 - Set `force: true` to bypass the governor for admin overrides or emergency on-demand runs.
 
-**Why it exists:** The Scheduler can fire multiple triggers in a short window (e.g., `ha_start` + `force_summary` near-simultaneously, or rapid home mode changes). Without the governor, a component could run 4–5 times in under a minute, burning through LLM capacity and producing stale-input summaries before state settles.
+**Why it exists:** The Scheduler can fire multiple triggers in a short window (e.g., `ha_start` + a `summary_request` near-simultaneously, or rapid home mode changes). Without the governor, a component could run 4–5 times in under a minute, burning through LLM capacity and producing stale-input summaries before state settles.
 
 **Configuring `burnout_seconds`:** Write to the `zen_ninja_config` drawer in the household cabinet via FileCabinet:
 ```yaml
@@ -259,9 +262,9 @@ Components with `meta.enabled: false` or an unmet `meta.requires` are excluded; 
 
 ## SuperSummary Run Governor
 
-SuperSummary has its own cooldown window separate from the Ninja governor. Controlled by `super_burnout_seconds` in the `zen_ninja_config` drawer in the household cabinet. Default: **600 seconds (10 min)**.
+SuperSummary has its own cooldown window separate from the Ninja governor. Controlled by `super_burnout_seconds` in the `zen_ninja_config` drawer in the household cabinet. Default: **300 seconds (5 min)** (600 before 4.9.2).
 
-If SuperSummary ran less than `super_burnout_seconds` ago, the call returns immediately with `reason: dedup_window`. Set `force: true` to bypass.
+If SuperSummary ran less than `super_burnout_seconds` ago, the call returns immediately with `reason: dedup_window`: a request inside the gap is dropped, not queued, and the next quarter-hour tick picks the change up. `force: true` bypasses it, for maintenance only.
 
 ## Ninja size and context guards
 
@@ -272,15 +275,17 @@ The Ninja checks two limits before it calls the model. Each one refuses the run,
 
 SuperSummary has neither guard. It keeps its prompt small by leaving out ambient- and system-tier components and reading the Trapper Keeper digest instead (see [Pipeline Tier Split](#pipeline-tier-split-v510)).
 
-## Forcing Runs
+## Requesting and Forcing Runs
 
-Use Scheduler force events to trigger on demand. See [Scheduler readme](zen_dojotools_scheduler_readme.md) for full syntax.
+A routine refresh is a request; forces are for maintenance only. See [Scheduler readme](zen_dojotools_scheduler_readme.md#requesting-a-run) for full syntax.
 
 | Event kind | What runs |
 |---|---|
-| `summary_force` | Both Ninja dispatch + SuperSummary (delay skipped) |
-| `ninja_force` | Ninja dispatch only (ha_start scope, delay skipped) |
-| `supersummary_force` | SuperSummary only |
+| `summary_request` | One named component, through the normal gates, no delay |
+| `supersummary_request` | SuperSummary, unless it ran within `super_burnout_seconds` |
+| `summary_force` | Maintenance: `force_summary` subscribers (delay skipped) |
+| `ninja_force` | Maintenance: Ninja dispatch only (ha_start scope, delay skipped) |
+| `supersummary_force` | Maintenance: SuperSummary only |
 
 ---
 
@@ -290,10 +295,11 @@ The Scheduler drives the summarizers automatically. Default trigger wiring:
 
 | Trigger | What fires |
 |---|---|
-| `every_10_minutes` | SuperSummary |
-| `quarter_hour` | Ninja dispatch (per component subscriber) |
-| `ha_start` + `daily_midnight` | Both |
-| `force_summary` | Both (delay skipped) |
+| `quarter_hour` | Ninja dispatch (per component subscriber) and SuperSummary |
+| `ha_start` | Both; launches spaced 30 s apart, and components with no kata are admitted ([cold start](zen_dojotools_scheduler_readme.md#cold-start)) |
+| Any other subscribed trigger | Ninja dispatch for its subscribers |
+| `summary_request` | Ninja for the named component (no delay) |
+| `supersummary_request` | SuperSummary |
 
 Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawer. See [Scheduler readme](zen_dojotools_scheduler_readme.md) and [KFC docs](../kung_fu/readme.md).
 
@@ -355,6 +361,9 @@ Components subscribe to triggers via `trigger_subscriptions` in their Dojo drawe
 
 | Version | Change |
 |---------|--------|
+| Ninja v5.9.3 · SuperSummary v4.9.2 | At `drift_threshold` the Ninja sends `supersummary_request` instead of forcing itself. SuperSummary's default gap is 300 s (was 600). |
+| Ninja v5.9.2 | `max: 10` (was 5). |
+| Ninja v5.9.1 | `max_exceeded: warning` declared. |
 | Ninja v5.9.0 · SuperSummary v4.9.1 | An all-null reply isn't written as a summary (see the note at the top). |
 | Ninja v5.8.1 | The 11 seed bridge is back, with its deprecation warning. 5.8.0 had removed it in the same release its replacement shipped, which would have silenced a tool that seeds only through the old seed whitelist. No retirement date is set. |
 | Ninja v5.7.0 | Refusals are readable. A run refused for `kfc_cert_required`, `seed_cert_required` or `agent_not_onboarded` stamps `last_refusal` {reason, cert, level, stage, why, agent, at} on the component's existing kata (a merge, so the last summary stays); the next successful run replaces the kata and clears it. A seed or act through an 11 legacy list adds `legacy_bridge` to the kata it writes. Agent health and `zen_health_report` read both. |
