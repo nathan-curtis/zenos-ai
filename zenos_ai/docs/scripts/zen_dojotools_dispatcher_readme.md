@@ -1,4 +1,4 @@
-# Zen DojoTool Dispatcher — v5.5.2
+# Zen DojoTool Dispatcher — v5.5.3
 
 > **2026.11.0:** The declared-act route. A tool with no hand-written route is called if its `tool_manifest` declares an `act`: the dispatcher reads the declaration itself and calls only that mode, with only the declared args (enum values checked) plus `kata_input`. The payload never picks the mode, and a hand-written route always wins. See [Declared acts](../kung_fu/building_a_kfc.md#declared-acts).
 
@@ -147,7 +147,7 @@ Listens for `zen_event(kind: identity_manifest_rebuild)` (fired by Provisioner a
 Listens for `zen_event(kind: label_mutation)` (fired by Labels on any successful write). Calls `zen_dojotools_index (mode: build_compact_index)` to rebuild `_compact_index`. Also rebuilds on HA start and at 06:00, 12:00, 18:00, 00:00. Mode: `queued` — burst label ops don't race each other.
 
 ### `zen_scheduler_drain_router`
-Trickle recovery for shed pipeline components. Fires `summary_force` for the most-stale shed-eligible component when queue depth stays below `drain_below` for `s_min_minutes`. Starvation guard at `/10` minutes forces recovery if any component's kata exceeds `s_max_minutes`. Config in `zen_scheduler_config` drawer of household root cabinet. Mode: `single`.
+Trickle recovery for shed pipeline components. Fires `summary_force` for the most-stale shed-eligible component when queue depth stays below `drain_below` for `s_min_minutes`. Starvation guard at `/10` minutes forces recovery if any component's kata exceeds `s_max_minutes`. A kata's age runs from its last successful refresh: `last_run_at` or `generated`, whichever is newer, found by the drawer's `kata_key` (5.5.3, #10746; it read `generated` alone, so current KF6 katas looked stale and were re-run). Candidates carry `ts_source`. Config in `zen_scheduler_config` drawer of household root cabinet. Mode: `single`.
 
 ### `zen_flynn_health_resummarize`
 Fires `summary_force` for `zen_system` whenever `sensor.zen_flynn_health` changes state (not on its per-minute timestamp rewrite), debounced 30s. Ensures kata reflects Flynn recovery or degradation without waiting for the next scheduler cycle. Mode: `single`.

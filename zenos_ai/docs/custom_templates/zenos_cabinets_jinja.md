@@ -1,6 +1,6 @@
 # zenos_cabinets.jinja — Cabinet Macro Library
 
-**Version:** 1.7.0 (introduced in 2026.4.0 'Ectoplasm'; ACL macros, `fc_resolve` and the expansion macros in 2026.11.0 'This Is Spinal Tap')
+**Version:** 1.8.0 (introduced in 2026.4.0 'Ectoplasm'; ACL macros, `fc_resolve` and the expansion macros in 2026.11.0 'This Is Spinal Tap'; mounts that carry their tree in 2026.12.0 'Home Alone')
 **File:** `custom_templates/zenos_ai/zenos_cabinets.jinja`
 **Status:** Stable. Required by `zen_os_1.jinja`, `zenos_health.jinja`, `dojotools_filecabinet`, and any template that reads cabinet drawers.
 
@@ -157,7 +157,7 @@ The one ACL record Identity writes and FileCabinet enforces: VolumeInfo `acls` `
 | dojo | `*` | `@internal` | `@internal` | door |
 | kata | `*` | `@owner`, `@internal` | `@internal` | door |
 | history | `@owner`, `@prime`, `@internal` | `@internal` | `@internal` + ack | door |
-| household, family | `*` | `@prime`, `@internal` | `@prime` + ack | `@owner` + cert `zenos.system.cabinet_admin:1` + ack |
+| household, family | `*` | `@prime`, `@internal` | `@prime` + ack | `*` + cert `zenos.system.cabinet_admin:1` + ack (the cert and the ack are the gate, not ownership; `@owner` before 2026.12.0) |
 | user | `@self`, `@partner`, `@prime`, `@internal` | same | `@partner`, `@prime` + ack | `@owner` + cert + ack |
 | ai_user | `@self`, `@prime`, `@internal` | `@self`, `@internal` | `@self` + ack | `@self` + cert `zenos.identity.acl_take_ownership:1` + ack |
 | scratchpad | `*` | `*` | `*` | `@prime` |
@@ -172,7 +172,7 @@ The one ACL record Identity writes and FileCabinet enforces: VolumeInfo `acls` `
 | Macro | Returns | Description |
 |-------|---------|-------------|
 | `fc_resolve(entity_id, drawer_key, max_hops=8)` | JSON object | `{status, vol, key, depth, visited, reason, loop_at, fc_args, entry[, expanded_root]}`: the real target behind a mount chain. `status` is `absent`, `direct`, `resolved`, `live`, `not_found_in_target`, `unresolvable`, `loop_detected` or `depth_limit_exceeded`. Softlinks and expansions are one chain: at each cabinet, a key it doesn't hold under an expanded root hops into that expansion, and a softlink there is followed on; every hop lands in `visited`. FileCabinet's one mount resolver |
-| `expansion_root_of(entity_id, drawer_key)` | JSON object | `{root, target}`: the nearest ancestor of the key that is a pointer into an expansion this cabinet hosts, and that expansion. Empty strings when there is none. The key itself is not checked |
+| `expansion_root_of(entity_id, drawer_key)` | JSON object | `{root, target, kind}`: the nearest ancestor of the key that is a pointer carrying its tree, and where it points. `kind` is `expansion` (an `expand_drawer` redirect into an expansion this cabinet hosts) or `mount` (a `set_mount` softlink to another cabinet, since 1.8.0); a key under either resolves in the target. Empty strings when there is none. The key itself is not checked |
 | `expansion_plan(entity_id, drawer_key)` | JSON object | What a move, copy or delete of the key touches: `mode` is `self` (the key is an expanded root), `ancestor` (it sits under one), `contains` (its tree holds expanded roots) or `none`, with `roots: [{root, target, scope}]` |
 | `cabinet_hosts_expansion(entity_id)` | String | `true` when any expansion slot is stamped as hosted by this cabinet; a cheap check before building the view |
 | `cabinet_resolved_view(entity_id)` | JSON object | `cabinet_expanded_view` with each pointer into an expansion this cabinet hosts replaced by the drawer the expansion holds: the tree as its owner sees it. Other mount pointers stay. `search` reads it |

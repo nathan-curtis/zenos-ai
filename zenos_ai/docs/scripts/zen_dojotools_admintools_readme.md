@@ -1,6 +1,6 @@
 # Zen DojoTools AdminTools
 
-**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.2.0 · `reset_labels` 1.1.0 · `cabinetadmin` 4.9.0 · `cabinetadmin_factory` 1.1.0 · `prompt_loader` 45.7 · `run_repair` 5.2.0.
+**Script versions** (per-script `tool_manifest`, canonical): `reset_template` 5.2.0 · `reset_labels` 1.1.0 · `cabinetadmin` 4.9.0 · `cabinetadmin_factory` 1.1.0 · `prompt_loader` 48.0 · `run_repair` 5.2.0.
 
 *Ring-2 administrative tools: component registration, cabinet repair, template management, and prompt configuration*
 
@@ -27,7 +27,7 @@ For KFC component registration (writing Dojo drawers), use `zen_dojotools_scribe
 | `zen_admintools_cabinetadmin` | 4.9.0 | No | Inspect, restore, reset, hammer, init, repair_volumeinfo, or reset_all (every cabinet and label, or the Ring-0 cabinets) |
 | `zen_admintools_cabinetadmin_factory` | 1.x | No | Factory-stamp or repair a cabinet's VolumeInfo drawer |
 | `zen_admintools_kfc_migration_press` | 1.1.0 | No | One-time migration: seed scheduling fields into KFC drawers |
-| `zen_admintools_prompt_loader` | 46.0 | No (never exposed) | Load versioned Cortex, Directives, and Purpose (v46 = Open Door (default/latest), v45 = Open Door, v44 = Open Door). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`, the FileCabinet lock via `mode=fc_acl_mode`, and the read-cert switch via `mode=seed_cert_mode` (both console only). Declares `never_expose`: it is never exposed to the agent. |
+| `zen_admintools_prompt_loader` | 48.0 | No (never exposed) | Load versioned Cortex, Directives, and Purpose (v48 = True North (default/latest), v46 = Open Door, v45 = Open Door). Also manages `zen_summarizer_act_whitelist`, `zen_summarizer_seed_whitelist`, and `fc_mount_callout_whitelist` via `mode=whitelist`, the FileCabinet lock via `mode=fc_acl_mode`, and the read-cert switch via `mode=seed_cert_mode` (both console only). Declares `never_expose`: it is never exposed to the agent. |
 | `zen_admintools_run_repair` | 5.2.0 | **No** | Human-confirmed passthrough to identity `acl_migrate` (the one repair action) |
 
 > **KFC registration:** `zen_dojotools_kungfu_writer` has been removed. Use `zen_dojotools_scribe` — see `dojotools_scribe.yaml` for full documentation.
@@ -417,6 +417,7 @@ Run when a cabinet fails identity's ACL schema check (identity answers `acl_sche
 
 | Version | Change |
 |---------|--------|
+| v5.16.0 | prompt_loader 48.0: cortex 48 (True North). ROUTING is the first directive (RULE ZERO is gone): the specialist first, help for a capability you don't recognize, a miss on the native side doesn't mean the thing doesn't exist, a denial ends the action on every route, and a clean return from a tool is not proof the action happened. The cortex carries only what she steers by. `latest` = 48; slot 44 retired (slots 45, 46, 48). |
 | v5.15.1 | An unset `sim_mode_allowed` is stamped on by default; only an explicit off on `input_boolean.zenos_sim_mode_override` stamps false. Intentional: if the switch goes missing, the system fails secure. |
 | v5.15.0 | Help is the default. `prompt_loader`: a bare call or `mode=help` answers help and writes nothing; the load runs only for `mode=load`, and an unknown mode is refused (it used to fall through to the load and re-stamp every prompt slot). `reset_template`, `reset_labels`, `cabinetadmin_factory` and `run_repair` answer `mode=help` like a bare call. |
 | v5.14.0 | prompt_loader 46.0: cortex 46 (Open Door), the same text as 45. `os_release` carries only `cortex`, `cortex_codename` and `pressed_at`. `latest` = 46; slot 43 retired (slots 44, 45, 46). |

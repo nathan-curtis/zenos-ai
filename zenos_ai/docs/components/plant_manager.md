@@ -1,6 +1,6 @@
 # ZenOS-AI Plant Manager
 
-**Version:** 5.13.3. 5.13.3: `hvac_guidance` names how to say which areas an air handler serves (the unit's root label on those areas and its thermostats, read by Room Manager `mode=hvac_coverage`). 5.13.2: name outputs carry `entity_name` and `device_name` next to `friendly_name`. 5.13.0 and 5.13.1: cert names moved to the `zenos.*` namespace, with a plain approval description per cert. 5.12.0: onboarding gate (an agent without `zenos.agent.basic` gets help and `tool_manifest` only). 5.11.2: `managed` attributes a product-linked chore only to the machine that owns that product. 5.8.0 added `leak_auto_shutoff_enable` and the `zen_plant_leak_watch` automation (see below).
+**Version:** 5.15.0. 5.15.0: electrical moves into the codex `zen_codex_plant_electrical`. 5.14.1: the leak watch closes `valve.*` shutoffs as well as switches. 5.14.0: the water codex `zen_codex_plant_water`. See [The Plant codexes](#the-plant-codexes). 5.13.3: `hvac_guidance` names how to say which areas an air handler serves (the unit's root label on those areas and its thermostats, read by Room Manager `mode=hvac_coverage`). 5.13.2: name outputs carry `entity_name` and `device_name` next to `friendly_name`. 5.13.0 and 5.13.1: cert names moved to the `zenos.*` namespace, with a plain approval description per cert. 5.12.0: onboarding gate (an agent without `zenos.agent.basic` gets help and `tool_manifest` only). 5.11.2: `managed` attributes a product-linked chore only to the machine that owns that product. 5.8.0 added `leak_auto_shutoff_enable` and the `zen_plant_leak_watch` automation (see below).
 **Script:** `zen_dojotools_plant`
 
 > **Wiring a whole-panel/circuit-level energy monitor?** See the Plant
@@ -44,13 +44,17 @@ All sections return `available: false` when entities are missing or unavailable.
 | Mode | Description |
 |------|-------------|
 | `overview` | Top-line snapshot: electric, hvac, thermal, water, gas, mechanical, utility registry |
-| `electric` | Full electrical: live watts, billing (daily/weekly/monthly), tariff, grid carbon, panel status |
+| `electric` | Full electrical: live watts, billing (daily/weekly/monthly), tariff, grid carbon, panel status. Runs in `zen_codex_plant_electrical` (5.15.0); `not_configured` without it. |
 | `hvac` | Climate units: mode, setpoint, current temp. Gas utility contact from utility_index. |
 | `water` | Water usage sensor + billing rate + `usage_since` timestamp |
 | `gas` | Live gas sensor if labeled, else graceful N/A + utility contact |
 | `mechanical` | Water heater + sump pump + motors + water_management subnodes (softener, auto-shutoff, leak sensors). Optional `include_inventory=true` calls Grocy `room_brief` for each load area. |
 | `thermal` | Thermal-managed loads distinct from HVAC — hot tub, freezers, generic thermal. Not room air. |
-| `circuits` | Circuit breakdown. Params: `circuit_limit` (default 10), `sort_by` (`energy`\|`current`) |
+| `circuits` | Circuit breakdown. Params: `circuit_limit` (default 10), `sort_by` (`energy`\|`current`). Runs in `zen_codex_plant_electrical` (5.15.0), as does `circuit_draw`. |
+| `water_summary` | One scored, read-only water answer for the `water` component (5.14.0). Needs `zen_codex_plant_water` and `zenos.water.read`. |
+| `water_inspect` | One labeled water entity (5.14.0). Needs `zen_codex_plant_water`. |
+| `electrical_summary` | One scored, read-only electrical answer for the `electrical` component (5.15.0). Needs `zen_codex_plant_electrical` and `zenos.electrical.read`. |
+| `electrical_inspect` | One electrical entity (5.15.0). Needs `zen_codex_plant_electrical`. |
 | `managed` | All Grocy-provisioned machines — chores due, stock summary, products grouped by `ha_labels` root. Any machine bootstrapped via `provision_bom` appears automatically. A chore linked to a product is attributed only to the machine that owns that product; unlinked (area-tagged) chores go to the first matching machine. `managed_labels` scopes to specific machines (CSV). |
 | `validate` | Slot resolution report — entity_id, pinned, raw_state, ok |
 | `label_suggest` | Scans a named integration's entities (`integration=span_panel`, `emporia_vue`, or `zwave_js`) and suggests `zen_plant_*`/`main_panel`/`sub_panel`/`consumed_energy`/`leak_sensor`/`auto_shutoff` labels by device_class + name pattern. Preview-by-default; pass `confirm_action=true` to apply. Scoped to one integration at a time — Plant's domain is house-wide, so a blind device_class scan across every smart plug/appliance would flood with noise. Fills the gap between Room Manager's `label_discover` (area-scoped) and Media Manager's `label_suggest` (room-scoped). `moisture` device_class → `zen_plant_leak_sensor` (high confidence); `valve.*` domain → `zen_plant_auto_shutoff` (high confidence); `switch.*` name-pattern match → `zen_plant_auto_shutoff` (medium confidence — **verify by hand**, a plausibly-named monitoring entity is not the same as a real controllable valve). See [Plant Codex — Emporia Vue](../plugins/emporia_vue_codex.md) / [Plant Codex — SPAN Panel](../plugins/span_panel_codex.md). |
@@ -58,6 +62,21 @@ All sections return `available: false` when entities are missing or unavailable.
 | `unignore` | Remove `zen_plant_ignore` from entity. Param: `target_entity`. |
 | `leak_auto_shutoff_enable` | House-wide gate (`leak_auto_shutoff_enabled=bool`) for the companion `zen_plant_leak_watch` automation — closes every `zen_plant_auto_shutoff`-labeled switch/valve on a real leak. Omit the field to read the current on/off state + which entities are currently tagged (`shutoff_entities`, `leak_sensor_entities`). Default **off** (opt-in): while off, a real leak asks live instead of acting silently — two independent yes/no questions (close now? auto-close future leaks?). Requires the `zenos.plant.auto_shutoff_config_edit` certification (level 1) as of 2026-09-10 (#10390) — see below. |
 | `help` | Full discovery reference (returned inline, no docs needed) |
+
+---
+
+## The Plant codexes
+
+Two read-only scripts carry Plant's water and electrical reads (2026.12.0). Neither is exposed to MCP: Plant dispatches to them when they're installed, and without one, its modes answer `not_configured` and the rest of Plant is unchanged. Neither actuates: nothing in them opens or closes a valve, opens a breaker or sheds a load. Both find everything by label (and, for circuits, by device), with no hardcoded entities.
+
+| Codex | Plant modes | Component | Cert |
+|---|---|---|---|
+| `zen_codex_plant_water` | `water_summary`, `water_inspect` | `water` | `zenos.water.read`, level 1, stages `isl`, in `zenos_agent_advanced` |
+| `zen_codex_plant_electrical` | `electric`, `circuits`, `circuit_draw`, `electrical_summary`, `electrical_inspect`, and the electric block `overview` and `validate` read | `electrical` | `zenos.electrical.read`, level 1, stages `isl`, in `zenos_agent_advanced` |
+
+- **The summaries** score urgency 0 to 5 with reasons, freshness and evidence, and say what is unknown rather than guess. Plant's `kfc_manifest` declares each component only when its codex is installed, and Taskmaster's `facilities_brief` reads both.
+- **Water** reads leak sensors (`zen_plant_leak_sensor`), shutoff valves (`zen_plant_auto_shutoff`, `switch.*` or `valve.*`), flow and usage (`droplet`, `water_usage`, `zen_plant_water`), the softener (`zen_plant_water_softener`) and the sump (`sump_pump`). The water heater is a pointer to `zen_dojotools_water_heater`. Optional tuning lives in the household cabinet drawer `water_config`. `zen_plant_leak_watch` stays the one leak responder; the codex never replaces or races it.
+- **Electrical** reads panels by `main_panel` and `sub_panel`. A circuit is a `*_current` sensor on those labels; its breaker switch and rating are the switch and `*_breaker_rating` sensor on the same device. A circuit counts as high draw only when its rating is unknown or it is past 50% of it. Optional tuning lives in the household cabinet drawer `energy_config` (`high_load_warning_watts`, `anomalous_single_circuit_watts`, `has_co2_sensors`).
 
 ---
 

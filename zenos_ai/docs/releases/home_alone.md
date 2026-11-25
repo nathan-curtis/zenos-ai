@@ -59,15 +59,18 @@ Each one is off until you turn it on, unless it says otherwise.
 
 ## Added
 
-- **Security Manager 5.10.0 to 5.26.2:** readiness, temporary overrides, the activity ledger, `lens`, the Zen Security Sentry, vacuum sync, the occupied-while-away notice, dusk and dawn lighting, arrival lights, exterior covers, the appliance sentry, and `summary` behind `zenos.security.read`. See [Security Manager](../components/security_manager.md#readiness-overrides-and-activity).
-- **Autovac 5.8.0 to 5.12.0:**
+- **Security Manager 5.10.0 to 5.29.0:** readiness, temporary overrides, the activity ledger, `lens`, the Zen Security Sentry, vacuum sync, the occupied-while-away notice, dusk and dawn lighting, arrival lights, exterior covers, the appliance sentry, a camera look when a watched cover opens, the weather close on any `cover_close_signal`, and `summary` behind `zenos.security.read`. See [Security Manager](../components/security_manager.md#readiness-overrides-and-activity).
+- **Autovac 5.8.0 to 5.14.2:**
   - its own scored component, behind `zenos.autovac.status`;
+  - `swap_robot`: replace your robot vacuum, and Autovac moves to the new one and keeps the old one's maintenance records;
+  - the Roborock Qrevo Edge 3 Pro parts catalog; a part not confirmed for the exact model is tracked but never reordered;
+  - a cleaning run you started that never actually began is reported;
   - schedules added, edited and removed from the tool;
   - `stop` and `run_state`;
   - `run_on_away`;
   - the vacuum's security settings.
 
-  See [Autovac](../components/autovac.md#run-on-away).
+  See [Autovac](../components/autovac.md#replacing-the-robot).
 - **Weather 1.0 (new):** current conditions, the forecast by day part, and scored hazards for freeze, heat, storm, wind, rain and snow, behind `zenos.weather.read`. The source is the entity labeled `main_weather`. See [Weather](../scripts/zen_dojotools_weather_readme.md).
 - **Climate 2.3.0 to 2.5.1:** a scored summary and the `climate` component, and the envelope offer. Room Manager's `hvac_coverage` says which rooms each air handler serves. See [Climate](../scripts/zen_dojotools_climate_readme.md).
 - **Taskmaster 0.10.0:** briefing and almanac read the Weather tool: the next 24 hours' high and low, and hazards with when they start. See [Taskmaster](../kung_fu/taskmaster.md).
@@ -89,6 +92,8 @@ Each one is off until you turn it on, unless it says otherwise.
 
   See [SystemTools](../scripts/zen_dojotools_systemtools_readme.md).
 - **Labels 5.11.0, 5.11.1:** tagging or untagging through the tool re-arms the watchers that read that label. Labeling in the Home Assistant UI still needs the watcher turned off and on.
+- **Plant 5.14.0 to 5.15.0:** water and electrical summaries, the `water` and `electrical` components, behind `zenos.water.read` and `zenos.electrical.read`, from two new Plant codexes. See [The Plant codexes](../components/plant_manager.md#the-plant-codexes).
+- **FileCabinet 6.41.0:** `list` and `fleet` report drawer sizes, so you can see what fills a cabinet. See [FileCabinet](../scripts/zen_dojotools_filecabinet_readme.md#list).
 
 ---
 
@@ -121,13 +126,15 @@ Grocy handles tare weights, but it expects every stock write as the total on the
   - It's built from the summaries you have on, so it picks up their new read certs:
     - `zenos.security.read` (the security summary now seeds from Security Manager's own `summary`);
     - `zenos.autovac.status`, `zenos.weather.read`, `zenos.climate.read` and `zenos.spa.read`;
+    - `zenos.water.read` and `zenos.electrical.read`, for the Plant summaries;
     - with the Zammad plugin, `zenos.service.read`;
     - with the Twenty plugin, `zenos.rolodex.read`, and with Paperless, `zenos.library.read`. These two are in no standard bundle, because guest stays and file names can be personal, so only parity or a single grant gives them.
   - An existing grant doesn't gain new members by itself.
   - With `seed_cert_mode` on enforce, a summary whose cert is missing stops. In audit, the default on an upgrade, it logs `seed_cert_audit` and keeps running.
 - **Restart, or run `zen_dojotools_systemtools mode=zen_resolver_refresh`, after upgrading.** Room timers now expire through Home Assistant's `timer.finished` trigger on their labels, and a TV sleep timer gets its new `tv_sleep_timer` label at the next resync. Until then, the TV sleep timer doesn't start.
-- **Reload automations, wait, then reload scripts.** Autovac's controller and the new watchers need the automations first.
+- **Reload automations, wait, then reload scripts, then reload custom templates.** Autovac's controller and the new watchers need the automations first, and cabinet mounts need the new cabinet templates.
 - **Two new automations:** the Zen Security Sentry and the Zen Climate Envelope Watcher.
+- **Autovac's `clean` answers `dispatched`, not `ok`.** Anything that reads `ok` from it needs updating.
 - **Includes 2026.11.1,** with its security fixes.
 
 ---
@@ -142,7 +149,12 @@ Grocy handles tare weights, but it expects every stock write as the total on the
 - **The security background summary seeds from Security Manager's `summary`.** It used to seed from Room Manager's `home_overview`. It needs `zenos.security.read`.
 - **One weather label, `main_weather`, picks the weather source for every tool:** Weather, Room Manager's `home_overview`, Taskmaster and the dashboard sensors. `zen_weather` is still read.
 - **Room timers expire on their labels.** They used to expire on Home Assistant's event for every timer. TV sleep timers are found by the `tv_sleep_timer` label, applied at resync.
+- **Friday's start-up context is about 29% smaller, and she routes every request through one rule:** the right specialist first, and a refusal is final. That's Cortex 48, 'True North'. See [AdminTools](../scripts/zen_dojotools_admintools_readme.md).
+- **The agent switches any helper toggle or switch you ask for,** even ones not exposed to Assist.
+- **A mount carries its whole tree.** A drawer under a link to another cabinet now lives in that cabinet, and a link is never written over data that would leave it split between two. See [FileCabinet](../scripts/zen_dojotools_filecabinet_readme.md#virtualdrawer-mount-point).
+- **Household and family cabinet admin (expand, mount, ACL) is open to anyone holding `zenos.system.cabinet_admin` with the live approval,** not only the owner. Personal cabinets stay owner-only.
 - **Autovac:**
+  - Exactly one vacuum may carry the `autovac` label. With two, Autovac uses neither.
   - A bare call answers help (it answered `status`).
   - The pre-run briefing push and the run confirmations are settings, off on a fresh setup and kept on for an upgraded one.
 
@@ -162,6 +174,14 @@ Grocy handles tare weights, but it expects every stock write as the total on the
 - **SystemTools' `scheduler_anchors` repairs anchors a reset left at 00:00.** Every set was refused.
 - **Text answers a number as text.** A value like `"18"` reported an error after it had been written.
 - **Climate's `read` reports `hvac_mode`.** It was always null.
+- **History and room occupancy really move to their cabinets.** A link to another cabinet redirected only its own key, so `history` and `room_occupancy` drawers stayed in the household cabinet. Flynn and Room Manager now create their roots in the target, and Room Manager `setup` moves the data before it links.
+- **Autovac never empties its drawer.** After the drawer was expanded, the controller read it without following the mount and wrote empty rooms back. It now reads through the mount, and nothing writes over a drawer it couldn't read.
+- **A covers set that was refused says so.** It answered success around the refusal.
+- **The background summaries stop re-running fresh components.** The recovery router aged every summary from its creation time.
+- **Setting up a robot's parts no longer puts several parts on one product,** and finds a location on a house with more than 500.
+- **Editing a Grocy chore can turn it off or set its amount to 0.**
+- **The leak watch closes shutoff valves,** not only switches.
+- **A removed component no longer stops the Kung Fu bootstrap.**
 - **Editing a stock entry's best-before date saves.** Inventory's `stock_entry_update` addressed the entry in a way Grocy refused, then reported the values you asked for as saved. It now writes to the right entry and reads it back from Grocy before reporting success.
 
 ---

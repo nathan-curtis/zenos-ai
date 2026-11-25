@@ -1,6 +1,6 @@
 # ZenOS-AI Grocy ERP Plugin
 
-**Version:** 5.9.7
+**Version:** 5.9.10
 **Script:** `zen_dojotools_inventory`
 **Status:** Live (production)
 
@@ -148,7 +148,7 @@ Features: endpoint normalization, pagination, query search, path parameter injec
 | Mode | Description |
 |------|-------------|
 | `locations_list` | All Grocy locations with metadata |
-| `locations_find` | Find location by name or ID |
+| `locations_find` | Find location by name or ID. A name asks Grocy for matching locations (5.9.9); it read only the first 500. |
 | `locations_get_by_area` | All Grocy locations tagged to a HA area |
 | `locations_add` | Create a new location. Dupe guard: CI substring match blocks creation; `confirm_action: true` bypasses. |
 | `locations_metadata_set` | Write userfield metadata to a location (area binding, subclass, parent ID, priority) |
@@ -208,7 +208,7 @@ The integration maintains a parent-child map derived from ground truth on each r
 | `chores_execute` | Mark a chore complete |
 | `chores_undo` | Undo the most recent chore execution (requires execution_id from chores_log) |
 | `chores_add` | Create a new chore |
-| `chores_edit` | Edit an existing chore by ID — strips `userfields` and `row_created_timestamp`, maps `amount` → `product_amount` as fallback |
+| `chores_edit` | Edit an existing chore by ID — strips `userfields` and `row_created_timestamp`, maps `amount` → `product_amount` as fallback. `active: false`/`0` and `product_amount: 0` are honored (5.9.10). |
 | `chores_delete` | Delete a chore by ID |
 | `chores_by_area` | Find chores linked to a HA area — dual discovery: (1) products stocked in area, (2) chores tagged with `homeassistant_area` userfield |
 

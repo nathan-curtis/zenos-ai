@@ -1,4 +1,6 @@
-# Zen DojoTools FileCabinet — v6.40.0
+# Zen DojoTools FileCabinet — v6.43.0
+
+> **2026.12.0 (6.41.0 to 6.43.0):** every cross-cabinet mount carries its whole tree: a key under a softlink resolves in the target, as one under an expanded root already did. A mount pointer is refused (`split_tree_refused`) where it would leave a tree's data in two cabinets. `list` and `fleet` report drawer sizes for cabinet triage. See [VirtualDrawer](#virtualdrawer-mount-point), [`set_mount`](#set_mount) and [`list`](#list).
 
 > **2026.11.1 (6.39.0, 6.40.0):** a live KFC mount honours its own stored `meta.enabled`, so Scribe can turn every component on and off, tool-owned mounts included. The wiki stack stays optional: every call into `zen_sutra_wikijs` is skipped when that plugin isn't installed, so the bare call, `tool_manifest` and every cabinet operation work without Wiki.js (`stack=wiki` answers `stack_not_available`).
 **File:** `zen_dojotools_filecabinet_readme.md`
@@ -234,6 +236,10 @@ A VirtualDrawer has `mount_point: true` in its `value`:
 
 Mount traversal is a redirect, not execution. `get`, `create`, `update` and `upsert` resolve the whole chain once (CABS `fc_resolve`, up to 8 hops) and act on the real target. A chain that loops, runs too deep or has no target refuses with `mount_traversal: {status, reason, loop_at, depth, visited}`. Delete, move, copy and the mount commands act on a softlink itself; the pointers `expand_drawer` leaves behave differently (see [Expansions](#expansions--expand_drawer-and-collapse_drawer)).
 
+**A softlink carries its whole tree** (6.42.0, CABS 1.8.0). A child path under a softlink to another cabinet resolves in the target: writes land there, and `get`, `list`, `move`, `copy` and `delete` reach it. The ACL gate checks the target for delete, move, copy and relabel. Deleting a softlink removes the link and never touches the target's data, and no teardown touches a softlink target. Before 6.42.0 only the softlink's own key was redirected, so `history/<x>` under the history mounts stayed in the parent cabinet.
+
+**No split trees** (6.43.0). A mount pointer written over a key that has data at or under it, through `set_mount` or a raw pointer `create`/`update`/`upsert`, is refused with `split_tree_refused` before anything is written; `force_action` doesn't bypass it. Move the data first. Removing or repointing a pointer is still allowed, and `fleet` reports an existing split as a broken mount.
+
 Softlinks and expansions are one chain. At any cabinet on the way, a key under an expanded root hops into that expansion, and a softlink there is followed on. Softlinks from and to expanded drawers are normal.
 
 Mounts are set with `set_mount` (requires `key` + `target_guid`). They are removed with `remove_mount`. The `clone` action copies mount point drawers through to the destination (noted in the response as `mounts_copied`).
@@ -385,7 +391,7 @@ Read a specific drawer (alias `read`). Returns `value`, `tags`, `updated_at`, th
 Mount traversal is transparent — if the drawer is a VirtualDrawer, FC follows the chain and returns the resolved value with `mount_traversal` metadata. If it is a LiveDrawer with a warm cache hit, FC fires the tool call and returns the result.
 
 ### `list`
-List all non-system drawers in a volume. Supports `path_prefix` to filter by key prefix. Returns `key`, `title`, `description`, `created_at`, `updated_at` for each drawer.
+List all non-system drawers in a volume. Supports `path_prefix` to filter by key prefix. Returns `key`, `title`, `description`, `created_at`, `updated_at` and `bytes` for each drawer, `tree_bytes` for a drawer with children, plus `total_bytes` and the ten largest keys (6.41.0).
 
 ### `create`
 Requires `path` and `value` (or `title`/`description`). Errors if the key already exists — use `upsert`, or `force_action: true` to overwrite the whole drawer.
@@ -436,6 +442,7 @@ Creates a VirtualDrawer or LiveDrawer at the specified key.
 - Tool-call (LiveDrawer) mount: requires `key` + `fc_args`
 - Blocked if `target_guid` resolves to the same volume (loop guard)
 - Blocked if the key exists and is not already a mount point, unless `force_action: true`
+- Refused with `split_tree_refused` when the key has data at or under it in this cabinet; `force_action` doesn't bypass it (6.43.0)
 
 ### `remove_mount`
 Removes a mount point drawer. Errors if the key does not exist or is not a mount point. Refuses the pointers `expand_drawer` made; use `collapse_drawer`, `move` or `delete`.
@@ -1062,7 +1069,7 @@ Tapestry is how you build a composed knowledge surface from multiple live drawer
 
 | Mode | What It Does |
 |------|-------------|
-| `fleet` | Lists all known cabinet volumes with health, mount state, GUID, and capacity. System-wide view. |
+| `fleet` | Lists all known cabinet volumes with health, mount state, GUID, and capacity. System-wide view. Names the five largest drawers of any cabinet over 70% full (6.41.0), and reports a split tree as a broken mount (6.43.0). |
 | `expansion_sitrep` | Returns the status of all expansion cabinet mounts: which are online_mounted, which are online_unmounted (stacks), which have pending mount activation, what each slot holds, and how full it is. |
 
 ---

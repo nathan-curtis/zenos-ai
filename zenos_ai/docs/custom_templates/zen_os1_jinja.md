@@ -5,6 +5,8 @@ Technical Specification & Prompt Loader Requirements
 Version: 2026.8.1
 Status: Stable & Required for All Front-Line Agents
 
+> **2026.12.0 (#10745):** the boot prompt is smaller and says how fresh it is. `render_prompt` serializes its eight sections with Home Assistant's `to_json(sort_keys=True)` instead of Jinja's `tojson`, which is ASCII-only and HTML-escapes (every em dash and apostrophe cost 6 characters); content and key order are unchanged. Kata rows carry only what tells components apart (`enabled` only when false; a friendly name, label or description dropped when it repeats the ID or name), carry `unobserved: true` for a component that never wrote a kata and `stale_h` once a kata is over 24 hours old. The boot digest carries `age_minutes`, and `stale` past 3 hours. The wake scene and console lines use the persona's own pronouns (`persona_pronouns(jacket)`; none set reads "she"). Unknown `kung_fu` stays out of the prompt. With Secret Squirrel off, its block is one line. `prompt_length_audit()` measures each section after the final serialization, so its total tracks `render_prompt` to within about 300 characters, and adds `checks` (`ready_to_adventure`, `wake_present`).
+
 > **2026.7.0:** Version scheme changed from semantic (e.g. `4.5.5`) to date-based (`YYYY.M.patch`) aligned with Home Assistant release conventions. `{%- import 'zenos_ai/flynn_onboarding.jinja' as flynn %}` added at the top of the template. `~COMMANDS~` / `command_interpreter.jinja` interface fully retired — replaced by `zen_dojotools_library` + KFC. Library Commands Window removed from the prompt.
 
 

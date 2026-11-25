@@ -1,4 +1,6 @@
-# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.4.6
+# Flynn — Stepgate Sentinel & Bootstrap Engine — 5.4.7
+
+> **2026.12.0 (5.4.7):** each mounted history cabinet gets its `history` root drawer, the drawer the parent's history mount points at. It was never created, so `fleet` showed the history mounts as broken. A missing root counts as history work, so an existing install gets it on the next pass.
 
 > **2026.11.1 (5.4.2 to 5.4.6):** the Sentinel's boot calls into identity (household and family membership, partner links, the identity manifest, the ACL migration, the cert cache refresh and the persona name write) go through its own admin door, [`zen_admintools_identity_writer`](zen_admintools_identity_writer_readme.md), not the agent-facing Identity tool, so gating Identity can't stop a boot. Flynn starts the KFC bootstrap (found by its automation id, so a fresh install's entity name doesn't matter) once the Dojo cabinet is online and holds no component, so a fresh or reset install needn't wait until 00:01 for its components. If none appear, run `zen_dojotools_manifest mode=bootstrap_kfc`.
 

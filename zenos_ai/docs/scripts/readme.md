@@ -192,14 +192,14 @@ Universal, contract-safe telemetry tool for emitting structured ZenOS-AI events 
 
 ---
 
-## 16. Zen DojoTools FileCabinet — v6.40.0
+## 16. Zen DojoTools FileCabinet — v6.43.0
 **File:** [`zen_dojotools_filecabinet_readme.md`](zen_dojotools_filecabinet_readme.md)
 
 Authoritative, health-aware read/write controller for all Cabinet Volumes. Supports create/update/delete, cross-volume move/copy, label indexing, directory listings, JSON-safe parsing, concurrency protection, and health validation. CabCeption nested drawer trees via `/` path separator. VirtualDrawer (cross-cabinet redirect) and LiveDrawer (tool-call-on-read with warm/cold cache). **Tapestry** (`weave`/`weave_preview`/`weave_save`) — multi-cabinet drawer composer; definitions stored as labeled drawers; cycle detection; depth 3 unrolled. `move`/`copy` blocked on mounted drawers by default (`force_action=true` required to transfer mount config intact). `fleet` + `expansion_sitrep` modes. Mode-scoped `tool:mode` callout whitelist entries (KF5 self-registration support) alongside legacy plain/`tool:*` forms. Single exit per action, honest `write_unverified` answers, every write a stated merge or replace, an ACL gate that checks every hop of a mount chain (enforced on a fresh install; audit on an upgrade until the console switch, `prompt_loader mode=fc_acl_mode`), and expansions (`expand_drawer` / `collapse_drawer`) that move a root drawer and its tree to an expansion slot as a permanent redirect. If a drawer changed anywhere in ZenOS-AI, it happened through FileCabinet or the admin door.
 
 ---
 
-## 17. Zen DojoTools Manifest — v6.18.0
+## 17. Zen DojoTools Manifest — v6.18.1
 **File:** [`zen_dojotools_manifest_readme.md`](zen_dojotools_manifest_readme.md)
 
 System manifest broker. Entity namespace scanning (`zen_dojotools_*`, `zen_stack_*`, `zen_sutra_*`). Modes: `cabinets` (zero-persistence cabinet health scanner), `tools`, `identity`, `labels`, `automations`, `audit`, `audit_help`, `health`, `health_refresh`, `autotag`, `publish`, `mcp_sync`, `bootstrap_stacks`, `bootstrap_kfc`, `domains`, `all`. `bootstrap_stacks` auto-registers Lens Bus providers including `script.zen_dojotools_library`. `bootstrap_kfc` auto-registers KF6 self-declaring tools — see [Building a KFC — KF6](../kung_fu/building_a_kfc.md#kf6-two-ways-in-one-contract). Domain routing table maps domains to authoritative scripts (now built dynamically from `label_entities('zen_domain_*')`, not hardcoded). UMP `tool_manifest` contract supported.
@@ -241,7 +241,7 @@ Unified household communications layer. Supersedes `zen_dojotools_notification_r
 
 ---
 
-## 22b. Zen DojoTool Dispatcher — v5.5.2
+## 22b. Zen DojoTool Dispatcher — v5.5.3
 **File:** [`zen_dojotools_dispatcher_readme.md`](zen_dojotools_dispatcher_readme.md)
 
 Event-driven inter-tool communication layer — fires `zen_event(kind: dojotool_call)`, routes through a single registered `choose` arm per tool, fires correlated `dojotool_return`. Unregistered tools get a structured `unknown_tool` fault instead of a hard crash. Single-automation architecture since v5.2.0 (2026.6.0) — the old two-tier dispatcher/tool-router split and its `dojotool_route` event are gone. v5.3.0 (2026.7.1) removed the dead `zen_dojotools_notification_router` compat arm (no backing script existed) and added `zen_stack_battery`.

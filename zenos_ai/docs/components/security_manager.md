@@ -1,6 +1,6 @@
 # ZenOS-AI Security Manager
 
-**Version:** 5.26.2
+**Version:** 5.29.0
 
 > **2026.12.0 (5.10.0 to 5.26.2): the foundation, vacuum sync, lighting, exterior covers and the appliance sentry.** Four new reads, no cert: `readiness`, `override_list`, `activity` and `lens`. A record for temporary overrides and an activity ledger, with internal actions that only automations can call. A second automation, the Zen Security Sentry, ends overrides on time. The first behavior built on it is vacuum sync, off by default: with `vac_arm_override_enabled` on, the panel goes from Away to Home while the vacuum cleans and back to Away at the dock. An optional notice when a room reads occupied while armed Away, security lighting at dusk and dawn, and arrival lights after dark, each off by default. While an override is in force the agent knows it (one Priority Inject line). The appliance sentry tells the household when a labeled appliance has been on with nobody home (off by default). Exterior covers (garage doors and gates) left open, at Night, or in damaging wind can be offered a close, closed, or reported, by setting, each off by default; in a secure stance (armed, or Away or Night) a cover left open closes when nobody answers. `auto_arm_config` with no patch now reads the settings. See [Readiness, overrides and activity](#readiness-overrides-and-activity), [Occupied while away](#occupied-while-away) and [Exterior covers](#exterior-covers-5230).
 

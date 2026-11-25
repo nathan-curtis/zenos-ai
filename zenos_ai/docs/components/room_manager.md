@@ -1,6 +1,8 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.20.1
+**Version:** 5.20.3
+
+> **2026.12.0 (5.20.2, 5.20.3):** `setup` creates the `room_occupancy` root drawer in the target cabinet, and moves its data with the location: every `room_occupancy` drawer the household holds is copied to the target and compared value for value before the household originals are removed and the pointer written. A conflict, an unconfirmed copy or an unfinished removal stops `setup` with no pointer written, so the tree is never split between two cabinets.
 
 > **2026.12.0 (5.20.1):** `home_overview` finds the weather entity by `main_weather` first (the Weather tool's label) and still reads `zen_weather`, so one label serves every tool.
 

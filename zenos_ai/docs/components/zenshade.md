@@ -1,7 +1,9 @@
 # ZenOS-AI ZenShade — Cover Manager
 
-**Version:** 6.1.0
+**Version:** 6.3.3
 **Script:** `zen_dojotools_covers`
+
+> **2026.12.0 (6.3.3):** a set refused by cert scope or a barrier answers `status: denied`, not a `success` wrapped around an inner denial, so the agent never reads a refused action as done.
 **Codename:** ZenShade
 
 ---

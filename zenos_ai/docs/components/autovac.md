@@ -1,9 +1,11 @@
 # ZenOS-AI AutoVac
 
-**Version:** 5.12.0
+**Version:** 5.14.2
 **Script:** `zen_dojotools_autovac`
 
 > **2026.12.0 (5.8.0 to 5.12.0):** a bare call answers help (it answered `status`). `mode=summary` is a scored read for the `autovac` component, behind the new read cert `zenos.autovac.status`. Schedules can be added, edited and removed from the tool. The pre-run briefing push and the run confirmations are settings, off on a fresh setup and kept on for an upgraded one. A run can be stopped (`mode=stop`) and read (`mode=run_state`), the new option `run_on_away` (off by default) runs what's due once the house goes Away, and the vacuum's two security settings show and edit here. See [The autovac component](#the-autovac-component), [Editing schedules](#editing-schedules), [Notices](#notices), [Run on Away](#run-on-away) and [Security options](#security-options).
+
+> **2026.12.0 (5.13.0 to 5.14.2):** `mode=swap_robot` moves Autovac to a replacement vacuum and keeps the old one's records; exactly one vacuum may carry the `autovac` label. `clean` answers `dispatched`, and a run that never starts is reported. A drawer that exists but can't be read is never overwritten, and the controller reads the drawer through its mount. Maintenance tickets belong to the physical robot. New preset `roborock_qrevo_edge_3_pro`. See [Replacing the robot](#replacing-the-robot) and [Provisioning](#provisioning).
 
 ---
 
@@ -70,7 +72,7 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 | `mark_cleaned` | Manually record a room as cleaned today |
 | `pause` | Pause all scheduled runs for today |
 | `unpause` | Clear today's pause |
-| `clean` | Immediate clean by room slug(s) — vacuum must be docked or idle |
+| `clean` | Immediate clean by room slug(s) — vacuum must be docked or idle. Answers `dispatched`: the robot accepting the call is not the robot starting. A background check waits up to 90 seconds; if the robot never starts it clears the run and pushes "Run Didn't Start". |
 | `run` | Schedule-triggered run — evaluates election, guards, dedup |
 | `run_elected` | Run all currently elected rooms (bypasses schedule dedup) |
 | `run_away` | Run what the next election would run, now, because the house is empty. The controller calls it five minutes after the home mode turns Away when `run_on_away` is on. See [Run on Away](#run-on-away). Requires `zenos.autovac.operate`. |
@@ -84,6 +86,7 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 | `maintenance_set` | Mark the robot out of service. `input_json`: `{reason, ordered_part, eta, note}`. Opens a Radar ticket, or amends the open one. Requires `zenos.autovac.operate`. See [Maintenance status](#maintenance-status). |
 | `maintenance_clear` | Return the robot to service by closing its open maintenance ticket. Requires `zenos.autovac.operate`. |
 | `maintenance_get` | Current maintenance status: whether an open maintenance ticket exists, and its reason, ordered part, and ETA. |
+| `swap_robot` | Replace the robot: `action=plan` (the default, read only), `commit`, `finish`, `rollback`, `status`. See [Replacing the robot](#replacing-the-robot). |
 | `nightly_reset` | Reset daily run flags and pause state (call at midnight) |
 | `morning_reset` | Clear `is_ready` flags after morning run starts |
 | `schedule` | Day-resolved schedule summary — see [Scheduling](#scheduling) |
@@ -119,6 +122,28 @@ Schedules are discovered dynamically from `autovac_schedule` label — add or re
 Out-of-service status has no cabinet drawer. It is derived on each call from whether an open Radar (Zammad) ticket tagged `autovac`, `<robot_slug>`, and `maintenance` exists, so the ticket is the single source of truth. `robot_slug` is the robot's `robot_name` from the `grocy_catalog` cabinet key (the same identity `consumables` and `check_wear` use), slugified.
 
 The structured fields (`reason`, `ordered_part`, `eta`) are stored as `key=value` lines in the ticket's latest article. `status` and `health` both include a `maintenance` key. Only the modes that need it query Radar, so a Zammad outage does not block cleaning. `briefing` does not report maintenance status yet.
+
+With a fleet registry (after a `swap_robot`), a ticket also carries an `avrobot_<key>` tag and is matched by the active robot's key, so a retired robot's open ticket never takes the new one out of service. Without a registry the robot-slug match stays. `swap_robot action=plan` lists the old robot's open maintenance tickets.
+
+---
+
+## Replacing the robot
+
+`mode=swap_robot` moves Autovac from one vacuum to its replacement. Rooms, schedules and `last_cleaned` stay as they are, and nothing is cleaned during a swap.
+
+| Action | What it does |
+|---|---|
+| `plan` | The default, read only. `new_entity_id=vacuum.<new>` (and `old_entity_id`, by default the vacuum Autovac uses now). Shows both robots, blockers, warnings and the `autovac` label moves. |
+| `commit` | Needs `zenos.autovac.setup` and `confirm_action=true`. Turns Autovac off, files the old robot and its catalog as retired in the `autovac_fleet` drawer, moves the labels and clears the active catalog. `config={"label_map": {"<old entity>": "<new entity>"}}` pairs entities the names don't. |
+| `finish` | `confirm_action=true`. Restores the prior enabled value and returns a `safe_to_decommission` checklist. |
+| `rollback` | `confirm_action=true`. Labels and catalog go back on the old robot; Autovac stays off if the old robot is unavailable. |
+| `status` | The registry and any swap in progress. |
+
+Between `commit` and `finish`: give the new robot a Home Assistant area, map its segments to areas in Home Assistant, then run `mode=consumables action=provision model_preset=<key>` for its own catalog.
+
+- **One robot at a time.** Exactly one vacuum may carry the `autovac` label. With two, Autovac uses neither and reports `duplicate_autovac_label`.
+- **The `autovac_fleet` drawer** holds the robot registry and the swap record, apart from the `autovac` drawer (every write to that drawer replaces its root). History keeps the last 10 swaps, each a compact entry.
+- **An unreadable drawer is never overwritten.** When the `autovac` drawer exists but a read doesn't come back as a real drawer, the read is retried once, then every writing mode refuses with `drawer_unreadable` and an `autovac_drawer_unreadable` event records the read status and mount traversal. Read-only modes still answer.
 
 ---
 
@@ -281,6 +306,10 @@ For end-to-end commissioning, including Postman policy setup and Grocy prerequis
 4. Calls `provision_bom` — handles unit resolution, product create/find, meta update (`to_location_id`, `move_on_open`, `due_days_after_open`), HA label tagging (`autovac,autovac_part`), chore create/find, chore tagging (`autovac,autovac_chore`), and installed stock seed — all in one call per part
 5. Maps `autovac_wear` labeled sensors to catalog part keys
 6. Sends a Postman notification to log any additional spares on hand
+
+Provision refuses a vacuum with no Home Assistant area, never takes a Home Assistant device ID as a serial number, reads wear sensors only from the robot's own device, and refuses to overwrite another robot's catalog. It reads the drawer back and answers `catalog_not_saved` if the catalog didn't save.
+
+A preset part can record the evidence for its fit in `compatibility_state`. A part reorders only when its fit is `exact_confirmed` (the default for a part with no `compatibility_state`); any other part is tracked but never reordered. A part with no wear threshold gets no wear arithmetic. `roborock_qrevo_edge_3_pro` is the first preset that records its evidence.
 
 After provisioning, `catalog_find_by_tag ha_labels=autovac` returns all robot products and chores in one call. Use `autovac_part` or `autovac_chore` to narrow.
 

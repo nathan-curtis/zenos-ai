@@ -1,4 +1,6 @@
-# Zen DojoTools Manifest — v6.18.0 (ZenOS-AI 2026.11.1)
+# Zen DojoTools Manifest — v6.18.1 (ZenOS-AI 2026.12.0)
+
+> **2026.12.0 (6.18.1):** `bootstrap_kfc` scans only provider scripts that exist. A removed provider's orphaned registry entry kept its label, and the call to it ended the bootstrap.
 
 > **2026.11.1 (6.17.0, 6.18.0):** `cert_audit` derives the `zenos_agent_onboarding` bundle (basic, steward and parity), the one common set Flynn's OOBE asks for first. `bootstrap_kfc` compares a tool's declared seed with the stored mount's and rewrites the mount when it changed, so a corrected seed reaches an existing install.
 
