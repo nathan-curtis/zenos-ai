@@ -1,7 +1,22 @@
 ###############################################################################
 # ZenOS-AI Plugin: Zammad — Fulfillment (Service Desk / Help Tickets)
 # Codename: Radar
-# Version: 0.6.3
+# Version: 0.8.0
+# v0.8.0: ready_to_close (#10773, item 3): does one ticket (subject= its number) look ready to
+#   close (ready/not_ready). The bind reads that ticket (ticket_get, a parallel self-call): its
+#   title, state, priority, age and the last four articles (audit receipts left out, bodies cut
+#   to 400 characters). A ticket that is not found, or already closed or merged, is refused.
+#   Advice only: nothing is closed.
+# v0.7.0: KF6.5 host (Oracle, #10773). Additive: no existing case changes. mode=decision lists
+#   the Service Desk's decision templates (zero inference); mode=decision_bind (called by
+#   Oracle) checks the template, the scope (the desk only; an area is unsupported_scope) and
+#   zenos.service.read, runs mode=summary (a parallel self-call), and returns the evidence.
+#   triage_needed: do the new tickets need someone's triage now. stalled_resurface: should the
+#   stalled open tickets be surfaced again. Both attention/nominal. The rules come first,
+#   without a model: a desk that is unreachable or not configured is insufficient_evidence, an
+#   escalated ticket is always attention for triage_needed (routing and priority policy are
+#   never judged away), and nothing new or nothing stalled is nominal. Advice only: nothing
+#   is closed, assigned or changed. New cert zenos.decision.component.servicedesk.
 # v0.6.3: summary on an install where Zammad is not configured scores not_configured
 #   (0), not servicedesk_unreachable (3), so a house without a service desk is not nagged.
 # v0.6.2: zenos.service.read is in the zenos_agent_advanced bundle (with the other
@@ -183,7 +198,14 @@ script:
             - object_attribute_create
             - radar_setup
             - ticket_assign
+            - decision
+            - decision_bind
         default: help
+      decision_template:
+        name: Decision Template
+        description: "decision_bind only: the decision template id (Oracle binds it; mode=decision lists them)."
+        selector:
+          text:
       input_json:
         name: Input JSON
         description: Structured JSON payload for case inputs.
@@ -229,6 +251,10 @@ script:
             intent: One scored answer about the open work (read-only). urgency 0-5, action_required at 3, reasons (escalated, servicedesk_unreachable, high_priority_new, reminder_due, new_tickets, stale_open), attention with ticket numbers and titles, counts. The seed of the servicedesk KFC; asking needs no cert, the background summary needs zenos.service.read.
           kfc_manifest:
             intent: The servicedesk KFC definition, consumed by zen_dojotools_manifest mode=bootstrap_kfc.
+          decision:
+            intent: "KF6.5: the Service Desk's decision templates (triage_needed, stalled_resurface, ready_to_close subject=<ticket number>). Zero inference. Decide through zen_dojotools_oracle mode=decide host=servicedesk decision_template=<id>."
+          decision_bind:
+            intent: "KF6.5, called by Oracle: binds the evidence for a template (read only; needs zenos.service.read)."
           ticket_list:
             intent: List tickets. Optional state_filter (open/closed/all, default open).
             optional: [input_json.state_filter, input_json.limit (default 25), input_json.page (default 1)]
@@ -339,6 +365,72 @@ script:
     - variables:
         input_data: "{{ input_data | combine({'body': _close_note}) if (case_norm == 'ticket_close' and _close_note != '') else input_data }}"
         case_norm: "{{ 'ticket_complete' if (case_norm == 'ticket_close' and _close_note != '') else case_norm }}"
+    # KF6.5 decision declaration (the host owns its templates). Read by
+    # kfc_manifest (Oracle finds it there), mode=decision and mode=decision_bind.
+    - variables:
+        _sd_decision:
+          requires: {cert: zenos.decision.component.servicedesk, level: 1}
+          templates:
+            - id: triage_needed
+              version: 1
+              purpose: >-
+                Do the new tickets need someone's triage now? An unreachable desk is
+                insufficient_evidence, an escalated ticket is always attention and nothing new is
+                nominal, all without a model. Advice only: nothing is assigned or changed.
+              scope: [house]
+              fields: {required: [], optional: []}
+              summary_target: ""
+              outcomes: [attention, nominal, insufficient_evidence]
+              questions:
+                triage_now:
+                  type: noul
+                  instructions: >-
+                    The state holds the new and high-priority tickets in the household's service
+                    desk (number, title, why each was flagged), the counts of open work and the
+                    household's situation (home mode, local time). Would a household member want
+                    these new tickets looked at now rather than at the next briefing? Now: a
+                    ticket about something broken, unsafe or blocking, a high-priority one, or a
+                    pile of new work. Later: routine requests, notes or ideas.
+              policy: {question: triage_now, yes_outcome: attention, no_outcome: nominal, yes_at: 0.6, no_below: 0.35}
+            - id: stalled_resurface
+              version: 1
+              purpose: >-
+                Should the stalled open tickets (open with no update for 30 days or more) be surfaced
+                again? An unreachable desk is insufficient_evidence and nothing stalled is
+                nominal, without a model. Advice only: nothing is closed or changed.
+              scope: [house]
+              fields: {required: [], optional: []}
+              summary_target: ""
+              outcomes: [attention, nominal, insufficient_evidence]
+              questions:
+                resurface:
+                  type: noul
+                  instructions: >-
+                    The state holds the stalled open tickets (number and title) and the counts of
+                    open work. Would a household member want to be reminded of these stalled
+                    tickets now? Yes: something that still matters and has been forgotten, or
+                    work that blocks other work. No: wish-list items, ideas or tickets that are
+                    plainly parked.
+              policy: {question: resurface, yes_outcome: attention, no_outcome: nominal, yes_at: 0.6, no_below: 0.35}
+            - id: ready_to_close
+              version: 1
+              purpose: >-
+                Does one ticket (subject= its number) look ready to close? Advice only: nothing is
+                closed. A ticket not found, or already closed or merged, is refused.
+              scope: [house]
+              fields: {required: [subject], optional: []}
+              summary_target: ""
+              outcomes: [ready, not_ready, insufficient_evidence]
+              questions:
+                done:
+                  type: noul
+                  instructions: >-
+                    The state holds one service desk ticket: its title, state, priority, age and
+                    its latest articles. Does the work it asks for look finished, so the ticket
+                    could be closed? Ready: the last articles say the work shipped, was fixed or
+                    is no longer wanted, and nothing is left open. Not ready: work still listed
+                    as open or to do, an unanswered question, or a request with no reply.
+              policy: {question: done, yes_outcome: ready, no_outcome: not_ready, yes_at: 0.6, no_below: 0.35}
     # Onboarding gate (zen_os_1 entry_gate): an agent without
     # zenos.agent.basic gets help and tool_manifest only. Calls no user
     # started pass.
@@ -425,7 +517,7 @@ script:
               message: "{{ _sd_help_message }}"
               tool: Zen DojoTools Fulfillment
               codename: Radar
-              version: "0.6.3"
+              version: "0.8.0"
               configured_url: "{{ _base_url }}"
               cases: "{{ cases_help }}"
               caller_token: "{{ caller_token_norm }}"
@@ -443,7 +535,7 @@ script:
                 summary='Help desk tickets (Radar)',
                 display_name='Service Desk / Zammad',
                 tier='dojotools',
-                version='0.6.3',
+                version='0.8.0',
                 health=_health,
                 required_labels=['zammad'],
                 optional_labels=['zammad', 'service_desk', 'tickets', 'fulfillment'],
@@ -453,7 +545,7 @@ script:
                 content_policy='redacted_by_default',
                 risk_class='read_redacted',
                 security_act={'model': 'rwxda', 'required': 'r', 'allowed': ['r'], 'denied': ['w', 'x', 'd', 'a'], 'note': 'Lens provider returns redacted ticket/work evidence only; ticket mutation stays on explicit Service Desk cases.'},
-                modes={'lookup': 'tickets_by_anchor', 'manifest': 'tool_manifest', 'summary': 'one scored answer about the open work: urgency 0-5, reasons, attention, counts (read; the seed of the servicedesk KFC, background cert zenos.service.read)', 'kfc_manifest': 'the servicedesk KFC definition (consumed by bootstrap_kfc)'},
+                modes={'lookup': 'tickets_by_anchor', 'manifest': 'tool_manifest', 'summary': 'one scored answer about the open work: urgency 0-5, reasons, attention, counts (read; the seed of the servicedesk KFC, background cert zenos.service.read)', 'kfc_manifest': 'the servicedesk KFC definition (consumed by bootstrap_kfc)', 'decision': 'KF6.5: list this host decision templates (zero inference)', 'decision_bind': 'KF6.5, called by Oracle: bind the evidence for a decision template (read-only; needs zenos.service.read)'},
                 seed_modes=['summary@zenos.service.read:1'],
                 limitations=['Lookup requires Zammad tickets tagged with stable HA or ZenOS anchor slugs.', 'Lens output is redacted and does not include raw article bodies.', 'Mutating ticket cases are outside the lens bus.'],
                 evidence_shape={'documents': {'id': 'Zammad ticket id.', 'title': 'Redacted ticket title.', 'summary': 'Operational ticket evidence.', 'stack': 'provider/source/evidence metadata.', 'anchor_contexts': 'Matched typed anchors.', 'servicedesk': 'Ticket metadata safe for enrichment.'}},
@@ -467,7 +559,17 @@ script:
               ) | from_json | combine({
                 'kfc_manifest': true,
                 'kfc_components': ['servicedesk'],
+                'decision': true,
                 'certs_required': [{
+                  'cert': 'zenos.decision.component.servicedesk',
+                  'display_name': 'Service Desk Decisions',
+                  'description': "Use the Service Desk's decision templates through Oracle",
+                  'detail': "Lets the agent ask Oracle the Service Desk's decision templates (triage_needed: do the new tickets need triage now; stalled_resurface: should stalled open tickets be surfaced again; ready_to_close: does one ticket look ready to close). Needs zenos.decision.use as well, and the operator's decision switch. Binding the evidence also needs zenos.service.read. Grants no inference and changes no ticket.",
+                  'max_level': 1,
+                  'st_ok': 'i',
+                  'gates': ['zen_dojotools_oracle mode=decide host=servicedesk (interactive, stage i)'],
+                  'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.decision.component.servicedesk'
+                }, {
                   'cert': 'zenos.service.read',
                   'bundle': ['zenos_agent_advanced'],
                   'display_name': 'Service Desk Read',
@@ -501,6 +603,189 @@ script:
         sequence:
         - variables:
             _sd_answered: true
+      # ── KF6.5 decision: this host's templates (zero inference) ──
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "decision" }}'
+        sequence:
+        - variables:
+            result:
+              status: ok
+              tool: zen_dojotools_servicedesk
+              mode: decision
+              host: servicedesk
+              decision_mode: "{{ 'on' if is_state('input_boolean.zen_decision_enabled', 'on') else 'off' }}"
+              requires: "{{ _sd_decision.requires }}"
+              templates: "{{ _sd_decision.templates }}"
+              decide_via: "zen_dojotools_oracle mode=decide host=servicedesk decision_template=<id>"
+              caller_token: "{{ caller_token_norm }}"
+      # ── KF6.5 decision_bind (called by Oracle): template, scope, seed cert, evidence ──
+      - conditions:
+        - condition: template
+          value_template: '{{ case_norm == "decision_bind" }}'
+        sequence:
+        - variables:
+            _db_tpl: "{{ decision_template | default('', true) | string | lower | trim }}"
+            _db_area: "{{ area | default('', true) | string | trim if area is defined else '' }}"
+        - variables:
+            _db_t: "{{ (_sd_decision.templates | selectattr('id', 'eq', _db_tpl) | list | first) | default({}) }}"
+        - if: "{{ _db_t | length == 0 }}"
+          then:
+            - variables:
+                result: {status: error, mode: decision_bind, outcome: unknown_template, message: "The Service Desk declares no template '{{ _db_tpl }}'. mode=decision lists them.", caller_token: "{{ caller_token_norm }}"}
+        - if: "{{ result is not defined and _db_area != '' }}"
+          then:
+            - variables:
+                result: {status: error, mode: decision_bind, outcome: unsupported_scope, message: "Service Desk decisions are about the desk; it does not bind '{{ _db_area }}'. The decision was not narrowed.", caller_token: "{{ caller_token_norm }}"}
+        - if: "{{ result is not defined }}"
+          then:
+            - action: script.zen_dojotools_identity
+              response_variable: _db_id_raw
+              continue_on_error: true
+              data:
+                mode: resolve_caller_identity
+                required_cert: zenos.service.read
+                required_cert_level: 1
+                caller_token: "{{ caller_token_norm }}"
+            - variables:
+                _db_id: >-
+                  {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                  {%- set _r = OS.resolve_identity_fields(_db_id_raw | default({})) -%}
+                  {{- (_r | from_json) if _r is string else _r -}}
+            - if: "{{ not _db_id.authorized }}"
+              then:
+                - variables:
+                    result: >-
+                      {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                      {%- set d = OS.cert_denial(_db_id.policy_status, _db_id.authorized, _db_id.cert_level, 'zenos.service.read', 1, 'mode=decision_bind', _db_id.block_reason) | from_json -%}
+                      {{ d | combine({'status': 'error', 'mode': 'decision_bind', 'outcome': 'denied', 'gate': 'zenos.service.read', 'caller_token': caller_token_norm}) }}
+        # ready_to_close: one ticket, read with ticket_get.
+        - if: "{{ result is not defined and _db_tpl == 'ready_to_close' }}"
+          then:
+            - variables:
+                _db_num: "{{ subject | default('', true) | string | trim if subject is defined else '' }}"
+            - action: script.zen_dojotools_servicedesk
+              response_variable: _db_tk_raw
+              continue_on_error: true
+              data:
+                mode: ticket_get
+                input_json: "{{ {'ticket_id': _db_num} | tojson }}"
+                caller_token: "{{ caller_token_norm }}"
+            - variables:
+                _db_tk: >-
+                  {%- set r = _db_tk_raw if _db_tk_raw is defined and _db_tk_raw is mapping else {} -%}
+                  {%- set r = r.get('result') if r.get('result') is mapping else r -%}
+                  {{ r if (r is mapping and r.get('ticket') is mapping and (r.get('ticket').get('id') or '') | string != '') else {} }}
+            - variables:
+                _db_state_id: "{{ _db_tk.get('ticket', {}).get('state_id', 0) | int(0) if _db_tk | length > 0 else 0 }}"
+            - if: "{{ _db_tk | length == 0 }}"
+              then:
+                - variables:
+                    result: {status: error, mode: decision_bind, outcome: unsupported_scope, message: "No ticket '{{ _db_num }}' was found. Nothing was decided.", caller_token: "{{ caller_token_norm }}"}
+            - if: "{{ result is not defined and _db_state_id in [4, 5] }}"
+              then:
+                - variables:
+                    result: {status: error, mode: decision_bind, outcome: unsupported_scope, message: "Ticket {{ _db_num }} is already closed or merged.", caller_token: "{{ caller_token_norm }}"}
+            - if: "{{ result is not defined }}"
+              then:
+                - variables:
+                    _db_tkt: "{{ _db_tk.ticket }}"
+                    _db_arts: >-
+                      {%- set ns = namespace(keep=[], out=[]) -%}
+                      {%- for x in (_db_tk.get('articles', []) or []) if x is mapping and not ((x.get('subject') or '') | string).startswith('Audit:') -%}
+                        {%- set ns.keep = ns.keep + [x] -%}
+                      {%- endfor -%}
+                      {%- for x in ns.keep[-4:] -%}
+                        {%- set ns.out = ns.out + [{'from': x.get('from'), 'internal': x.get('internal'), 'at': (x.get('created_at') | string)[:16], 'body': (x.get('body', '') | string)[:400]}] -%}
+                      {%- endfor -%}
+                      {{ ns.out }}
+                - variables:
+                    _db_upd: "{{ _db_tkt.get('updated_at', '') | string }}"
+                    _db_created: "{{ _db_tkt.get('created_at', '') | string }}"
+                - variables:
+                    result:
+                      status: ok
+                      mode: decision_bind
+                      host: servicedesk
+                      template: ready_to_close
+                      scope: house
+                      deterministic: ""
+                      reason: ""
+                      evidence_revision: "{{ 't:' ~ _db_num ~ '|s:' ~ _db_state_id ~ '|u:' ~ _db_upd ~ '|n:' ~ (_db_tkt.get('article_count', 0) | string) }}"
+                      as_of: "{{ now().isoformat() }}"
+                      evidence:
+                        ticket:
+                          number: "{{ _db_num }}"
+                          title: "{{ _db_tkt.get('title', '') }}"
+                          state: "{{ {1: 'new', 2: 'open', 3: 'pending_reminder', 6: 'removed', 7: 'pending_close'}.get(_db_state_id, 'other') }}"
+                          high_priority: "{{ (_db_tkt.get('priority_id', 2) | int(2)) >= 3 }}"
+                          age_days: "{{ (((now() - (_db_created | as_datetime)).total_seconds() / 86400) | round(0) | int) if (_db_created | as_datetime) is not none else none }}"
+                        latest_articles: "{{ _db_arts }}"
+                      caller_token: "{{ caller_token_norm }}"
+        - if: "{{ result is not defined }}"
+          then:
+            - action: script.zen_dojotools_servicedesk
+              response_variable: _db_seed_raw
+              continue_on_error: true
+              data:
+                mode: summary
+                caller_token: "{{ caller_token_norm }}"
+            - variables:
+                _db_cur: >-
+                  {%- set r = _db_seed_raw if _db_seed_raw is defined and _db_seed_raw is mapping else {} -%}
+                  {%- set r = r.get('result') if r.get('result') is mapping else r -%}
+                  {{ r if (r is mapping and r.get('case') == 'summary') else {} }}
+            - if: "{{ _db_cur | length == 0 }}"
+              then:
+                - variables:
+                    result: {status: error, mode: decision_bind, outcome: bind_failed, message: "The Service Desk summary did not answer. Nothing was decided.", caller_token: "{{ caller_token_norm }}"}
+        - if: "{{ result is not defined }}"
+          then:
+            - variables:
+                _db_reasons: "{{ (_db_cur.get('reasons', []) or []) | map('string') | list }}"
+                _db_att: "{{ _db_cur.get('attention', []) or [] }}"
+                _db_counts: "{{ _db_cur.get('counts') if _db_cur.get('counts') is mapping else {} }}"
+                _db_home_mode: >-
+                  {{ states(label_entities('zen_home_mode') | select('match', '(sensor|input_select)\\.') | list | first | default('', true)) }}
+            - variables:
+                _db_rel: "{{ _db_att | selectattr('reason', 'in', (['new_tickets', 'high_priority_new', 'escalated'] if _db_tpl == 'triage_needed' else ['stale_open'])) | list }}"
+                _db_down: "{{ (_db_cur.get('status', '') | string) != 'ok' }}"
+            - variables:
+                _db_det: >-
+                  {%- if _db_down -%}insufficient_evidence
+                  {%- elif _db_tpl == 'triage_needed' and 'escalated' in _db_reasons -%}attention
+                  {%- elif _db_tpl == 'triage_needed' and (_db_counts.get('new', 0) | int(0)) == 0 -%}nominal
+                  {%- elif _db_tpl == 'stalled_resurface' and 'stale_open' not in _db_reasons -%}nominal
+                  {%- endif -%}
+                _db_reason: >-
+                  {%- if _db_down -%}The service desk did not answer ({{ _db_cur.get('status', '') }}); nothing is judged without it.
+                  {%- elif _db_tpl == 'triage_needed' and 'escalated' in _db_reasons -%}A ticket is past its escalation time; that is always attention.
+                  {%- elif _db_tpl == 'triage_needed' and (_db_counts.get('new', 0) | int(0)) == 0 -%}There are no new tickets.
+                  {%- elif _db_tpl == 'stalled_resurface' and 'stale_open' not in _db_reasons -%}No open ticket has stalled.
+                  {%- endif -%}
+                _db_revision: >-
+                  {{ 'u' ~ _db_cur.get('urgency', 0)
+                     ~ '|r:' ~ (_db_reasons | sort | join(','))
+                     ~ '|t:' ~ (_db_rel | map(attribute='number') | map('string') | sort | join(','))
+                     ~ (('|m:' ~ _db_home_mode) if _db_tpl == 'triage_needed' else '') }}
+            - variables:
+                result:
+                  status: ok
+                  mode: decision_bind
+                  host: servicedesk
+                  template: "{{ _db_tpl }}"
+                  scope: house
+                  deterministic: "{{ _db_det | trim }}"
+                  reason: "{{ _db_reason | trim }}"
+                  evidence_revision: "{{ _db_revision }}"
+                  as_of: "{{ now().isoformat() }}"
+                  evidence: >-
+                    {%- if _db_tpl == 'triage_needed' -%}
+                      {{ {'tickets': _db_rel, 'counts': _db_counts, 'household': {'home_mode': _db_home_mode, 'local_time': now().strftime('%a %H:%M')}} }}
+                    {%- else -%}
+                      {{ {'tickets': _db_rel, 'counts': _db_counts, 'stalled_after_days': 30} }}
+                    {%- endif -%}
+                  caller_token: "{{ caller_token_norm }}"
       # ── summary (KF6, #10702): one scored, read-only answer about the open work ──
       # One search for new, open and pending-reminder tickets (up to 100), scored in
       # code: urgency 0-5, action_required at 3, reasons[] highest first, attention[]
@@ -615,7 +900,7 @@ script:
             result:
               status: ok
               tool: zen_dojotools_servicedesk
-              version: "0.6.3"
+              version: "0.8.0"
               mode: kfc_manifest
               count: 1
               caller_token: "{{ caller_token_norm }}"
@@ -685,6 +970,7 @@ script:
                     requires:
                       cert: zenos.service.read
                       level: 1
+                  decision: "{{ _sd_decision }}"
       - conditions:
         - condition: template
           value_template: '{{ case_norm == "configure" }}'

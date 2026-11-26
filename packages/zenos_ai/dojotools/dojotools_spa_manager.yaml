@@ -1,6 +1,26 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Zen Spa
-# Version: 5.8.0
+# Version: 5.10.0
+# v5.10.0: three more decision templates (#10772), all on the same summary computation.
+#   maintenance_advance: bring the cartridge replacement forward (advance/hold; due by the
+#   rule = advance, more than 720 hours left = hold, no reading = insufficient_evidence).
+#   sensor_trust: do the chemistry readings look trustworthy against their day (suspect/
+#   trusted; optional subject= one of chlorine, ph, orp, salt; offline or no 24h history =
+#   insufficient_evidence). soak_ready: is the spa ready for a soak (ready/not_ready; offline
+#   or thin = insufficient_evidence, a hard problem = not_ready, nothing flagged = ready, all
+#   without a model; only minor flags are judged). Advice only: never certifies the water safe.
+# v5.9.0: KF6.5 host (Oracle, #10772). Additive: no existing mode changes. mode=decision lists
+#   SpaMaster's decision templates (zero inference); mode=decision_bind (called by Oracle)
+#   checks the template, the scope (the spa only; an area is unsupported_scope) and
+#   zenos.spa.read, runs the summary computation in this run (the script is single, so it never
+#   calls itself), and returns the evidence with a revision.
+#   summary_refresh: does the spa differ enough from the last spa summary to warrant a fresh one
+#   (refresh/keep; no prior kata = refresh without a model).
+#   chemistry_attention: does the chemistry warrant attention (attention/nominal). The rules
+#   come first, without a model: an offline spa or one missing a chlorine or pH reading is
+#   insufficient_evidence (water is never judged fine on thin evidence), and a reading the
+#   rules score out of range is always attention. Only blips and drifts are judged.
+#   New cert zenos.decision.component.spamaster.
 # v5.8.0: summary judges chemistry against its day (a trend check, not a single reading):
 #   one Recorder history read (the one chemistry include_history uses)
 #   gives each of chlorine, pH, ORP and salt a 24h mean and a 6-hour direction. Out of
@@ -117,7 +137,7 @@ script:
     fields:
       mode:
         name: Mode
-        description: "status (default), summary (scored read: urgency, reasons), scene, discover, setup, lights, jets, audio, temperature, cover, chemistry, log, consumables, help, kfc_manifest"
+        description: "status (default), summary (scored read: urgency, reasons), scene, discover, setup, lights, jets, audio, temperature, cover, chemistry, log, consumables, help, kfc_manifest, decision (decision templates), decision_bind (called by Oracle)"
         selector:
           select:
             options:
@@ -137,7 +157,15 @@ script:
             - tool_manifest
             - summary
             - kfc_manifest
+            - decision
+            - decision_bind
         required: false
+      decision_template:
+        name: Decision Template
+        description: "decision_bind only: the decision template id (Oracle binds it; mode=decision lists them)."
+        required: false
+        selector:
+          text:
       anchor:
         name: Anchor Entity
         description: "Optional: explicit spa climate entity_id for discover/setup. Auto-detected if omitted."
@@ -513,6 +541,118 @@ script:
     # ─────────────────────────────────────────────────────────────────────────
     # 0. Load cabinet config
     # ─────────────────────────────────────────────────────────────────────────
+    # KF6.5 decision declaration (the host owns its templates). Read by
+    # kfc_manifest (Oracle finds it there), mode=decision and mode=decision_bind.
+    - variables:
+        _sp_decision:
+          requires: {cert: zenos.decision.component.spamaster, level: 1}
+          templates:
+            - id: summary_refresh
+              version: 1
+              purpose: Does the spa differ enough from the last spa summary that a fresh one is warranted?
+              scope: [house]
+              fields: {required: [], optional: []}
+              summary_target: spamaster
+              outcomes: [keep, refresh, insufficient_evidence]
+              questions:
+                material_change:
+                  type: noul
+                  instructions: >-
+                    The state holds the last spa summary (prior) and the spa now (current).
+                    Would a household member need a fresh spa summary because something changed
+                    materially since the prior one? Material: a new or cleared problem (heating,
+                    cover, chemistry out of range, the spa going offline or back), a reading
+                    crossing its target range, or the prior summary now being wrong. Not
+                    material: small drift inside the ranges, or the same problems restated.
+              policy: {question: material_change, yes_outcome: refresh, no_outcome: keep, yes_at: 0.6, no_below: 0.35}
+            - id: chemistry_attention
+              version: 1
+              purpose: >-
+                Does the spa's chemistry warrant attention? The rules come first, without a model:
+                an offline spa or a missing chlorine or pH reading is insufficient_evidence, and a
+                reading the rules score out of range is always attention. Only blips and drifts
+                are judged. Advice only: it never certifies the water safe and never doses.
+              scope: [house]
+              fields: {required: [], optional: []}
+              summary_target: ""
+              outcomes: [attention, nominal, insufficient_evidence]
+              questions:
+                needs_attention:
+                  type: noul
+                  instructions: >-
+                    The state holds the spa's chemistry readings, their 24 hour means and
+                    6 hour directions, the targets of the active profile and the reasons the
+                    rules flagged. Does the chemistry warrant someone's attention soon? Warrants
+                    it: a reading drifting toward or past its target, a trend the day confirms,
+                    or readings that disagree with each other. Does not: a single reading the
+                    day's mean contradicts (a blip), or steady readings inside their targets.
+              policy: {question: needs_attention, yes_outcome: attention, no_outcome: nominal, yes_at: 0.6, no_below: 0.35}
+            - id: maintenance_advance
+              version: 1
+              purpose: >-
+                Should the sanitizer cartridge replacement be brought forward? Due by the rule
+                (under 72 hours) is advance, more than 720 hours left is hold and no reading is
+                insufficient_evidence, all without a model.
+              scope: [house]
+              fields: {required: [], optional: []}
+              summary_target: ""
+              outcomes: [advance, hold, insufficient_evidence]
+              questions:
+                bring_forward:
+                  type: noul
+                  instructions: >-
+                    The state holds the hours left on the sanitizer cartridge, the chemistry
+                    readings with their day, and the reasons the rules flagged. Should the
+                    household replace the cartridge sooner than its hours say? Sooner: chlorine
+                    low or falling while the cartridge is in its last weeks, or the chemistry
+                    struggling in a way a fresh cartridge would fix. Not sooner: the chemistry
+                    holding inside its targets.
+              policy: {question: bring_forward, yes_outcome: advance, no_outcome: hold, yes_at: 0.6, no_below: 0.35}
+            - id: sensor_trust
+              version: 1
+              purpose: >-
+                Do the chemistry readings look trustworthy against their own day? subject= may name
+                one metric (chlorine, ph, orp, salt). Offline or no 24 hour history is
+                insufficient_evidence, without a model.
+              scope: [house]
+              fields: {required: [], optional: [subject]}
+              summary_target: ""
+              outcomes: [suspect, trusted, insufficient_evidence]
+              questions:
+                suspect:
+                  type: noul
+                  instructions: >-
+                    The state holds each chemistry reading now, its 24 hour mean and 6 hour
+                    direction, its target, and any reading the rules called a blip. Does a
+                    reading look wrong, more likely a sensor problem than the water? Suspect: a
+                    reading far from its own day with no direction toward it, readings that
+                    contradict each other (for example ORP high while chlorine reads near zero),
+                    or a value outside what the sensor can mean. Trusted: readings that agree
+                    with their day.
+              policy: {question: suspect, yes_outcome: suspect, no_outcome: trusted, yes_at: 0.6, no_below: 0.35}
+            - id: soak_ready
+              version: 1
+              purpose: >-
+                Is the spa ready for a soak? Offline or missing chlorine or pH is
+                insufficient_evidence, a hard problem (chemistry out of range, too hot, freeze
+                risk, not heating, below range) is not_ready and nothing flagged is ready, all
+                without a model; only minor flags are judged. Advice only: it never certifies the
+                water safe.
+              scope: [house]
+              fields: {required: [], optional: []}
+              summary_target: ""
+              outcomes: [ready, not_ready, insufficient_evidence]
+              questions:
+                ready_now:
+                  type: noul
+                  instructions: >-
+                    The state holds the water temperature against its target, the chemistry
+                    readings with their day, the cover and the minor flags the rules raised.
+                    Would a household member be comfortable getting in now? Yes: warm enough and
+                    the flags are minor (a blip, a slow drift inside range, the cover open).
+                    No: the flags add up to something worth fixing first.
+              policy: {question: ready_now, yes_outcome: ready, no_outcome: not_ready, yes_at: 0.6, no_below: 0.35}
+
     - if: "{{ _result is not defined and (mode | default('') | lower) == 'tool_manifest' }}"
       then:
       - variables:
@@ -523,7 +663,7 @@ script:
                 summary='Hot tub control and water chemistry',
                 display_name='Spa Master',
                 tier='dojotools',
-                version='5.8.0',
+                version='5.10.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['spa', 'hot_tub_manager'],
@@ -544,7 +684,17 @@ script:
             {{- _tm | combine({
                 'kfc_manifest': true,
                 'kfc_components': ['spamaster'],
+                'decision': true,
                 'certs_required': [{
+                  'cert': 'zenos.decision.component.spamaster',
+                  'display_name': 'Spa Decisions',
+                  'description': "Use SpaMaster's decision templates through Oracle",
+                  'detail': "Lets the agent ask Oracle SpaMaster's decision templates (summary_refresh: does the spa differ enough from the last spa summary to warrant a fresh one; chemistry_attention: does the chemistry warrant attention; maintenance_advance: bring the cartridge replacement forward; sensor_trust: do the readings look trustworthy; soak_ready: is the spa ready for a soak). Needs zenos.decision.use as well, and the operator's decision switch. Binding the evidence also needs zenos.spa.read. Grants no inference, no summary and no spa control.",
+                  'max_level': 1,
+                  'st_ok': 'i',
+                  'gates': ['zen_dojotools_oracle mode=decide host=spamaster (interactive, stage i)'],
+                  'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.decision.component.spamaster'
+                }, {
                   'cert': 'zenos.spa.read',
                   'bundle': ['zenos_agent_basic'],
                   'display_name': 'Spa Read',
@@ -567,6 +717,22 @@ script:
                   'grant_via': "persona_editor mode=cert_req_grant cert_component=zenos.actuation.spa_control (or zen_dojotools_identity mode=cert_list to see current status)"
                 }]
               }) -}}
+    # KF6.5 mode=decision: this host's templates (zero inference). Deciding goes
+    # through Oracle (mode=decide host=spamaster): this script is single, so it
+    # never calls Oracle, which calls back into it.
+    - if: "{{ _result is not defined and (mode | default('') | lower) == 'decision' }}"
+      then:
+      - variables:
+          _result:
+            status: ok
+            tool: zen_dojotools_spamaster
+            mode: decision
+            host: spamaster
+            decision_mode: "{{ 'on' if is_state('input_boolean.zen_decision_enabled', 'on') else 'off' }}"
+            requires: "{{ _sp_decision.requires }}"
+            templates: "{{ _sp_decision.templates }}"
+            decide_via: "zen_dojotools_oracle mode=decide host=spamaster decision_template=<id>"
+            caller_token: "{{ caller_token | default('', true) }}"
     # kfc_manifest: the spamaster KFC definition (consumed by bootstrap_kfc).
     - if: "{{ _result is not defined and (mode | default('') | lower) == 'kfc_manifest' }}"
       then:
@@ -574,7 +740,7 @@ script:
           _result:
             status: ok
             tool: zen_dojotools_spamaster
-            version: "5.8.0"
+            version: "5.10.0"
             mode: kfc_manifest
             count: 1
             caller_token: "{{ caller_token | default('', true) }}"
@@ -651,6 +817,7 @@ script:
                   requires:
                     cert: zenos.spa.read
                     level: 1
+                decision: "{{ _sp_decision }}"
     - variables:
         _cab: >-
           {{ label_entities('Zen Household Cabinet')
@@ -751,6 +918,52 @@ script:
             level: warning
             logger: zen_entry_gate
             message: "{{ _sp_gate.get('log') or 'onboarding gate refused a call (gate result unreadable)' }}"
+
+    # KF6.5 decision_bind (called by Oracle): template, scope and the seed cert
+    # first. The evidence comes from the summary computation below, in this run.
+    - if: "{{ _result is not defined and _mode == 'decision_bind' }}"
+      then:
+      - variables:
+          _db_tpl: "{{ decision_template | default('', true) | string | lower | trim }}"
+          _db_area: "{{ area | default('', true) | string | trim if area is defined else '' }}"
+      - variables:
+          _db_t: "{{ (_sp_decision.templates | selectattr('id', 'eq', _db_tpl) | list | first) | default({}) }}"
+      - if: "{{ _db_t | length == 0 }}"
+        then:
+          - variables:
+              _result: {status: error, mode: decision_bind, outcome: unknown_template, message: "SpaMaster declares no template '{{ _db_tpl }}'. mode=decision lists them.", caller_token: "{{ caller_token | default('', true) }}"}
+      - if: "{{ _result is not defined and _db_area != '' }}"
+        then:
+          - variables:
+              _result: {status: error, mode: decision_bind, outcome: unsupported_scope, message: "SpaMaster decisions are about the spa; it does not bind '{{ _db_area }}'. The decision was not narrowed.", caller_token: "{{ caller_token | default('', true) }}"}
+      - variables:
+          _db_subject: "{{ subject | default('', true) | string | lower | trim if subject is defined else '' }}"
+      - if: "{{ _result is not defined and _db_subject != '' and _db_subject not in ['chlorine', 'ph', 'orp', 'salt'] }}"
+        then:
+          - variables:
+              _result: {status: error, mode: decision_bind, outcome: unsupported_scope, message: "subject must be one of chlorine, ph, orp, salt; it was '{{ _db_subject }}'.", caller_token: "{{ caller_token | default('', true) }}"}
+      - if: "{{ _result is not defined }}"
+        then:
+          - action: script.zen_dojotools_identity
+            response_variable: _db_id_raw
+            continue_on_error: true
+            data:
+              mode: resolve_caller_identity
+              required_cert: zenos.spa.read
+              required_cert_level: 1
+              caller_token: "{{ caller_token | default('', true) }}"
+          - variables:
+              _db_id: >-
+                {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                {%- set _r = OS.resolve_identity_fields(_db_id_raw | default({})) -%}
+                {{- (_r | from_json) if _r is string else _r -}}
+          - if: "{{ not _db_id.authorized }}"
+            then:
+              - variables:
+                  _result: >-
+                    {%- import 'zenos_ai/zen_os_1.jinja' as OS -%}
+                    {%- set d = OS.cert_denial(_db_id.policy_status, _db_id.authorized, _db_id.cert_level, 'zenos.spa.read', 1, 'mode=decision_bind', _db_id.block_reason) | from_json -%}
+                    {{ d | combine({'status': 'error', 'mode': 'decision_bind', 'outcome': 'denied', 'gate': 'zenos.spa.read', 'caller_token': caller_token | default('', true)}) }}
 
     # ─────────────────────────────────────────────────────────────────────────
     # 2. Discovery block — runs unconditionally (template-only, no actions)
@@ -1310,7 +1523,7 @@ script:
     # attention[] with what to do. The seed of the spamaster KFC (cert
     # zenos.spa.read, background only: asking in conversation needs no cert).
     # A reading that is not a number is skipped, never scored.
-    - if: "{{ _result is not defined and _mode == 'summary' }}"
+    - if: "{{ _result is not defined and _mode in ['summary', 'decision_bind'] }}"
       then:
       - variables:
           _su_n: >-
@@ -1476,6 +1689,93 @@ script:
                 salt_ppm: "{{ [_chem.get('salt_min', 1500), _chem.get('salt_max', 2000)] }}"
                 orp_mv_min: "{{ _chem.get('orp_min', 600) }}"
             cover: "{{ _su_cover }}"
+            caller_token: "{{ caller_token | default('', true) }}"
+
+    # ── KF6.5 decision_bind: the evidence (the summary just computed) ─────────
+    - if: "{{ _mode == 'decision_bind' and _result is defined and _result is mapping and (_result.get('mode', '') | string) == 'summary' }}"
+      then:
+      - variables:
+          _db_cur: "{{ _result }}"
+          _db_prior: >-
+            {%- set kv = state_attr(states('sensor.zen_kata_cabinet_resolved'), 'variables') or {} -%}
+            {%- set d = kv.get('spamaster') -%}
+            {%- set v = d.get('value', d) if d is mapping else {} -%}
+            {%- set v = (v | from_json({})) if v is string else v -%}
+            {{ v if v is mapping else {} }}
+      - variables:
+          _db_reasons: "{{ (_db_cur.get('reasons', []) or []) | map('string') | list }}"
+          _db_chem: "{{ _db_cur.get('chemistry') if _db_cur.get('chemistry') is mapping else {} }}"
+          _db_prior_age_min: >-
+            {%- set lr = _db_prior.get('last_run_at', '') | string -%}
+            {{ (((now().timestamp() - (lr | float(0))) / 60) | round(0) | int) if (lr | float(0)) > 0 else -1 }}
+      - variables:
+          _db_readings: "{{ _db_chem.get('readings') if _db_chem.get('readings') is mapping else {} }}"
+          _db_chem_reasons: "{{ _db_reasons | select('match', '^(chlorine|ph|orp|salt|chemistry)_') | list }}"
+      - variables:
+          _db_out: "{{ _db_chem_reasons | select('match', '.*_(low|high|out_of_range)$') | list }}"
+          _db_thin: "{{ not (_db_cur.get('device_online', false) | bool(false)) or 'chlorine' not in _db_readings or 'ph' not in _db_readings }}"
+      - variables:
+          _db_tr: "{{ _db_chem.get('trends_24h') if _db_chem.get('trends_24h') is mapping else {} }}"
+          _db_hard: "{{ _db_out + (_db_reasons | select('in', ['too_hot', 'freeze_risk', 'not_heating', 'below_range', 'spa_offline']) | list) }}"
+          _db_cart: "{{ _db_readings.get('cartridge_hours') }}"
+          _db_metrics: "{{ [_db_subject] if _db_subject != '' else ['chlorine', 'ph', 'orp', 'salt'] }}"
+      - variables:
+          _db_det: >-
+            {%- if _db_tpl == 'summary_refresh' -%}{{ 'refresh' if _db_prior | length == 0 else '' }}
+            {%- elif _db_tpl == 'maintenance_advance' -%}
+              {%- if _db_cart is not number -%}insufficient_evidence
+              {%- elif 'cartridge_due' in _db_reasons -%}advance
+              {%- elif _db_cart > 720 -%}hold
+              {%- endif -%}
+            {%- elif _db_thin -%}insufficient_evidence
+            {%- elif _db_tpl == 'chemistry_attention' -%}{{ 'attention' if _db_out | count > 0 else '' }}
+            {%- elif _db_tpl == 'sensor_trust' -%}{{ 'insufficient_evidence' if (_db_metrics | select('in', _db_tr.keys() | list) | list | count) == 0 else '' }}
+            {%- elif _db_tpl == 'soak_ready' -%}{{ 'not_ready' if _db_hard | count > 0 else ('ready' if _db_reasons | count == 0 else '') }}
+            {%- endif -%}
+          _db_reason: >-
+            {%- if _db_tpl == 'summary_refresh' -%}{{ 'There is no prior spa summary to compare with.' if _db_prior | length == 0 else '' }}
+            {%- elif _db_tpl == 'maintenance_advance' -%}
+              {%- if _db_cart is not number -%}The cartridge has no hours reading.
+              {%- elif 'cartridge_due' in _db_reasons -%}The rule already calls the cartridge due ({{ _db_cart | round(0) | int }} hours left).
+              {%- elif _db_cart > 720 -%}The cartridge has {{ _db_cart | round(0) | int }} hours left, more than 30 days.
+              {%- endif -%}
+            {%- elif _db_thin -%}The spa is offline or has no chlorine or pH reading; the water is never judged on thin evidence.
+            {%- elif _db_tpl == 'chemistry_attention' -%}{{ ('The rules score ' ~ (_db_out | join(', ')) ~ ' out of range; that is always attention.') if _db_out | count > 0 else '' }}
+            {%- elif _db_tpl == 'sensor_trust' -%}{{ 'There is no 24 hour history to judge the readings against.' if (_db_metrics | select('in', _db_tr.keys() | list) | list | count) == 0 else '' }}
+            {%- elif _db_tpl == 'soak_ready' -%}{{ ('Not ready: ' ~ (_db_hard | join(', ')) ~ '.') if _db_hard | count > 0 else ('Nothing is flagged.' if _db_reasons | count == 0 else '') }}
+            {%- endif -%}
+          _db_revision: >-
+            {{ 'u' ~ _db_cur.get('urgency', 0)
+               ~ '|r:' ~ (_db_reasons | sort | join(','))
+               ~ (('|p:' ~ (_db_prior.get('last_run_at', '') | string)) if _db_tpl == 'summary_refresh'
+                  else ('|pr:' ~ (_db_chem.get('profile', '') | string) ~ ('|s:' ~ _db_subject if _db_subject != '' else ''))) }}
+      - variables:
+          _result:
+            status: ok
+            mode: decision_bind
+            host: spamaster
+            template: "{{ _db_tpl }}"
+            scope: house
+            deterministic: "{{ _db_det | trim }}"
+            reason: "{{ _db_reason | trim }}"
+            evidence_revision: "{{ _db_revision }}"
+            as_of: "{{ now().isoformat() }}"
+            evidence: >-
+              {%- if _db_tpl == 'summary_refresh' -%}
+                {{ {'prior': {'urgency': _db_prior.get('urgency', none), 'attention': _db_prior.get('attention', []), 'general_inference': _db_prior.get('general_inference', ''), 'age_minutes': _db_prior_age_min},
+                    'current': {'urgency': _db_cur.get('urgency', 0), 'reasons': _db_reasons, 'attention': _db_cur.get('attention', []), 'device_online': _db_cur.get('device_online'), 'temperature': _db_cur.get('temperature'), 'chemistry_readings': _db_readings, 'cover': _db_cur.get('cover')}} }}
+              {%- elif _db_tpl == 'maintenance_advance' -%}
+                {{ {'cartridge_hours_left': _db_cart, 'readings': _db_readings, 'trends_24h': _db_tr, 'targets': _db_chem.get('targets'), 'reasons': _db_reasons} }}
+              {%- elif _db_tpl == 'sensor_trust' -%}
+                {%- set ns = namespace(m={}) -%}
+                {%- for k in _db_metrics -%}{%- set ns.m = dict(ns.m, **{k: {'now': _db_readings.get(k), 'day': _db_tr.get(k)}}) -%}{%- endfor -%}
+                {{ {'metrics': ns.m, 'targets': _db_chem.get('targets'), 'flagged': _db_cur.get('attention', []) | selectattr('reason', 'in', _db_chem_reasons) | list} }}
+              {%- elif _db_tpl == 'soak_ready' -%}
+                {{ {'temperature': _db_cur.get('temperature'), 'readings': _db_readings, 'trends_24h': _db_tr, 'targets': _db_chem.get('targets'), 'cover': _db_cur.get('cover'), 'flagged': _db_cur.get('attention', [])} }}
+              {%- else -%}
+                {{ {'readings': _db_readings, 'trends_24h': _db_chem.get('trends_24h'), 'targets': _db_chem.get('targets'), 'profile': _db_chem.get('profile'),
+                    'flagged': _db_cur.get('attention', []) | selectattr('reason', 'in', _db_chem_reasons) | list} }}
+              {%- endif -%}
             caller_token: "{{ caller_token | default('', true) }}"
 
     # ── STATUS ────────────────────────────────────────────────────────────────
@@ -3460,7 +3760,7 @@ script:
       - variables:
           _result: >-
             {{ {"error": "unknown_mode", "mode": _mode,
-                "valid_modes": ["status","scene","discover","setup","lights","jets","audio","temperature","cover","chemistry","log","consumables","help"]} }}
+                "valid_modes": ["status","scene","discover","setup","lights","jets","audio","temperature","cover","chemistry","log","consumables","help","summary","decision","decision_bind"]} }}
 
     # ═══════════════════════════════════════════════════════════════════════
     # SINGLE EXIT — envelope() wrap

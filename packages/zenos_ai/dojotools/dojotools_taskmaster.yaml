@@ -1,6 +1,15 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Taskmaster
-# Version: 0.10.2
+# Version: 0.11.0
+# v0.11.0: KF6.5 host (Oracle, #10769). Additive: no existing mode changes. mode=decision lists
+#   Taskmaster's decision templates (zero inference); mode=decision_bind (called by Oracle)
+#   runs briefing case=household (a parallel self-call; never medications) and returns the
+#   evidence. overdue_relevance: is one task (subject= its id or exact title) still relevant
+#   or likely stale (relevant/likely_stale), with its same-titled copies and the household
+#   context. interrupt_now: interrupt now or wait for the next briefing (a choice; subject=
+#   one task, else the items at urgency 3 or more). Rules first, without a model: urgency 4
+#   or more = now, quiet hours or night = next_briefing, nothing to raise = next_briefing.
+#   New cert zenos.decision.component.taskmaster.
 # v0.10.2: facilities_brief reads the Plant electrical codex component (electrical) in
 #   place of the retired house-only energy_manager.
 # v0.10.1: facilities_brief reads the Plant water codex component (water) in place of the
@@ -104,7 +113,7 @@ script:
                 summary='Tasks and the day ahead; ask it any when question',
                 display_name='Taskmaster',
                 tier='dojotools',
-                version='0.10.2',
+                version='0.11.0',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools', 'zen_kfc_provider'],
                 optional_labels=['taskmaster', 'todo', 'radar', 'inventory', 'crm'],
@@ -119,7 +128,12 @@ script:
 
                 seed_modes=['briefing:household', 'briefing:medications@zenos.health.read:1'],
                 caller_token=caller_token | default('')
-            ) | from_json | combine({'seed_aliases': {'briefing': 'briefing:household'}, 'register_mode': 'register', 'provider_key': 'taskmaster', 'lens_provider': true, 'lens_anchors': ['area_id', 'label', 'person', 'company'], 'lens_returns': ['task_evidence'], 'certs_required': [
+            ) | from_json | combine({'seed_aliases': {'briefing': 'briefing:household'}, 'register_mode': 'register', 'provider_key': 'taskmaster', 'lens_provider': true, 'lens_anchors': ['area_id', 'label', 'person', 'company'], 'lens_returns': ['task_evidence'], 'decision': true, 'certs_required': [
+                {'cert': 'zenos.decision.component.taskmaster', 'max_level': 1, 'st_ok': 'i', 'display_name': 'Taskmaster Decisions',
+                 'description': "Use Taskmaster's decision templates through Oracle",
+                 'detail': "Lets the agent ask Oracle Taskmaster's decision templates (overdue_relevance: is one task still relevant; interrupt_now: interrupt now or wait for the next briefing). Needs zenos.decision.use as well, and the operator's decision switch. The evidence is the household briefing, never medications. Grants no inference and changes no task.",
+                 'gates': ['zen_dojotools_oracle mode=decide host=taskmaster (interactive, stage i)'],
+                 'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.decision.component.taskmaster'},
                 {'cert': 'zenos.comms.pii_disclosure', 'max_level': 2, 'description': "Send messages and add events or tasks for you; level 2 also edits the mail safe list", 'level': 1, 'modes': ['task_create']},
                 {'cert': 'zenos.health.read', 'max_level': 1, 'st_ok': 'is', 'display_name': 'Health Read',
                  'description': "Read your medication reminders for the background summary",
@@ -127,6 +141,58 @@ script:
                  'gates': ['seed: briefing:medications (Ninja seed)'],
                  'grant_via': 'persona_editor mode=cert_req_grant cert_component=zenos.health.read cert_stages=is'}
             ]}) }}
+
+    # ── KF6.5 decision declaration (the host owns its templates) ──────────────
+    # Read by kfc_manifest (Oracle finds it there), mode=decision and decision_bind.
+    - variables:
+        _tm_decision:
+          requires: {cert: zenos.decision.component.taskmaster, level: 1}
+          templates:
+            - id: overdue_relevance
+              version: 1
+              purpose: >-
+                Is one task (subject= its id or exact title) still relevant, or likely stale? The
+                evidence is that task, its same-titled copies and the household context. Advice
+                only: nothing is completed or removed.
+              scope: [house]
+              fields: {required: [subject], optional: []}
+              summary_target: ""
+              outcomes: [relevant, likely_stale, insufficient_evidence]
+              questions:
+                stale:
+                  type: noul
+                  instructions: >-
+                    The state holds one household task (title, due date, how overdue, where it
+                    lives), any other tasks with the same title, and the household context. Is
+                    the task likely stale: done but never ticked, overtaken by a newer copy, or
+                    no longer wanted? Stale: an old copy of a recurring chore with a newer one
+                    open, a dated note whose date long passed, or a one-off that reads as done.
+                    Relevant: real work still waiting, or a recurring task with no newer copy.
+              policy: {question: stale, yes_outcome: likely_stale, no_outcome: relevant, yes_at: 0.6, no_below: 0.35}
+            - id: interrupt_now
+              version: 1
+              purpose: >-
+                Interrupt the household now about a task, or wait for the next briefing? subject=
+                one task, else the items at urgency 3 or more. Urgency 4 or more is now, quiet
+                hours or night is next_briefing and nothing to raise is next_briefing, all without
+                a model. Never medications.
+              scope: [house]
+              fields: {required: [], optional: [subject]}
+              summary_target: ""
+              outcomes: [now, next_briefing, insufficient_evidence]
+              questions:
+                when:
+                  type: choice
+                  instructions: >-
+                    The state holds the task or tasks to raise and the household's situation
+                    (home mode, guests, upcoming appointments, the weather). Should someone be
+                    interrupted about them now, or can they wait for the next briefing?
+                    Interrupt now only when waiting costs something real today: a deadline
+                    today, an appointment coming up, a window that closes. Otherwise wait.
+                  criteria:
+                    now: raise it now; waiting costs something today
+                    next_briefing: it can wait for the next briefing
+              policy: {question: when, min_probability: 0.5}
 
     # ── KF5 self-registration: kfc_manifest ────────────────────────────────────
     - if: "{{ (mode | default('') | lower) == 'kfc_manifest' }}"
@@ -202,6 +268,7 @@ script:
                 requires:
                   cert: ''
                   level: 0
+              decision: "{{ _tm_decision }}"
             - kata_key: taskmaster_meds
               friendly_name: Taskmaster Medications
               label: taskmaster
@@ -424,6 +491,141 @@ script:
     # a plain sequential step before the dispatch choose: below, not a
     # competing branch -- a competing branch would swallow the real action
     # logic on every authorized call. ──
+    # ── KF6.5 mode=decision: this host's templates (zero inference) ────────────
+    - if: "{{ final_response is not defined and mode_norm == 'decision' }}"
+      then:
+      - variables:
+          final_response:
+            status: ok
+            tool: zen_dojotools_taskmaster
+            mode: decision
+            host: taskmaster
+            decision_mode: "{{ 'on' if is_state('input_boolean.zen_decision_enabled', 'on') else 'off' }}"
+            requires: "{{ _tm_decision.requires }}"
+            templates: "{{ _tm_decision.templates }}"
+            decide_via: "zen_dojotools_oracle mode=decide host=taskmaster decision_template=<id> [subject=<task id or title>]"
+            caller_token: "{{ caller_token }}"
+
+    # ── KF6.5 decision_bind (called by Oracle) ─────────────────────────────────
+    # The household briefing (a parallel self-call; never medications), then the
+    # evidence for the template. Read only, no model.
+    - if: "{{ final_response is not defined and mode_norm == 'decision_bind' }}"
+      then:
+      - variables:
+          _db_tpl: "{{ decision_template | default('', true) | string | lower | trim }}"
+          _db_subject: "{{ subject | default('', true) | string | trim if subject is defined else '' }}"
+          _db_area: "{{ _area }}"
+      - variables:
+          _db_t: "{{ (_tm_decision.templates | selectattr('id', 'eq', _db_tpl) | list | first) | default({}) }}"
+      - if: "{{ _db_t | length == 0 }}"
+        then:
+          - variables:
+              final_response: {status: error, mode: decision_bind, outcome: unknown_template, message: "Taskmaster declares no template '{{ _db_tpl }}'. mode=decision lists them.", caller_token: "{{ caller_token }}"}
+      - if: "{{ final_response is not defined and _db_area != '' }}"
+        then:
+          - variables:
+              final_response: {status: error, mode: decision_bind, outcome: unsupported_scope, message: "Taskmaster decisions are about the household's tasks; it does not bind '{{ _db_area }}'. The decision was not narrowed.", caller_token: "{{ caller_token }}"}
+      - if: "{{ final_response is not defined }}"
+        then:
+          - action: script.zen_dojotools_taskmaster
+            response_variable: _db_seed_raw
+            continue_on_error: true
+            data:
+              mode: briefing
+              case: household
+              caller_token: "{{ caller_token }}"
+          - variables:
+              _db_cur: >-
+                {%- set r = _db_seed_raw if _db_seed_raw is defined and _db_seed_raw is mapping else {} -%}
+                {%- set r = r.get('result') if r.get('result') is mapping else r -%}
+                {{ r if (r is mapping and r.get('mode') == 'briefing') else {} }}
+          - if: "{{ _db_cur | length == 0 }}"
+            then:
+              - variables:
+                  final_response: {status: error, mode: decision_bind, outcome: bind_failed, message: "The household briefing did not answer. Nothing was decided.", caller_token: "{{ caller_token }}"}
+      - if: "{{ final_response is not defined }}"
+        then:
+          - variables:
+              _db_items: "{{ (_db_cur.get('items', []) or []) | select('mapping') | list }}"
+              _db_ctx: "{{ _db_cur.get('context') if _db_cur.get('context') is mapping else {} }}"
+          - variables:
+              _db_item: >-
+                {%- set s = _db_subject | lower -%}
+                {%- set byid = _db_items | selectattr('id', 'eq', _db_subject) | list -%}
+                {%- set ns = namespace(m=[]) -%}
+                {%- for i in _db_items if (i.get('title', '') | string | lower | trim) == s -%}{%- set ns.m = ns.m + [i] -%}{%- endfor -%}
+                {{ (byid | first) if byid | count > 0 else ((ns.m | first) if (s != '' and ns.m | count > 0) else {}) }}
+              _db_household:
+                home_mode: "{{ _db_ctx.get('home_mode') }}"
+                quiet_hours: "{{ _db_ctx.get('quiet_hours_active') }}"
+                guest_present: "{{ _db_ctx.get('guest_present') }}"
+                is_weekday: "{{ _db_ctx.get('is_weekday') }}"
+                upcoming_appointments: "{{ (_db_ctx.get('upcoming_appointments', []) or [])[:4] }}"
+                outdoor_ok: "{{ (_db_ctx.get('weather') or {}).get('outdoor_ok') }}"
+                local_time: "{{ now().strftime('%a %H:%M') }}"
+          - if: "{{ _db_subject != '' and _db_item | length == 0 }}"
+            then:
+              - variables:
+                  final_response: {status: error, mode: decision_bind, outcome: unsupported_scope, message: "No household task matches '{{ _db_subject }}' (give its id or its exact title). Medications are never bound.", caller_token: "{{ caller_token }}"}
+      - if: "{{ final_response is not defined }}"
+        then:
+          - variables:
+              _db_slim: >-
+                {%- set ns = namespace(out=[]) -%}
+                {%- set src = [_db_item] if _db_item | length > 0 else (_db_items | selectattr('urgency', 'ge', 3) | list) -%}
+                {%- for i in src[:8] -%}
+                  {%- set d = (i.get('due') | string | as_datetime) if i.get('due') else none -%}
+                  {%- set ns.out = ns.out + [{'title': i.get('title'), 'due': (i.get('due') | string)[:10] if i.get('due') else none,
+                                              'overdue_days': (((now() - d).total_seconds() / 86400) | round(0) | int) if (d is not none and d < now()) else 0,
+                                              'source': i.get('source'), 'category': i.get('category'), 'status': i.get('status'), 'urgency': i.get('urgency')}] -%}
+                {%- endfor -%}
+                {{ ns.out }}
+              _db_copies: >-
+                {%- set t0 = (_db_item.get('title', '') | string | lower | trim) if _db_item | length > 0 else '' -%}
+                {%- set ns = namespace(out=[]) -%}
+                {%- for i in _db_items if t0 != '' and (i.get('title', '') | string | lower | trim) == t0 and i.get('id') != _db_item.get('id') -%}
+                  {%- set ns.out = ns.out + [{'due': (i.get('due') | string)[:10] if i.get('due') else none, 'status': i.get('status'), 'source': i.get('source')}] -%}
+                {%- endfor -%}
+                {{ ns.out }}
+          - variables:
+              _db_umax: "{{ (_db_slim | map(attribute='urgency') | map('int', 0) | max) if _db_slim | count > 0 else 0 }}"
+              _db_quiet: "{{ (_db_ctx.get('quiet_hours_active') | bool(false)) or ((_db_ctx.get('home_mode') | string) in ['Night', 'Night-Late']) }}"
+          - variables:
+              _db_det: >-
+                {%- if _db_tpl == 'interrupt_now' -%}
+                  {%- if _db_slim | count == 0 -%}next_briefing
+                  {%- elif _db_umax >= 4 -%}now
+                  {%- elif _db_quiet -%}next_briefing
+                  {%- endif -%}
+                {%- endif -%}
+              _db_reason: >-
+                {%- if _db_tpl == 'interrupt_now' -%}
+                  {%- if _db_slim | count == 0 -%}Nothing is at urgency 3 or more to raise.
+                  {%- elif _db_umax >= 4 -%}A task at urgency {{ _db_umax }} is always raised now.
+                  {%- elif _db_quiet -%}Quiet hours or night: anything below urgency 4 waits for the next briefing.
+                  {%- endif -%}
+                {%- endif -%}
+          - variables:
+              final_response:
+                status: ok
+                mode: decision_bind
+                host: taskmaster
+                template: "{{ _db_tpl }}"
+                scope: house
+                deterministic: "{{ _db_det | trim }}"
+                reason: "{{ _db_reason | trim }}"
+                evidence_revision: >-
+                  {{ (_db_tpl ~ '|' ~ (_db_slim | map(attribute='title') | map('string') | join(',')) ~ '|' ~ (_db_slim | map(attribute='due') | map('string') | join(','))
+                      ~ '|' ~ (_db_copies | count) ~ '|m:' ~ (_db_ctx.get('home_mode') | string) ~ '|q:' ~ _db_quiet) | md5 }}
+                as_of: "{{ now().isoformat() }}"
+                evidence: >-
+                  {%- if _db_tpl == 'overdue_relevance' -%}
+                    {{ {'task': (_db_slim | first) if _db_slim | count > 0 else {}, 'same_title': _db_copies, 'household': _db_household} }}
+                  {%- else -%}
+                    {{ {'tasks': _db_slim, 'household': _db_household} }}
+                  {%- endif -%}
+                caller_token: "{{ caller_token }}"
+
     - if: "{{ final_response is not defined and mode_norm == 'task_create' }}"
       then:
       - action: script.zen_dojotools_identity
@@ -2058,7 +2260,7 @@ script:
       Self-registers with the Lens Bus. Use mode=help for full case reference.
     fields:
       mode:
-        description: "help | setup | tool_manifest | kfc_manifest | briefing | almanac | stale_review | facilities_brief | tier_status | task_create | task_list | task_complete | catch_up | register | unregister"
+        description: "help | setup | tool_manifest | kfc_manifest | briefing | almanac | stale_review | facilities_brief | tier_status | task_create | task_list | task_complete | catch_up | register | unregister | decision | decision_bind"
         required: true
         selector:
           select:
@@ -2079,6 +2281,8 @@ script:
               - register
               - unregister
               - by_anchor
+              - decision
+              - decision_bind
         default: help
       case:
         description: "For briefing only: household (everything but medications), medications (only medications), or omit for everything."
@@ -2204,6 +2408,16 @@ script:
           text:
       anchor_ids:
         description: "by_anchor only: JSON array or comma-separated list of anchor ids."
+        required: false
+        selector:
+          text:
+      decision_template:
+        description: "decision_bind only: the decision template id (Oracle binds it; mode=decision lists them)."
+        required: false
+        selector:
+          text:
+      subject:
+        description: "decision_bind only: the task a per-task template is about (its id or exact title)."
         required: false
         selector:
           text:

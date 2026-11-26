@@ -1,5 +1,13 @@
 ###############################################################################
-# zen_dojotools_room_manager v5.21.0 (codename: RoomReg)
+# zen_dojotools_room_manager v5.22.0 (codename: RoomReg)
+# v5.22.0: two per-room decision templates (#10768 items 2, 4 and 7), both area= required and
+#   bound from the room's own v3 room-state sensor (label zen_room_state), without the 35 s
+#   summary. room_occupancy: occupied, vacant or ambiguous (a choice; its probabilities are
+#   the confidence). hold_review: is a Hold expected or worth a look (expected/investigate;
+#   a room not in Hold is not_in_hold without a model). Both return the raw room state as
+#   observed, beside the judgment and never replaced by it. A life-safety state (emergency,
+#   smoke, leak, trouble) is never judged: insufficient_evidence. The summary's reduction
+#   step leaves a bound decision answer untouched.
 # v5.21.0: KF6.5 host (Oracle prototype, #10748). Additive: no existing mode changes.
 #   mode=decision lists Room Manager's decision templates (zero inference). mode=decision_bind
 #   (called by Oracle) checks the template, the scope (area must be a registered room; never
@@ -882,7 +890,7 @@ script:
                     'cert': 'zenos.decision.component.room_manager',
                     'display_name': 'Room Manager Decisions',
                     'description': "Use Room Manager's decision templates through Oracle",
-                    'detail': "Lets the agent ask Oracle Room Manager's decision templates (resummary_warranted: does the room picture differ enough from the last room summary to warrant a fresh one). Needs zenos.decision.use as well, and the operator's decision switch. Binding the evidence also needs zenos.presence.read. Grants no inference and no summary.",
+                    'detail': "Lets the agent ask Oracle Room Manager's decision templates (resummary_warranted: does the room picture differ enough from the last room summary to warrant a fresh one; room_occupancy: is one room occupied, vacant or ambiguous; hold_review: is a room's Hold expected or worth a look). Needs zenos.decision.use as well, and the operator's decision switch. Binding the evidence also needs zenos.presence.read. Grants no inference and no summary.",
                     'max_level': 1,
                     'st_ok': 'i',
                     'gates': ['zen_dojotools_oracle mode=decide host=room_manager (interactive, stage i)'],
@@ -961,6 +969,53 @@ script:
                       the same alerts restated, small changes in lighting or media, or
                       routine movement that does not change the overall picture.
                 policy: {question: material_change, refresh_at: 0.6, keep_below: 0.35}
+              - id: room_occupancy
+                version: 1
+                purpose: >-
+                  Is one room (area=) occupied, vacant, or is the evidence ambiguous? Read from the
+                  room's own state sensor, without the full summary. The raw state comes back as
+                  observed, beside the judgment. A life-safety state is never judged.
+                scope: [area]
+                fields: {required: [area], optional: []}
+                summary_target: ""
+                outcomes: [occupied, vacant, ambiguous, insufficient_evidence]
+                questions:
+                  occupancy:
+                    type: choice
+                    instructions: >-
+                      The state holds one room's raw occupancy evidence: the engine's state and
+                      how long it has held, live motion, the source of the occupancy evidence,
+                      the last triggers, holds, doors and windows, phones seen in the room (BLE)
+                      and zone presence, with the home mode and local time. Is someone in the
+                      room now? Choose ambiguous when the signals conflict (for example a hold
+                      with no motion for hours and no phone in the room) or are too thin to say.
+                    criteria:
+                      occupied: someone is in the room now
+                      vacant: no one is in the room
+                      ambiguous: the evidence conflicts or is too thin to say
+                policy: {question: occupancy, min_probability: 0.5}
+              - id: hold_review
+                version: 1
+                purpose: >-
+                  Is a room's Hold (area=) expected, or worth a look? A room not in Hold is
+                  not_in_hold without a model. The raw state comes back as observed. A life-safety
+                  state is never judged.
+                scope: [area]
+                fields: {required: [area], optional: []}
+                summary_target: ""
+                outcomes: [expected, investigate, not_in_hold, insufficient_evidence]
+                questions:
+                  investigate:
+                    type: noul
+                    instructions: >-
+                      The state holds one room in Hold: how long it has held, what is holding it
+                      (guest, presence, asleep, entertaining, a wasp door), the last triggers,
+                      live motion, doors, phones seen in the room and the home mode. Does this
+                      Hold look worth a person's look? Worth a look: a long Hold with no motion,
+                      no phone and nothing holding it that fits the time of day. Expected: a
+                      bedroom held overnight, a guest room with a guest staying, a room with
+                      someone plainly in it.
+                policy: {question: investigate, yes_outcome: investigate, no_outcome: expected, yes_at: 0.6, no_below: 0.35}
       - if: "{{ _result is not defined and _mode == 'kfc_manifest' }}"
         then:
         - variables:
@@ -1088,7 +1143,7 @@ script:
               templates: >-
                 {%- set ns = namespace(t=[]) -%}
                 {%- for d in _rm_decision.templates -%}
-                  {%- set ns.t = ns.t + [{'id': d.id, 'version': d.version, 'purpose': d.purpose, 'scope': d.scope, 'fields': d.fields, 'outcomes': d.outcomes, 'summary_target': d.summary_target}] -%}
+                  {%- set ns.t = ns.t + [{'id': d.id, 'version': d.version, 'purpose': d.purpose, 'scope': d.scope, 'fields': d.fields, 'outcomes': d.outcomes, 'summary_target': d.summary_target, 'policy': d.policy}] -%}
                 {%- endfor -%}
                 {{ ns.t }}
               decide_via: "zen_dojotools_oracle mode=decide host=room_manager decision_template=<id> [area=<area>]"
@@ -5433,6 +5488,78 @@ script:
               - variables:
                   _result: {status: error, mode: decision_bind, outcome: denied, gate: zenos.presence.read, error: "{{ _db_gate.reason }}", request_via: "{{ _db_gate.request_via }}", caller_token: "{{ _caller_token }}"}
 
+      # ── KF6.5 decision_bind, per-room templates: the room's own state sensor ──
+      # No summary: the room's v3 room-state sensor is the evidence, returned as
+      # observed beside the judgment. Gates (template, area, presence cert) ran above.
+      - if: "{{ _result is not defined and _mode == 'decision_bind' and (decision_template | default('', true) | string | lower | trim) in ['room_occupancy', 'hold_review'] }}"
+        then:
+        - variables:
+            _rt_tpl: "{{ decision_template | default('', true) | string | lower | trim }}"
+            _rt_ent: >-
+              {%- if _area_id == '' -%}
+              {%- else -%}
+                {%- set lab = label_entities('zen_room_state') | select('match', 'sensor\\.') | select('is_state_attr', 'room_state_room', _area_id) | list -%}
+                {%- set any = states.sensor | selectattr('attributes.room_state_room', 'defined') | selectattr('attributes.room_state_room', 'eq', _area_id) | map(attribute='entity_id') | list -%}
+                {{ (lab + any) | first | default('', true) }}
+              {%- endif -%}
+        - if: "{{ _area_id == '' }}"
+          then:
+            - variables:
+                _result: {status: error, mode: decision_bind, outcome: needs_input, missing: [area], message: "{{ _rt_tpl }} is about one room: give area=.", caller_token: "{{ _caller_token }}"}
+        - if: "{{ _result is not defined and _rt_ent == '' }}"
+          then:
+            - variables:
+                _result: {status: error, mode: decision_bind, outcome: unsupported_scope, message: "'{{ _area_id }}' has no room-state sensor (label zen_room_state).", caller_token: "{{ _caller_token }}"}
+        - if: "{{ _result is not defined }}"
+          then:
+          - variables:
+              _rt_obs: >-
+                {%- set ns = namespace(o={}) -%}
+                {%- for k in ['occupied_active', 'engaged_active', 'asleep_active', 'motion_live_active', 'occupancy_evidence_source',
+                              'occupied_last_trigger', 'engaged_last_trigger', 'asleep_last_trigger', 'last_trigger',
+                              'hold_active', 'guest_hold_active', 'presence_hold_active', 'asleep_hold_active', 'entertaining_hold_active',
+                              'wasp_flag_active', 'door_open_active', 'garage_open_active', 'window_open_active',
+                              'ble_occupants', 'zone_presence', 'room_timer_state', 'room_timer_class', 'room_control_state', 'child_occupied'] -%}
+                  {%- set v = state_attr(_rt_ent, k) -%}
+                  {%- if v is not none -%}{%- set ns.o = dict(ns.o, **{k: v}) -%}{%- endif -%}
+                {%- endfor -%}
+                {%- set lc = states[_rt_ent].last_changed if states[_rt_ent] is defined else none -%}
+                {{ dict({'state': states(_rt_ent), 'held_minutes': (((now() - lc).total_seconds() / 60) | round(0) | int) if lc is not none else none}, **ns.o) }}
+              _rt_safety: >-
+                {{ ['emergency_active', 'smoke_active', 'leak_active', 'trouble_active'] | select('in', (states[_rt_ent].attributes | dictsort | selectattr('1', 'eq', true) | map(attribute='0') | list)) | list }}
+          - variables:
+              _rt_in_hold: "{{ (_rt_obs.get('state', '') | string | lower) == 'hold' or (_rt_obs.get('hold_active') | bool(false)) }}"
+          - variables:
+              _rt_det: >-
+                {%- if _rt_safety | count > 0 -%}insufficient_evidence
+                {%- elif _rt_tpl == 'hold_review' and not _rt_in_hold -%}not_in_hold
+                {%- endif -%}
+              _rt_reason: >-
+                {%- if _rt_safety | count > 0 -%}A life-safety state is active ({{ _rt_safety | join(', ') }}); it is never judged.
+                {%- elif _rt_tpl == 'hold_review' and not _rt_in_hold -%}The room is {{ _rt_obs.get('state') }}, not in Hold.
+                {%- endif -%}
+              _rt_home_mode: >-
+                {{ states(label_entities('zen_home_mode') | select('match', '(sensor|input_select)\\.') | list | first | default('', true)) }}
+          - variables:
+              _result:
+                status: ok
+                mode: decision_bind
+                host: room_manager
+                template: "{{ _rt_tpl }}"
+                scope: area
+                area_id: "{{ _area_id }}"
+                deterministic: "{{ _rt_det | trim }}"
+                reason: "{{ _rt_reason | trim }}"
+                evidence_revision: "{{ ('r:' ~ _area_id ~ '|' ~ (_rt_obs | tojson)) | md5 }}"
+                as_of: "{{ now().isoformat() }}"
+                observed: "{{ _rt_obs }}"
+                evidence:
+                  room: "{{ _area_id }}"
+                  observed: "{{ _rt_obs }}"
+                  home_mode: "{{ _rt_home_mode }}"
+                  local_time: "{{ now().strftime('%a %H:%M') }}"
+                caller_token: "{{ _caller_token }}"
+
       - if: "{{ _result is not defined and _mode in ['home_overview', 'summary', 'decision_bind'] }}"
         then:
 
@@ -6053,7 +6180,7 @@ script:
       # Only a real home_overview answer is reduced. A refusal (the onboarding
       # gate, a failed slice) is an error result and passes through untouched; it
       # used to be turned into a normal-looking summary, which hid the gate.
-      - if: "{{ _mode in ['summary', 'decision_bind'] and _result is defined and _result is mapping and (_result.get('status') | string | lower) != 'error' }}"
+      - if: "{{ _mode in ['summary', 'decision_bind'] and _result is defined and _result is mapping and (_result.get('status') | string | lower) != 'error' and (_result.get('mode', '') | string) != 'decision_bind' }}"
         then:
           - variables:
               _sm_c: "{{ _result if _result is mapping else {} }}"
