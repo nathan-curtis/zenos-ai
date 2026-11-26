@@ -1,6 +1,15 @@
 ###############################################################################
-# ZenOS Room Manager v3 -- Consolidated Dispatcher (2026-08-07, rev 13)
+# ZenOS Room Manager v3 -- Consolidated Dispatcher (2026-08-07, rev 14)
 #
+# REV 14: self_label_resync finds each room's state sensor by what it is, not
+#   what it is named: the live sensor whose room_state_room attribute is the
+#   area id (every v3 room-state sensor stamps it). The entity_id guesses
+#   (sensor.<room>_state / sensor.<room>_room_state) are gone, so a sensor
+#   named any other way is labeled too. It also takes back its own label:
+#   zen_room_state comes off an entity that is unavailable, has no
+#   room_state_room, and whose room already has a live sensor (a leftover
+#   from an older naming). Only zen_room_state is removed; the room labels
+#   stay. Each removal is logged (logger zen_room_label).
 # REV 13 (#10705): timer expiry is the timer.finished purpose trigger on the
 #   labels room_timer, nightlight_timer, control_burnout and tv_sleep_timer,
 #   not the timer.finished event for every timer. TV sleep timers get the new
@@ -926,18 +935,21 @@ script:
           # the full list.
           - conditions: "{{ mode == 'self_label_resync' }}"
             sequence:
+              # Each room's live state sensor, by its room_state_room attribute.
+              - variables:
+                  _rs_by_room: >-
+                    {%- set ns = namespace(m={}) -%}
+                    {%- for s in states.sensor | selectattr('attributes.room_state_room', 'defined') if s.state not in ['unavailable', 'unknown'] -%}
+                      {%- set r = s.attributes.room_state_room | string -%}
+                      {%- if r != '' and r not in ns.m -%}{%- set ns.m = dict(ns.m, **{r: s.entity_id}) -%}{%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.m }}
               - repeat:
                   for_each: "{{ areas() }}"
                   sequence:
                     - variables:
                         _room: "{{ repeat.item }}"
-                        _target_ent: >-
-                          {%- if states['sensor.' ~ _room ~ '_state'] is not none -%}
-                            {{ 'sensor.' ~ _room ~ '_state' }}
-                          {%- elif states['sensor.' ~ _room ~ '_room_state'] is not none -%}
-                            {{ 'sensor.' ~ _room ~ '_room_state' }}
-                          {%- else -%}
-                          {%- endif -%}
+                        _target_ent: "{{ _rs_by_room.get(_room, '') }}"
                     - if: "{{ _target_ent | trim != '' }}"
                       then:
                         - variables:
@@ -1024,6 +1036,28 @@ script:
                                     data:
                                       label_id: ["{{ _class_label }}", "{{ _room }}"]
                                       entity_id: "{{ _ent }}"
+              # Take back zen_room_state from leftovers: unavailable, no
+              # room_state_room, and their room has a live sensor. Only this label.
+              - variables:
+                  _rs_stale: >-
+                    {%- set rooms = _rs_by_room.keys() | list -%}
+                    {%- set ns = namespace(o=[]) -%}
+                    {%- for e in label_entities('zen_room_state') if states(e) in ['unavailable', 'unknown'] and state_attr(e, 'room_state_room') is none -%}
+                      {%- if labels(e) | select('in', rooms) | list | count > 0 -%}{%- set ns.o = ns.o + [e] -%}{%- endif -%}
+                    {%- endfor -%}
+                    {{ ns.o }}
+              - if: "{{ _rs_stale | count > 0 }}"
+                then:
+                  - action: homeassistant.remove_label_from_entity
+                    continue_on_error: true
+                    data:
+                      label_id: zen_room_state
+                      entity_id: "{{ _rs_stale }}"
+                  - action: system_log.write
+                    data:
+                      level: info
+                      logger: zen_room_label
+                      message: "zen_room_state removed from {{ _rs_stale | join(', ') }}: unavailable, no room_state_room, and the room has a live sensor."
     # With no mode/max declared, this script defaults to HA's script
     # default mode: single -- every purpose-trigger house-wide (motion,
     # doors, locks, media, room_state_changed relay, etc.) funnels through

@@ -1,6 +1,14 @@
 ###############################################################################
 # ZenOS-AI DojoTools: Zen Spa
-# Version: 5.10.0
+# Version: 5.10.2
+# v5.10.2: consumables action=repoint config_json={"old_product_id": N, "new_product_id": M} moves
+#   catalog entries (parts, chem_supplies) from one Grocy product to another and changes nothing
+#   else in spa_config (Inventory's product_unit_repair calls it, #10779). provision force=true
+#   rebuilds the whole catalog: it clears chore links and makes new products for names it does not
+#   find, so it is not a repoint.
+# v5.10.1: consumables answers provision (and every valid action) with its own result. The
+#   unknown-action fallback ran unconditionally at the end and replaced it with 'Unknown action:
+#   provision' (#10779: product_unit_repair re-provisions the catalog through it).
 # v5.10.0: three more decision templates (#10772), all on the same summary computation.
 #   maintenance_advance: bring the cartridge replacement forward (advance/hold; due by the
 #   rule = advance, more than 720 hours left = hold, no reading = insufficient_evidence).
@@ -663,7 +671,7 @@ script:
                 summary='Hot tub control and water chemistry',
                 display_name='Spa Master',
                 tier='dojotools',
-                version='5.10.0',
+                version='5.10.2',
                 health={'configured': true, 'status': 'ok', 'notes': []},
                 required_labels=['dojotools'],
                 optional_labels=['spa', 'hot_tub_manager'],
@@ -740,7 +748,7 @@ script:
           _result:
             status: ok
             tool: zen_dojotools_spamaster
-            version: "5.10.0"
+            version: "5.10.2"
             mode: kfc_manifest
             count: 1
             caller_token: "{{ caller_token | default('', true) }}"
@@ -3748,11 +3756,69 @@ script:
                   'amount': _cons_amount,
                   'stored_at': _lp_part.get('storage_location_id')} }}
 
+      # ── repoint (#10779): move catalog entries from one product id to another ──
+      - if: "{{ _cons_action == 'repoint' }}"
+        then:
+        - variables:
+            _rp_in: >-
+              {%- set c = config_json | default('', true) -%}
+              {%- set c = (c | from_json(none)) if c is string and c | trim != '' else c -%}
+              {{ c if c is mapping else {} }}
+        - variables:
+            _rp_old: "{{ _rp_in.get('old_product_id') | int(0) }}"
+            _rp_new: "{{ _rp_in.get('new_product_id') | int(0) }}"
+            _rp_cfg: "{{ (state_attr(_cab, 'variables') | default({}, true)).get('spa_config', {}) }}"
+        - variables:
+            _rp_val: "{{ _rp_cfg.get('value', _rp_cfg) if _rp_cfg is mapping else {} }}"
+        - variables:
+            _rp_val: "{{ (_rp_val | from_json(none)) if _rp_val is string else _rp_val }}"
+            _rp_plan: >-
+              {%- set gc = _rp_val.get('grocy_catalog', {}) if _rp_val is mapping else {} -%}
+              {%- set ns = namespace(gc=gc, moved=[]) -%}
+              {%- for sec in ['parts', 'chem_supplies'] if gc.get(sec) is mapping -%}
+                {%- set nsec = namespace(d={}) -%}
+                {%- for k, v in gc[sec].items() -%}
+                  {%- if v is mapping and (v.get('product_id') | int(0)) == _rp_old and _rp_old > 0 -%}
+                    {%- set nsec.d = dict(nsec.d, **{k: dict(v, product_id=_rp_new)}) -%}{%- set ns.moved = ns.moved + [sec ~ '.' ~ k] -%}
+                  {%- else -%}{%- set nsec.d = dict(nsec.d, **{k: v}) -%}{%- endif -%}
+                {%- endfor -%}
+                {%- set ns.gc = dict(ns.gc, **{sec: nsec.d}) -%}
+              {%- endfor -%}
+              {{ {'catalog': ns.gc, 'moved': ns.moved} }}
+        - if: "{{ _rp_old <= 0 or _rp_new <= 0 or _rp_val is not mapping or _rp_val | count == 0 }}"
+          then:
+          - variables:
+              _result: "{{ {'mode': 'consumables', 'action': 'repoint', 'result': 'error', 'note': 'repoint needs config_json {old_product_id, new_product_id} and a spa_config.'} }}"
+          else:
+          - variables:
+              _rp_ok: "{{ _rp_plan.moved | count == 0 }}"
+          - if: "{{ _rp_plan.moved | count > 0 }}"
+            then:
+            - action: script.zen_sutra_filecabinet
+              response_variable: _rp_w
+              continue_on_error: true
+              data:
+                mode: upsert
+                write_mode: replace
+                volume_entity_id: "{{ _cab }}"
+                key: spa_config
+                value: "{{ dict(_rp_val, grocy_catalog=_rp_plan.catalog) | tojson }}"
+            - variables:
+                _rp_ok: "{{ _rp_w is mapping and _rp_w.get('status') == 'success' }}"
+          - variables:
+              _result: >-
+                {%- set ok = _rp_ok -%}
+                {{ {'mode': 'consumables', 'action': 'repoint',
+                    'result': ('repointed' if _rp_plan.moved | count > 0 else 'nothing_to_repoint') if ok else 'error',
+                    'old_product_id': _rp_old, 'new_product_id': _rp_new, 'moved': _rp_plan.moved} }}
+
       # ── unknown action fallback ─────────────────────────────────────────────
-      - variables:
-          _result: >-
-            {{ {'mode': 'consumables', 'result': 'error',
-                'note': 'Unknown action: ' ~ _cons_action ~ '. Valid: status, add_to_shopping, log_replaced, log_purchased, provision.'} }}
+      - if: "{{ _cons_action not in ['status', 'add_to_shopping', 'log_replaced', 'log_purchased', 'provision', 'repoint'] }}"
+        then:
+        - variables:
+            _result: >-
+              {{ {'mode': 'consumables', 'result': 'error',
+                  'note': 'Unknown action: ' ~ _cons_action ~ '. Valid: status, add_to_shopping, log_replaced, log_purchased, provision, repoint.'} }}
 
     # ── DEFAULT ───────────────────────────────────────────────────────────────
     - if: "{{ _result is not defined }}"
