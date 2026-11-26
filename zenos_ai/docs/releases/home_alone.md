@@ -8,7 +8,7 @@
 ### Betas
 
 - **Beta 1** (2026-11-18): the release as first published.
-- **Beta 2** (2026-11-25): Cortex 48 'True North', Autovac's `swap_robot`, mounts that carry their whole tree, the Plant water and electrical summaries, the Inventory stock-entry fix, the Abbot's new shape (requests instead of forces, its own lanes for maintenance and life-safety, pressure and recovery), stale summaries flagged, and Oracle as a preview with seven hosts: Room Manager, Weather, SpaMaster, Service Desk, Taskmaster and Plant's water and electrical.
+- **Beta 2** (2026-11-25): Cortex 48 'True North', Autovac's `swap_robot`, mounts that carry their whole tree, the Plant summaries, the Abbot's new shape, stale summaries flagged, and the Oracle preview.
 - **Beta 3:** <!-- placeholder -->
 
 <!-- Minimum Home Assistant version: to confirm. Room Manager's timers use the timer.finished trigger (about 2026.5); Spook needs 2026.11. -->
@@ -49,14 +49,13 @@ Each one is off until you turn it on, unless it says otherwise.
 - **High wind with a door open:** the house asks, and closes it if nobody answers.
 - **A window open with the heat on:** five minutes in, the house asks whether to turn the HVAC off. Once everything's closed it offers to turn it back on. At night it asks nothing and restores quietly.
 - **The morning briefing:** the almanac leads with the weather that matters, such as "hard freeze from Tue 18:00". *(Always on, with the Weather tool.)*
-- **"How's the house?":** the agent has security, climate, weather, vacuum, hot tub, service desk, guest and paperwork summaries to answer from, and knows when security is temporarily stepped aside. *(Each summary needs its read cert.)*
+- **"How's the house?":** the agent has security, climate, weather, vacuum, hot tub, service desk, guest, paperwork, water and electrical summaries to answer from, and knows when security is temporarily stepped aside. A summary that has gone stale is given with its age, never as happening now. *(Each summary needs its read cert.)*
 - **Guests:** the agent knows who arrives or leaves in the next day, and flags a stay still not released two days after checkout. *(Twenty plugin; needs its read cert.)*
 - **Paperwork:** an import Paperless couldn't file is flagged for a week, then listed quietly. *(Paperless; needs its read cert.)*
 - **The hot tub:** chemistry is judged against its last 24 hours, so one odd reading is a blip, not an alarm, and falling chlorine gets a warning before it's low.
 - **"What did the house do while I was out?":** security keeps a record of what it did on its own, and why. *(Always on.)*
 - **Nobody could be asked:** a question that reached no phone answers that straight away, instead of waiting out a tap that can't come. *(Always on.)*
 - **A leak, an alarm or smoke:** the agent's summary of it starts at once, ahead of routine work. *(With the background summaries on.)*
-- **"How's the house?", honestly dated:** a summary that has gone stale is reported with its age, never as happening now. *(Always on.)*
 - **Judgment calls:** ask whether the forecast has changed enough to matter, when's the best time to mow, whether the hot tub is ready for a soak, whether a ticket looks ready to close, whether an overdue task is still real, or whether a room is really empty. Each answer is advice and says what it looked at. *(Preview; off until you turn on decision mode.)*
 
 ---
@@ -75,7 +74,7 @@ Each one is off until you turn it on, unless it says otherwise.
   - the vacuum's security settings.
 
   See [Autovac](../components/autovac.md#replacing-the-robot).
-- **Weather 1.0 to 1.1 (new):** current conditions, the forecast by day part, and scored hazards for freeze, heat, storm, wind, rain and snow, behind `zenos.weather.read`. The source is the entity labeled `main_weather`. It's also an Oracle host, four templates behind `zenos.decision.component.weather`. See [Weather](../scripts/zen_dojotools_weather_readme.md).
+- **Weather 1.0 to 1.2 (new):** current conditions, the forecast by day part, and scored hazards for freeze, heat, storm, wind, rain and snow, behind `zenos.weather.read`. The source is the entity labeled `main_weather`. It's also an Oracle host, four templates behind `zenos.decision.component.weather`. See [Weather](../scripts/zen_dojotools_weather_readme.md).
 - **Climate 2.3.0 to 2.5.1:** a scored summary and the `climate` component, and the envelope offer. Room Manager's `hvac_coverage` says which rooms each air handler serves. See [Climate](../scripts/zen_dojotools_climate_readme.md).
 - **Taskmaster 0.10.0, 0.11.0:** briefing and almanac read the Weather tool: the next 24 hours' high and low, and hazards with when they start. It's also an Oracle host (never medications). See [Taskmaster](../kung_fu/taskmaster.md).
 - **Spa Master 5.7.0 to 5.10.0:** a scored summary and the `spamaster` component, behind `zenos.spa.read`, and an Oracle host. Chemistry is judged against its 24-hour trend. See [Spa Master](../components/spamaster.md).
@@ -83,8 +82,7 @@ Each one is off until you turn it on, unless it says otherwise.
 - **Rolodex 1.16.0 to 1.16.2 (Twenty plugin):** a scored summary of guest stays (rooms and dates, never names) that seeds the `rolodex` component, behind `zenos.rolodex.read`. See [Twenty](../plugins/twenty.md).
 - **Library 6.16.0, 6.16.1:** a scored summary of the Paperless inbox and failed imports (counts and file names, never content) and the first `library` component, behind `zenos.library.read`. See [Library](../scripts/zen_dojotools_library_readme.md).
 - **A plugin that's installed but not set up scores 0** in the Service Desk, Rolodex and Library summaries, instead of reporting itself unreachable every hour.
-- **Oracle 0.4.0 (new, preview, off by default):** typed judgments through Home Assistant's `ai_task.evaluate`. 21 templates across seven components (Room Manager, Weather, SpaMaster, Service Desk, Taskmaster, Plant water and electrical), each naming its own outcomes, and `ask` for an agent's own questions as advice. It never acts. Behind the operator's decision switch, `zenos.decision.use` and each component's decision cert (`zenos.decision.component.<component>`). See [Oracle](../scripts/zen_dojotools_oracle_readme.md#the-hosts) and [the story](#an-oracle-in-a-pear-tree).
-- **Room Manager 5.19.2 to 5.21.0:**
+- **Room Manager 5.19.2 to 5.22.0:**
   - `home_overview` and `summary` carry a temporary security override;
   - `summary` reports a room occupied while armed Away;
   - `hvac_coverage`;
@@ -100,6 +98,7 @@ Each one is off until you turn it on, unless it says otherwise.
 - **Labels 5.11.0, 5.11.1:** tagging or untagging through the tool re-arms the watchers that read that label. Labeling in the Home Assistant UI still needs the watcher turned off and on.
 - **Plant 5.14.0 to 5.16.0:** water and electrical summaries, the `water` and `electrical` components, behind `zenos.water.read` and `zenos.electrical.read`, from two new Plant codexes. Both are Oracle hosts; a decision never touches a valve or a breaker. See [The Plant codexes](../components/plant_manager.md#the-plant-codexes).
 - **FileCabinet 6.41.0:** `list` and `fleet` report drawer sizes, so you can see what fills a cabinet. See [FileCabinet](../scripts/zen_dojotools_filecabinet_readme.md#list).
+- **Oracle 0.4.0 (new, preview, off by default):** typed judgments through Home Assistant's `ai_task.evaluate`. 21 templates across seven components (Room Manager, Weather, Spa Master, Service Desk, Taskmaster, and Plant's water and electrical), each naming its own outcomes, and `ask` for an agent's own questions as advice. It never acts. Behind the operator's decision switch, `zenos.decision.use` and each component's decision cert (`zenos.decision.component.<component>`). See [Oracle](../scripts/zen_dojotools_oracle_readme.md#the-hosts) and [the story](#an-oracle-in-a-pear-tree).
 
 ---
 
@@ -119,19 +118,13 @@ Grocy handles tare weights, but it expects every stock write as the total on the
 
 <!-- Draft: Nathan to review. -->
 
-Every background summary costs the same, whether the house changed or not. A trigger fires, the Ninja gathers the evidence, and a model writes the whole picture again. Most of the time the answer is "nothing much".
+Every background summary costs the same whether the house changed or not. A trigger fires, the Ninja gathers the evidence, and a model writes the whole picture again. Most of the time the answer is "nothing much".
 
-Home Assistant 2026.11 added a different kind of model call, `ai_task.evaluate`. It doesn't write anything. It answers a question: yes or no as a probability, one of a few choices, or a score. Oracle is ZenOS's door to it.
+Home Assistant 2026.11 added a model call that doesn't write. `ai_task.evaluate` answers a question: yes or no as a probability, one of a few choices, or a score. Oracle is ZenOS's door to it. A component asks a small question about its own evidence (*has the forecast changed enough to matter? is the hot tub ready for a soak? is that overdue chore still real? is the back office empty, or just quiet?*) and gets a typed answer back, usually in under a second. Seven components ask 21 questions so far.
 
-With Oracle, a component can ask a small question about its own evidence before it pays for a full summary: *does this matter enough to write the picture again?* Room Manager asks first. It sets the rooms as they are now beside its last summary, and asks whether someone in the household would need a fresh one. On the reference house the question took under a second. A decision still gathers the room evidence; what a "keep" saves is the summary's model call and its thousands of tokens. Whether that adds up is something we'll measure, not promise.
+The rules come first. No hazard needs no model, a reading out of range is a problem without asking anyone, a severe storm is never judged away, and a smoke or leak state is never judged at all. And Oracle judges, never acts: it can say a fresh summary is warranted, but it can't request one or touch a device.
 
-Weather asks next, two ways: has the forecast changed enough to rewrite, and do its hazards matter to the people at home right now? Some answers never reach a model. No hazard is nothing to worry about, and a hazard at urgency 4 or more always matters, so a severe storm is never judged away.
-
-Then the rest of the house joined in. The spa, the service desk, the task list and the plant's water and power each ask their own questions, 21 in all. Some are about whether to rewrite a summary. Others are the judgment calls a person makes all day: is the hot tub ready for a soak, is this ticket done, is that overdue chore still real, is the back office really empty or just quiet? Every host puts its rules first. A reading out of range is a problem without asking anyone, and a smoke or leak state is never judged at all.
-
-Oracle judges and never acts. A decision can say a summary is warranted; it can't request one, force one, or touch a device. The component owns its questions and its thresholds, and a caller only picks which question to ask. An agent with a higher grant can ask questions of its own, over facts it supplies, and gets advice back, never a decision.
-
-In this release Oracle is a preview you try by hand. Nothing in the background calls it yet. It's off until you turn on decision mode, `input_boolean.zen_decision_enabled`, which no agent can reach, and grant `zenos.decision.use` and the decision cert of each component you want to ask. See [Oracle](../scripts/zen_dojotools_oracle_readme.md).
+It's a preview you try by hand; nothing in the background calls it yet. Where it's headed is a house that asks before it pays for a full summary. Whether that saves anything is something we'll measure, not promise. Oracle is off until you turn on decision mode, which no agent can reach, and grant `zenos.decision.use` and each component's decision cert. See [Oracle](../scripts/zen_dojotools_oracle_readme.md).
 
 ---
 
@@ -151,8 +144,9 @@ In this release Oracle is a preview you try by hand. Nothing in the background c
     - with the Twenty plugin, `zenos.rolodex.read`, and with Paperless, `zenos.library.read`. These two are in no standard bundle, because guest stays and file names can be personal, so only parity or a single grant gives them.
   - An existing grant doesn't gain new members by itself.
   - With `seed_cert_mode` on enforce, a summary whose cert is missing stops. In audit, the default on an upgrade, it logs `seed_cert_audit` and keeps running.
-- **Restart, or run `zen_dojotools_systemtools mode=zen_resolver_refresh`, after upgrading.** Room timers now expire through Home Assistant's `timer.finished` trigger on their labels, and a TV sleep timer gets its new `tv_sleep_timer` label at the next resync. Until then, the TV sleep timer doesn't start.
-- **Restart Home Assistant after upgrading.** If you reload instead: custom templates first (the summarizers and the recovery router import a new macro, and cabinet mounts need the new cabinet templates), then automations, wait, then scripts. Autovac's controller and the new watchers need the automations before the scripts. The Scheduler starts its work through a new script, `zen_abbot_launch`, so background summaries start once scripts are reloaded.
+- **Restart Home Assistant after upgrading.**
+  - If you reload instead: custom templates first (the summarizers and the recovery router import a new macro, and cabinet mounts need the new cabinet templates), then automations, wait, then scripts. Autovac's controller and the new watchers need the automations before the scripts, and background summaries start once scripts are reloaded (the Scheduler starts its work through a new script, `zen_abbot_launch`).
+  - Then run `zen_dojotools_systemtools mode=zen_resolver_refresh`. Room timers expire through Home Assistant's `timer.finished` trigger on their labels, and a TV sleep timer gets its new `tv_sleep_timer` label at the next resync; until then it doesn't start. A restart does this for you.
 - **Load the new prompt once:** run `zen_admintools_prompt_loader mode=load` after updating to move Friday to Cortex 48 'True North'. An install keeps the prompt it last loaded until you do.
 - **Four new automations:** the Zen Security Sentry, the Zen Climate Envelope Watcher, Zen DojoTools Housekeeping and Zen Safety Admit.
 - **Your own trigger automations should send `summary_request`, not `summary_force`.** A force still works, but it's for maintenance now. See [the Scheduler](../scripts/zen_dojotools_scheduler_readme.md#requesting-a-run).
