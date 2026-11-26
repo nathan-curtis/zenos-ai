@@ -1,8 +1,8 @@
 # ZenOS-AI Room Manager (RoomReg)
 
-**Version:** 5.21.0
+**Version:** 5.22.0
 
-> **2026.12.0 (5.21.0):** Room Manager is the first [Oracle](../scripts/zen_dojotools_oracle_readme.md) host (KF6.5 prototype). `mode=decision` lists its decision template and `mode=decision_bind` binds the evidence for Oracle. Nothing existing changed, and nothing happens unless the operator turns decision mode on. See [Decisions (KF6.5)](#decisions-kf65).
+> **2026.12.0 (5.21.0, 5.22.0):** Room Manager is an [Oracle](../scripts/zen_dojotools_oracle_readme.md) host (KF6.5 preview): `resummary_warranted`, and per room `room_occupancy` and `hold_review`. `mode=decision` lists its decision templates and `mode=decision_bind` binds the evidence for Oracle. Nothing existing changed, and nothing happens unless the operator turns decision mode on. See [Decisions (KF6.5)](#decisions-kf65).
 
 > **2026.12.0 (5.20.2, 5.20.3):** `setup` creates the `room_occupancy` root drawer in the target cabinet, and moves its data with the location: every `room_occupancy` drawer the household holds is copied to the target and compared value for value before the household originals are removed and the pointer written. A conflict, an unconfirmed copy or an unfinished removal stops `setup` with no pointer written, so the tree is never split between two cabinets.
 
@@ -393,33 +393,24 @@ All three are optional and additive — omitting them preserves existing values 
 
 ## Decisions (KF6.5)
 
-Room Manager is the first host for [Oracle](../scripts/zen_dojotools_oracle_readme.md), the decision service. It declares one template, carried on its `kfc_manifest` component as `decision`:
+Room Manager is a host for [Oracle](../scripts/zen_dojotools_oracle_readme.md), the decision service (KF6.5 preview, off until the operator turns decision mode on).
 
-**`resummary_warranted` (version 1):** does the house's room picture differ enough from the last room summary that a fresh one is warranted?
-- **Scope:** the whole house, or one room with `area=` (a room labeled `room_layout`). An area Room Manager doesn't know is `unsupported_scope`; it is never widened to the whole house.
-- **Question:** one `noul`, `material_change`. Material: a new or escalated alert or emergency, someone in rooms while the house is away, a clear change in which rooms are in use, newly opened exterior openings, or the last summary now being wrong. Not material: the same alerts restated, small lighting or media changes, routine movement.
-- **Policy:** refresh at 0.6 or more, keep below 0.35, anything between is `insufficient_evidence`. Tune it in `zen_decision_config` (`thresholds."room_manager.resummary_warranted"`).
-- **Refreshes:** the household `room_manager` kata.
+- **`resummary_warranted`** binds the summary seed (about 35 s on the reference install) beside the last `room_manager` kata. An area Room Manager doesn't know is `unsupported_scope`, never widened to the whole house. With no prior kata it's `refresh` without a model.
+- **`room_occupancy` and `hold_review`** read the room's own v3 room-state sensor (labeled `zen_room_state`, matched by `room_state_room`), with no summary. The raw room state comes back as `observed`, beside the judgment and never replaced by it. A life-safety state (emergency, smoke, leak, trouble) is never judged: `insufficient_evidence`.
 
-**Evidence** (`decision_bind`): Room Manager runs its summary seed and returns it beside the last `room_manager` kata:
-- `prior`: the kata's urgency, attention, general inference and age in minutes.
-- `current`: urgency, reasons, active rooms (just the one room when `area` is given), attention, open sensors, rooms occupied while away, maintenance.
-- `evidence_revision`: urgency, reasons, each room's occupancy and the open sensors, so a repeated decision on the same picture is recognizable.
+| Template | Asks (and what's settled without a model) | Outcomes | Input |
+|---|---|---|---|
+| `resummary_warranted` | Does the house's room picture differ enough from the last room summary that a fresh one is warranted? | `keep` / `refresh` (refreshes the `room_manager` kata) | `area=` optional |
+| `room_occupancy` | Is one room (area=) occupied, vacant, or is the evidence ambiguous? Read from the room's own state sensor, without the full summary. The raw state comes back as observed, beside the judgment. A life-safety state is never judged. | `occupied` / `vacant` / `ambiguous` (a choice) | `area=` required |
+| `hold_review` | Is a room's Hold (area=) expected, or worth a look? A room not in Hold is not_in_hold without a model. The raw state comes back as observed. A life-safety state is never judged. | `expected` / `investigate` / `not_in_hold` | `area=` required |
 
-With no prior kata, the answer is `refresh` without a model (`basis: deterministic`).
+Every template's model question is one `noul` at 0.6 and 0.35 unless the table says it's a choice (the chosen option wins at 0.5 or more). Anything in between, or a missing reading, is `insufficient_evidence`, never a confident answer. Each answer is advice: nothing is changed by a decision.
 
-**Certs:** the agent needs `zenos.decision.use`, `zenos.decision.component.room_manager` (level 1, declared in Room Manager's `tool_manifest`) and `zenos.presence.read` (the seed cert, checked by `decision_bind`). The operator's decision switch must be on.
+**Certs:** `zenos.decision.use`, `zenos.decision.component.room_manager` (level 1, declared in the tool's `tool_manifest`) and `zenos.presence.read`, plus the operator's decision switch. Decide through [Oracle](../scripts/zen_dojotools_oracle_readme.md): `zen_dojotools_oracle mode=decide host=room_manager decision_template=<id>`.
 
-```text
-zen_dojotools_room_manager mode=decision                         # the template (zero inference)
-zen_dojotools_oracle mode=decide host=room_manager decision_template=resummary_warranted
-zen_dojotools_oracle mode=decide host=room_manager decision_template=resummary_warranted area=garage
-```
-
-Decide through Oracle, never through Room Manager: Room Manager is queued, and Oracle calls back into it to bind. On the reference install a decision took about 35 s, nearly all of it the summary seed; the evaluation took under a second.
+Decide through Oracle, never through Room Manager: Room Manager is queued, and Oracle calls back into it to bind. The summary's reduction step leaves a bound decision answer alone.
 
 ---
-
 ## home_overview — Whole-House Snapshot
 
 Returns everything needed for AI home-state reasoning in a single call.

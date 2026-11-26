@@ -1,6 +1,6 @@
 # ZenOS-AI Plant Manager
 
-**Version:** 5.15.0. 5.15.0: electrical moves into the codex `zen_codex_plant_electrical`. 5.14.1: the leak watch closes `valve.*` shutoffs as well as switches. 5.14.0: the water codex `zen_codex_plant_water`. See [The Plant codexes](#the-plant-codexes). 5.13.3: `hvac_guidance` names how to say which areas an air handler serves (the unit's root label on those areas and its thermostats, read by Room Manager `mode=hvac_coverage`). 5.13.2: name outputs carry `entity_name` and `device_name` next to `friendly_name`. 5.13.0 and 5.13.1: cert names moved to the `zenos.*` namespace, with a plain approval description per cert. 5.12.0: onboarding gate (an agent without `zenos.agent.basic` gets help and `tool_manifest` only). 5.11.2: `managed` attributes a product-linked chore only to the machine that owns that product. 5.8.0 added `leak_auto_shutoff_enable` and the `zen_plant_leak_watch` automation (see below).
+**Version:** 5.16.0. 5.16.0: Oracle decision hosts `water` and `electrical`; see [Decisions (KF6.5)](#decisions-kf65). 5.15.0: electrical moves into the codex `zen_codex_plant_electrical`. 5.14.1: the leak watch closes `valve.*` shutoffs as well as switches. 5.14.0: the water codex `zen_codex_plant_water`. See [The Plant codexes](#the-plant-codexes). 5.13.3: `hvac_guidance` names how to say which areas an air handler serves (the unit's root label on those areas and its thermostats, read by Room Manager `mode=hvac_coverage`). 5.13.2: name outputs carry `entity_name` and `device_name` next to `friendly_name`. 5.13.0 and 5.13.1: cert names moved to the `zenos.*` namespace, with a plain approval description per cert. 5.12.0: onboarding gate (an agent without `zenos.agent.basic` gets help and `tool_manifest` only). 5.11.2: `managed` attributes a product-linked chore only to the machine that owns that product. 5.8.0 added `leak_auto_shutoff_enable` and the `zen_plant_leak_watch` automation (see below).
 **Script:** `zen_dojotools_plant`
 
 > **Wiring a whole-panel/circuit-level energy monitor?** See the Plant
@@ -80,6 +80,31 @@ Two read-only scripts carry Plant's water and electrical reads (2026.12.0). Neit
 
 ---
 
+## Decisions (KF6.5)
+
+Plant is two hosts for [Oracle](../scripts/zen_dojotools_oracle_readme.md), the decision service (KF6.5 preview, off until the operator turns decision mode on): `water` and `electrical`, one per codex. The template id picks the codex, and the bind runs that codex's summary. A codex that's missing or not set up is `insufficient_evidence`.
+
+**Host `water`** (cert `zenos.decision.component.water`):
+
+| Template | Asks (and what's settled without a model) | Outcomes | Input |
+|---|---|---|---|
+| `water_summary_refresh` | Does the water picture differ enough from the last water summary that a fresh one is warranted? | `keep` / `refresh` (refreshes the `water` kata) | none |
+| `water_attention` | Is the water picture worth someone's attention? Urgency 4 or more (a wet sensor, a shutoff closed unexpectedly, continuous flow with nobody home) is attention and no reason is nominal, without a model. Advice only: never a valve. | `attention` / `nominal` | none |
+
+**Host `electrical`** (cert `zenos.decision.component.electrical`):
+
+| Template | Asks (and what's settled without a model) | Outcomes | Input |
+|---|---|---|---|
+| `electrical_summary_refresh` | Does the electrical picture differ enough from the last electrical summary that a fresh one is warranted? | `keep` / `refresh` (refreshes the `electrical` kata) | none |
+| `load_attention` | Is the electrical picture worth someone's attention? Urgency 4 or more (a breaker opened by the panel, CO2 over 2000 ppm) is attention, and no reason or only breakers opened by USER is nominal, without a model. Advice only: never a breaker or a load. | `attention` / `nominal` | none |
+
+Every template's model question is one `noul` at 0.6 and 0.35 unless the table says it's a choice (the chosen option wins at 0.5 or more). Anything in between, or a missing reading, is `insufficient_evidence`, never a confident answer. Each answer is advice: nothing is changed by a decision.
+
+**Certs:** `zenos.decision.use`, `zenos.decision.component.water`, `zenos.decision.component.electrical` (level 1, declared in the tool's `tool_manifest`) and the codex's read cert (`zenos.water.read` or `zenos.electrical.read`), plus the operator's decision switch. Decide through [Oracle](../scripts/zen_dojotools_oracle_readme.md): `zen_dojotools_oracle mode=decide host=water decision_template=<id>` · `zen_dojotools_oracle mode=decide host=electrical decision_template=<id>`.
+
+A decision never touches a valve, a breaker or a load. The [leak watch](#leak-auto-shutoff-zen_plant_leak_watch) stays the responder.
+
+---
 ## Leak Auto-Shutoff (`zen_plant_leak_watch`)
 
 New 2026-08-24. House-wide automation, no per-room wiring required — it

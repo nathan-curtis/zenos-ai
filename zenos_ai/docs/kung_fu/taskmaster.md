@@ -1,6 +1,6 @@
 # Taskmaster — KFC Guide
 
-> **dojotools 0.10.2** | ZenOS-AI 2026.12.0
+> **dojotools 0.11.0** | ZenOS-AI 2026.12.0. 0.11.0: an Oracle decision host; see [Decisions (KF6.5)](#decisions-kf65).
 
 > **Meds have their own summary (0.9.0).** `briefing` takes `case`: `household` (everything but medications), `medications` (only medications), or none (everything, as before). The `taskmaster` summary seeds `household`, and the new `taskmaster_meds` summary seeds `medications`, which carries the read cert `zenos.health.read`. Bare `briefing` is no longer a seed mode; a summary that still seeds it keeps working, mapped to `briefing:household` through Taskmaster's `seed_aliases` (0.9.1), with a one-time notice saying so. Under `seed_cert_mode` enforce, meds reach a background summary only while that cert is granted with stage `s`.
 
@@ -89,6 +89,22 @@ Any todo entity tagged with `taskmaster` + a domain label (`daily`, `weekly`, `t
 
 ---
 
+## Decisions (KF6.5)
+
+Taskmaster is a host for [Oracle](../scripts/zen_dojotools_oracle_readme.md), the decision service (KF6.5 preview, off until the operator turns decision mode on). The bind runs `briefing case=household` (a parallel self-call). **Medications are never bound**: the household briefing is the only evidence, so a decision can't see them.
+
+| Template | Asks (and what's settled without a model) | Outcomes | Input |
+|---|---|---|---|
+| `overdue_relevance` | Is one task (subject= its id or exact title) still relevant, or likely stale? The evidence is that task, its same-titled copies and the household context. Advice only: nothing is completed or removed. | `relevant` / `likely_stale` | `subject=` required |
+| `interrupt_now` | Interrupt the household now about a task, or wait for the next briefing? subject= one task, else the items at urgency 3 or more. Urgency 4 or more is now, quiet hours or night is next_briefing and nothing to raise is next_briefing, all without a model. Never medications. | `now` / `next_briefing` (a choice) | `subject=` optional |
+
+Every template's model question is one `noul` at 0.6 and 0.35 unless the table says it's a choice (the chosen option wins at 0.5 or more). Anything in between, or a missing reading, is `insufficient_evidence`, never a confident answer. Each answer is advice: nothing is changed by a decision.
+
+**Certs:** `zenos.decision.use`, `zenos.decision.component.taskmaster` (level 1, declared in the tool's `tool_manifest`) and no seed cert (the household briefing has none), plus the operator's decision switch. Decide through [Oracle](../scripts/zen_dojotools_oracle_readme.md): `zen_dojotools_oracle mode=decide host=taskmaster decision_template=<id>`.
+
+`overdue_relevance` takes a task id or its exact title; its same-titled copies are part of the evidence. It never completes or removes anything.
+
+---
 ## Related
 
 - [Kitchen / Mealie](../plugins/mealie.md) — `prep_brief` feeds Taskmaster's `context.prep_schedule`.

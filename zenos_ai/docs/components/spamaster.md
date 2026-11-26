@@ -1,6 +1,6 @@
 # ZenOS-AI SpaMaster
 
-**Version:** 5.8.0. 5.8.0: `summary` judges chemistry against its day: each reading against its 24-hour mean and 6-hour direction (Recorder history). Out of range now but the day in range and not moving away is `<metric>_blip` (1), likely one reading; a confirmed one keeps its score with the mean and direction; `chlorine_falling` (1) warns early. `chemistry.trends_24h` carries the mean and direction. 5.7.2: 5.7.2: on a spa with no water-temperature sensor, `summary` reads the controller's `current_temperature`; a spa with no cover or chemistry sensors simply skips those rules. 5.7.1: `summary` adds `not_heating` (3) and `cover_open_nobody_home` (3). 5.7.0 (#10702, KF6): `summary`, a scored read (urgency 0 to 5) that seeds the new `spamaster` background summary, with the read cert `zenos.spa.read` (in `zenos_agent_basic`). 5.6.0 (#10698): `zenos.actuation.spa_control` also covers `log` when the entry carries a salt boost, a cover close or a setpoint (those actuate), `setup`, and every `consumables` action except `status`. 5.5.x: the name fallbacks scan only their own domain; the chemistry history baseline query runs. 5.5.0: name outputs carry `entity_name` and `device_name`. 5.4.x: cert names in the `zenos.*` namespace. 5.3.0: onboarding gate (an agent without `zenos.agent.basic` gets help and `tool_manifest` only).
+**Version:** 5.10.0. 5.9.0 and 5.10.0: an Oracle decision host; see [Decisions (KF6.5)](#decisions-kf65). 5.8.0: `summary` judges chemistry against its day: each reading against its 24-hour mean and 6-hour direction (Recorder history). Out of range now but the day in range and not moving away is `<metric>_blip` (1), likely one reading; a confirmed one keeps its score with the mean and direction; `chlorine_falling` (1) warns early. `chemistry.trends_24h` carries the mean and direction. 5.7.2: 5.7.2: on a spa with no water-temperature sensor, `summary` reads the controller's `current_temperature`; a spa with no cover or chemistry sensors simply skips those rules. 5.7.1: `summary` adds `not_heating` (3) and `cover_open_nobody_home` (3). 5.7.0 (#10702, KF6): `summary`, a scored read (urgency 0 to 5) that seeds the new `spamaster` background summary, with the read cert `zenos.spa.read` (in `zenos_agent_basic`). 5.6.0 (#10698): `zenos.actuation.spa_control` also covers `log` when the entry carries a salt boost, a cover close or a setpoint (those actuate), `setup`, and every `consumables` action except `status`. 5.5.x: the name fallbacks scan only their own domain; the chemistry history baseline query runs. 5.5.0: name outputs carry `entity_name` and `device_name`. 5.4.x: cert names in the `zenos.*` namespace. 5.3.0: onboarding gate (an agent without `zenos.agent.basic` gets help and `tool_manifest` only).
 **Script:** `zen_dojotools_spamaster`
 
 ---
@@ -319,6 +319,25 @@ Re-provision with `force=true` rebuilds the catalog entry; existing Grocy chores
 
 ---
 
+## Decisions (KF6.5)
+
+SpaMaster is a host for [Oracle](../scripts/zen_dojotools_oracle_readme.md), the decision service (KF6.5 preview, off until the operator turns decision mode on). The bind runs the `summary` computation in the same run (the script is single, so it never calls itself).
+
+| Template | Asks (and what's settled without a model) | Outcomes | Input |
+|---|---|---|---|
+| `summary_refresh` | Does the spa differ enough from the last spa summary that a fresh one is warranted? | `keep` / `refresh` (refreshes the `spamaster` kata) | none |
+| `chemistry_attention` | Does the spa's chemistry warrant attention? The rules come first, without a model: an offline spa or a missing chlorine or pH reading is insufficient_evidence, and a reading the rules score out of range is always attention. Only blips and drifts are judged. Advice only: it never certifies the water safe and never doses. | `attention` / `nominal` | none |
+| `maintenance_advance` | Should the sanitizer cartridge replacement be brought forward? Due by the rule (under 72 hours) is advance, more than 720 hours left is hold and no reading is insufficient_evidence, all without a model. | `advance` / `hold` | none |
+| `sensor_trust` | Do the chemistry readings look trustworthy against their own day? subject= may name one metric (chlorine, ph, orp, salt). Offline or no 24 hour history is insufficient_evidence, without a model. | `suspect` / `trusted` | `subject=` optional |
+| `soak_ready` | Is the spa ready for a soak? Offline or missing chlorine or pH is insufficient_evidence, a hard problem (chemistry out of range, too hot, freeze risk, not heating, below range) is not_ready and nothing flagged is ready, all without a model; only minor flags are judged. Advice only: it never certifies the water safe. | `ready` / `not_ready` | none |
+
+Every template's model question is one `noul` at 0.6 and 0.35 unless the table says it's a choice (the chosen option wins at 0.5 or more). Anything in between, or a missing reading, is `insufficient_evidence`, never a confident answer. Each answer is advice: nothing is changed by a decision.
+
+**Certs:** `zenos.decision.use`, `zenos.decision.component.spamaster` (level 1, declared in the tool's `tool_manifest`) and `zenos.spa.read`, plus the operator's decision switch. Decide through [Oracle](../scripts/zen_dojotools_oracle_readme.md): `zen_dojotools_oracle mode=decide host=spamaster decision_template=<id>`.
+
+`soak_ready` never certifies the water safe: it says whether anything flagged stands in the way. A spa with no chemistry sensors is `insufficient_evidence`, never "fine".
+
+---
 ## Cross-Tool Awareness
 
 When `spa_climate` is detected in any area by other tools, they surface a `spa_master` pointer in their response:

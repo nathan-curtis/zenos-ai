@@ -157,7 +157,7 @@ GET+SET for `climate` and `fan` entities with topology context (open doors and w
 
 ---
 
-## 11b. Zen DojoTools Weather — v1.1.0
+## 11b. Zen DojoTools Weather — v1.2.0
 **File:** [`zen_dojotools_weather_readme.md`](zen_dojotools_weather_readme.md)
 
 Weather now and the forecast with a locked schema (`schema_version` 1.0): the source is the entity labeled `main_weather`, else the first `weather.*`; `current`, `forecast` (averaged summary, high and low, flags for rain, snow, freeze, heat, wind and storm, named day parts) and a scored `summary` for the ambient-tier weather KFC. Read only; `zenos.weather.read` gates only the background seed.
@@ -324,10 +324,10 @@ Flynn's own admin door for the identity wiring the Sentinel does at boot, before
 
 ---
 
-## 34. Zen DojoTools Oracle — v0.3.0 (2026.12.0, prototype, off by default)
+## 34. Zen DojoTools Oracle — v0.4.0 (2026.12.0, prototype, off by default)
 **File:** [`zen_dojotools_oracle_readme.md`](zen_dojotools_oracle_readme.md)
 
-The decision service (KF6.5). A host component's declared template asks a small, typed question through Home Assistant's `ai_task.evaluate` (`noul`, `choice`, `score`) and gets a typed decision back, for example whether a fresh summary is warranted. It judges and never acts. `ask` takes the agent's own questions, advisory only. Gated by the operator's `input_boolean.zen_decision_enabled`, `zenos.decision.use` and `zenos.decision.component.<host>`. Room Manager and Weather are the hosts; a template names its own outcomes.
+The decision service (KF6.5). A host component's declared template asks a small, typed question through Home Assistant's `ai_task.evaluate` (`noul`, `choice`, `score`) and gets a typed decision back, for example whether a fresh summary is warranted. It judges and never acts. `ask` takes the agent's own questions, advisory only. Gated by the operator's `input_boolean.zen_decision_enabled`, `zenos.decision.use` and `zenos.decision.component.<host>`. Seven hosts (Room Manager, Weather, SpaMaster, Service Desk, Taskmaster, Plant water and electrical); a template names its own outcomes, and `subject=` asks about one item.
 
 ---
 

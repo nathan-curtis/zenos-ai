@@ -1,6 +1,6 @@
-# Zen DojoTools Weather — v1.1.0
+# Zen DojoTools Weather — v1.2.0
 
-> **2026.12.0 (1.1.0):** Weather is an [Oracle](zen_dojotools_oracle_readme.md) host (KF6.5 preview): `forecast_changed` and `hazard_relevance`. Nothing existing changed, and nothing happens unless the operator turns decision mode on. See [Decisions (KF6.5)](#decisions-kf65).
+> **2026.12.0 (1.1.0, 1.2.0):** Weather is an [Oracle](zen_dojotools_oracle_readme.md) host (KF6.5 preview): `forecast_changed`, `hazard_relevance`, `forecast_recheck` and `outdoor_window`. Nothing existing changed, and nothing happens unless the operator turns decision mode on. See [Decisions (KF6.5)](#decisions-kf65).
 
 > **2026.12.0 (1.0.0):** a product weather tool with a locked schema. It keeps what the house forecast script (TheFes' "Weather Forecast") did and adds current conditions, highs and lows, in-code answers, named day parts, a read cert and a KFC.
 
@@ -79,24 +79,22 @@ The weather KFC is on the **ambient tier**: Trapper Keeper digests urgency 0 to 
 
 ## Decisions (KF6.5)
 
-Weather is a host for [Oracle](zen_dojotools_oracle_readme.md). Both templates are whole-house: an `area` is `unsupported_scope`. Decide through Oracle: `zen_dojotools_oracle mode=decide host=weather decision_template=<id>`.
+Weather is a host for [Oracle](zen_dojotools_oracle_readme.md), the decision service (KF6.5 preview, off until the operator turns decision mode on). Every template is whole-house: an `area` is `unsupported_scope`. The bind runs `mode=summary`. With no weather source at all, every template is `insufficient_evidence` without a model.
 
-| Template | Question | Outcomes | Settled without a model |
+| Template | Asks (and what's settled without a model) | Outcomes | Input |
 |---|---|---|---|
-| `forecast_changed` | Has the forecast changed enough since the last weather summary that a fresh one is warranted? | `refresh` / `keep` (refreshes the `weather` kata) | No prior weather summary: `refresh` |
-| `hazard_relevance` | Do the forecast's hazards matter to the household right now? | `attention` / `nominal` (a judgment only, no summary) | No hazard: `nominal`. A hazard at urgency 4 or more: `attention`, so a severe hazard is never judged away |
+| `forecast_changed` | Has the forecast changed enough since the last weather summary that a fresh one is warranted? | `keep` / `refresh` (refreshes the `weather` kata) | none |
+| `hazard_relevance` | Do the hazards in the forecast matter to the household right now? No hazard is nominal and a hazard at urgency 4 or more is always attention, both settled without a model; only lesser hazards are judged. | `attention` / `nominal` | none |
+| `forecast_recheck` | Is the forecast uncertain enough that it should be checked again later? A severe hazard is recheck and a clear forecast (no hazard, rain chance 10% or less) is settled, both without a model. | `recheck` / `settled` | none |
+| `outdoor_window` | Which of the next morning, afternoon and evening is best for time outside, or none? subject= may name the activity (for example mow the lawn). A part of the day already over means the same part tomorrow. | `next_morning` / `next_afternoon` / `next_evening` / `none` (a choice) | `subject=` optional |
 
-Both policies use one `noul` question at 0.6 and 0.35. With no weather source at all, either template answers `insufficient_evidence` without a model.
+Every template's model question is one `noul` at 0.6 and 0.35 unless the table says it's a choice (the chosen option wins at 0.5 or more). Anything in between, or a missing reading, is `insufficient_evidence`, never a confident answer. Each answer is advice: nothing is changed by a decision.
 
-**Evidence** (`decision_bind` runs `mode=summary`):
-- `forecast_changed`: the last `weather` kata (urgency, attention, inference, age) beside the summary now (urgency, reasons, hazards, conditions, the next 24 hours).
-- `hazard_relevance`: the hazards with when they start, conditions now, the next 24 hours, and the household's situation (home mode, people home, local time).
-- `evidence_revision`: urgency and each hazard with its start, plus the next day's high, low and condition (`forecast_changed`) or the home mode and people home (`hazard_relevance`).
+**Certs:** `zenos.decision.use`, `zenos.decision.component.weather` (level 1, declared in the tool's `tool_manifest`) and `zenos.weather.read`, plus the operator's decision switch. Decide through [Oracle](zen_dojotools_oracle_readme.md): `zen_dojotools_oracle mode=decide host=weather decision_template=<id>`.
 
-**Certs:** `zenos.decision.use`, `zenos.decision.component.weather` (level 1, declared in Weather's `tool_manifest`) and `zenos.weather.read`, plus the operator's decision switch.
+`outdoor_window` is the first choice policy: the option the evaluator picks is the outcome when its probability is 0.5 or more. A part of the day that's already over means the same part tomorrow.
 
 ---
-
 ## Labels
 
 | Label | On | Meaning |

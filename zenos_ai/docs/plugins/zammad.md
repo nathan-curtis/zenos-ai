@@ -1,6 +1,6 @@
 # ZenOS-AI Zammad (Radar) Plugin
 
-**Version:** 0.6.3 (`zen_dojotools_servicedesk`) / 1.0.0 (`zen_stack_radar`)
+**Version:** 0.8.0 (`zen_dojotools_servicedesk`; 0.7.0 and 0.8.0: an Oracle decision host, see [Decisions (KF6.5)](#decisions-kf65)) / 1.0.0 (`zen_stack_radar`)
 **Package:** `packages/zenos_ai/plugins/zammad/zammad.yaml`
 **MCP-facing script:** `zen_dojotools_servicedesk`
 **Lens Bus stack provider:** `zen_stack_radar`
@@ -64,6 +64,23 @@ Use `mode=help` for the full field catalog. Key modes:
 
 ---
 
+## Decisions (KF6.5)
+
+The Service Desk is a host for [Oracle](../scripts/zen_dojotools_oracle_readme.md), the decision service (KF6.5 preview, off until the operator turns decision mode on). The bind runs `mode=summary` (a parallel self-call). With no reachable Zammad every template is `insufficient_evidence`.
+
+| Template | Asks (and what's settled without a model) | Outcomes | Input |
+|---|---|---|---|
+| `triage_needed` | Do the new tickets need someone's triage now? An unreachable desk is insufficient_evidence, an escalated ticket is always attention and nothing new is nominal, all without a model. Advice only: nothing is assigned or changed. | `attention` / `nominal` | none |
+| `stalled_resurface` | Should the stalled open tickets (open with no update for 30 days or more) be surfaced again? An unreachable desk is insufficient_evidence and nothing stalled is nominal, without a model. Advice only: nothing is closed or changed. | `attention` / `nominal` | none |
+| `ready_to_close` | Does one ticket (subject= its number) look ready to close? Advice only: nothing is closed. A ticket not found, or already closed or merged, is refused. | `ready` / `not_ready` | `subject=` required |
+
+Every template's model question is one `noul` at 0.6 and 0.35 unless the table says it's a choice (the chosen option wins at 0.5 or more). Anything in between, or a missing reading, is `insufficient_evidence`, never a confident answer. Each answer is advice: nothing is changed by a decision.
+
+**Certs:** `zenos.decision.use`, `zenos.decision.component.servicedesk` (level 1, declared in the tool's `tool_manifest`) and `zenos.service.read`, plus the operator's decision switch. Decide through [Oracle](../scripts/zen_dojotools_oracle_readme.md): `zen_dojotools_oracle mode=decide host=servicedesk decision_template=<id>`.
+
+`ready_to_close` refuses a ticket that isn't found, or is already closed or merged. It never closes anything.
+
+---
 ## zen_stack_radar — Lens Bus Stack Provider
 
 `zen_stack_radar` is the Lens Bus stack adapter for Zammad. It maps Library verbs to servicedesk modes and is the correct path when another tool (Library, Room Manager, etc.) needs ticket evidence by HA anchor.

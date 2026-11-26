@@ -8,7 +8,7 @@
 ### Betas
 
 - **Beta 1** (2026-11-18): the release as first published.
-- **Beta 2** (2026-11-25): Cortex 48 'True North', Autovac's `swap_robot`, mounts that carry their whole tree, the Plant water and electrical summaries, the Inventory stock-entry fix, the Abbot's new shape (requests instead of forces, its own lanes for maintenance and life-safety, pressure and recovery), stale summaries flagged, and Oracle as a preview with Room Manager and Weather as its hosts.
+- **Beta 2** (2026-11-25): Cortex 48 'True North', Autovac's `swap_robot`, mounts that carry their whole tree, the Plant water and electrical summaries, the Inventory stock-entry fix, the Abbot's new shape (requests instead of forces, its own lanes for maintenance and life-safety, pressure and recovery), stale summaries flagged, and Oracle as a preview with seven hosts: Room Manager, Weather, SpaMaster, Service Desk, Taskmaster and Plant's water and electrical.
 - **Beta 3:** <!-- placeholder -->
 
 <!-- Minimum Home Assistant version: to confirm. Room Manager's timers use the timer.finished trigger (about 2026.5); Spook needs 2026.11. -->
@@ -57,7 +57,7 @@ Each one is off until you turn it on, unless it says otherwise.
 - **Nobody could be asked:** a question that reached no phone answers that straight away, instead of waiting out a tap that can't come. *(Always on.)*
 - **A leak, an alarm or smoke:** the agent's summary of it starts at once, ahead of routine work. *(With the background summaries on.)*
 - **"How's the house?", honestly dated:** a summary that has gone stale is reported with its age, never as happening now. *(Always on.)*
-- **"Is this worth a fresh look?":** ask Oracle, and Room Manager or Weather judges whether things have changed enough since the last summary, or whether a forecast hazard matters right now. *(Preview; off until you turn on decision mode.)*
+- **Judgment calls:** ask whether the forecast has changed enough to matter, when's the best time to mow, whether the hot tub is ready for a soak, whether a ticket looks ready to close, whether an overdue task is still real, or whether a room is really empty. Each answer is advice and says what it looked at. *(Preview; off until you turn on decision mode.)*
 
 ---
 
@@ -75,20 +75,20 @@ Each one is off until you turn it on, unless it says otherwise.
   - the vacuum's security settings.
 
   See [Autovac](../components/autovac.md#replacing-the-robot).
-- **Weather 1.0 to 1.1 (new):** current conditions, the forecast by day part, and scored hazards for freeze, heat, storm, wind, rain and snow, behind `zenos.weather.read`. The source is the entity labeled `main_weather`. It's also an Oracle host: `forecast_changed` and `hazard_relevance`, behind `zenos.decision.component.weather`. See [Weather](../scripts/zen_dojotools_weather_readme.md).
+- **Weather 1.0 to 1.1 (new):** current conditions, the forecast by day part, and scored hazards for freeze, heat, storm, wind, rain and snow, behind `zenos.weather.read`. The source is the entity labeled `main_weather`. It's also an Oracle host, four templates behind `zenos.decision.component.weather`. See [Weather](../scripts/zen_dojotools_weather_readme.md).
 - **Climate 2.3.0 to 2.5.1:** a scored summary and the `climate` component, and the envelope offer. Room Manager's `hvac_coverage` says which rooms each air handler serves. See [Climate](../scripts/zen_dojotools_climate_readme.md).
-- **Taskmaster 0.10.0:** briefing and almanac read the Weather tool: the next 24 hours' high and low, and hazards with when they start. See [Taskmaster](../kung_fu/taskmaster.md).
-- **Spa Master 5.7.0 to 5.8.0:** a scored summary and the `spamaster` component, behind `zenos.spa.read`. Chemistry is judged against its 24-hour trend. See [Spa Master](../components/spamaster.md).
-- **Service Desk 0.6.0 to 0.6.3 (Zammad plugin):** a scored summary and the `servicedesk` component, behind `zenos.service.read`. See [Zammad](../plugins/zammad.md).
+- **Taskmaster 0.10.0, 0.11.0:** briefing and almanac read the Weather tool: the next 24 hours' high and low, and hazards with when they start. It's also an Oracle host (never medications). See [Taskmaster](../kung_fu/taskmaster.md).
+- **Spa Master 5.7.0 to 5.10.0:** a scored summary and the `spamaster` component, behind `zenos.spa.read`, and an Oracle host. Chemistry is judged against its 24-hour trend. See [Spa Master](../components/spamaster.md).
+- **Service Desk 0.6.0 to 0.8.0 (Zammad plugin):** a scored summary and the `servicedesk` component, behind `zenos.service.read`, and an Oracle host. See [Zammad](../plugins/zammad.md).
 - **Rolodex 1.16.0 to 1.16.2 (Twenty plugin):** a scored summary of guest stays (rooms and dates, never names) that seeds the `rolodex` component, behind `zenos.rolodex.read`. See [Twenty](../plugins/twenty.md).
 - **Library 6.16.0, 6.16.1:** a scored summary of the Paperless inbox and failed imports (counts and file names, never content) and the first `library` component, behind `zenos.library.read`. See [Library](../scripts/zen_dojotools_library_readme.md).
 - **A plugin that's installed but not set up scores 0** in the Service Desk, Rolodex and Library summaries, instead of reporting itself unreachable every hour.
-- **Oracle 0.3.0 (new, preview, off by default):** typed judgments through Home Assistant's `ai_task.evaluate`. A component's own templates name their outcomes (keep or refresh, attention or nominal), and `ask` takes an agent's own questions as advice. It never acts. Behind the operator's decision switch, `zenos.decision.use` and each component's decision cert. See [Oracle](../scripts/zen_dojotools_oracle_readme.md) and [the story](#an-oracle-in-a-pear-tree).
+- **Oracle 0.4.0 (new, preview, off by default):** typed judgments through Home Assistant's `ai_task.evaluate`. 21 templates across seven components (Room Manager, Weather, SpaMaster, Service Desk, Taskmaster, Plant water and electrical), each naming its own outcomes, and `ask` for an agent's own questions as advice. It never acts. Behind the operator's decision switch, `zenos.decision.use` and each component's decision cert (`zenos.decision.component.<component>`). See [Oracle](../scripts/zen_dojotools_oracle_readme.md#the-hosts) and [the story](#an-oracle-in-a-pear-tree).
 - **Room Manager 5.19.2 to 5.21.0:**
   - `home_overview` and `summary` carry a temporary security override;
   - `summary` reports a room occupied while armed Away;
   - `hvac_coverage`;
-  - the first Oracle host: `resummary_warranted`, behind `zenos.decision.component.room_manager`.
+  - an Oracle host: `resummary_warranted`, and per room `room_occupancy` and `hold_review`, behind `zenos.decision.component.room_manager`.
 
   See [Room Manager](../components/room_manager.md).
 - **Postman 5.6.0:** a call that reached nobody answers `no_channel`.
@@ -98,7 +98,7 @@ Each one is off until you turn it on, unless it says otherwise.
 
   See [SystemTools](../scripts/zen_dojotools_systemtools_readme.md).
 - **Labels 5.11.0, 5.11.1:** tagging or untagging through the tool re-arms the watchers that read that label. Labeling in the Home Assistant UI still needs the watcher turned off and on.
-- **Plant 5.14.0 to 5.15.0:** water and electrical summaries, the `water` and `electrical` components, behind `zenos.water.read` and `zenos.electrical.read`, from two new Plant codexes. See [The Plant codexes](../components/plant_manager.md#the-plant-codexes).
+- **Plant 5.14.0 to 5.16.0:** water and electrical summaries, the `water` and `electrical` components, behind `zenos.water.read` and `zenos.electrical.read`, from two new Plant codexes. Both are Oracle hosts; a decision never touches a valve or a breaker. See [The Plant codexes](../components/plant_manager.md#the-plant-codexes).
 - **FileCabinet 6.41.0:** `list` and `fleet` report drawer sizes, so you can see what fills a cabinet. See [FileCabinet](../scripts/zen_dojotools_filecabinet_readme.md#list).
 
 ---
@@ -126,6 +126,8 @@ Home Assistant 2026.11 added a different kind of model call, `ai_task.evaluate`.
 With Oracle, a component can ask a small question about its own evidence before it pays for a full summary: *does this matter enough to write the picture again?* Room Manager asks first. It sets the rooms as they are now beside its last summary, and asks whether someone in the household would need a fresh one. On the reference house the question took under a second. A decision still gathers the room evidence; what a "keep" saves is the summary's model call and its thousands of tokens. Whether that adds up is something we'll measure, not promise.
 
 Weather asks next, two ways: has the forecast changed enough to rewrite, and do its hazards matter to the people at home right now? Some answers never reach a model. No hazard is nothing to worry about, and a hazard at urgency 4 or more always matters, so a severe storm is never judged away.
+
+Then the rest of the house joined in. The spa, the service desk, the task list and the plant's water and power each ask their own questions, 21 in all. Some are about whether to rewrite a summary. Others are the judgment calls a person makes all day: is the hot tub ready for a soak, is this ticket done, is that overdue chore still real, is the back office really empty or just quiet? Every host puts its rules first. A reading out of range is a problem without asking anyone, and a smoke or leak state is never judged at all.
 
 Oracle judges and never acts. A decision can say a summary is warranted; it can't request one, force one, or touch a device. The component owns its questions and its thresholds, and a caller only picks which question to ask. An agent with a higher grant can ask questions of its own, over facts it supplies, and gets advice back, never a decision.
 
