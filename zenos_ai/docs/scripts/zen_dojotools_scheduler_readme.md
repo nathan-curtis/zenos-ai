@@ -1,4 +1,6 @@
-# Zen DojoTools Scheduler — v5.7.1
+# Zen DojoTools Scheduler — v5.7.2
+
+> **2026.12.0 (5.7.2):** every broadcast launch is spaced 30 s apart, not only `ha_start`. Each trigger list has its own offset (0 s for hourly and other broadcasts, 10 s for `quarter_hour`, 20 s for `daily_midnight` and `daily_noon`), so a busy tick that fires several at once interleaves instead of overflowing the Ninja. `summary_request`, `force_summary` and `force_ninja` still launch at once.
 
 > **2026.12.0 (5.7.0):** the file now holds three automations and a launcher. The Scheduler (the Abbot) only decides who runs. [`zen_abbot_launch`](#the-launcher-zen_abbot_launch) starts the work, so a scheduler run takes seconds and no longer holds its queue slot through delays. [Housekeeping](#housekeeping) and [Safety Admit](#safety-admit) are their own automations. Each housekeeping job now runs on its own: they used to share one first-match `choose`, so display session expiry, the resolver refresh, both Rolodex stay checks, the Identity Manifest and the Compact Index never ran from here. Routine refreshes are a [`summary_request`](#requesting-a-run); [force is for maintenance only](#maintenance-forces). SuperSummary runs [every quarter hour, at start and on request](#supersummary-cadence). A component with no kata is [admitted at start](#cold-start), and start-up launches are spaced 30 s apart. 5.7.1 re-registers the core trigger pack, whose `force_summary` entry now says maintenance only; `summary_request` and `supersummary_request` are targeted events, not subscriptions, so they aren't in the registry. Reload scripts first (that creates the launcher), then automations.
 
@@ -71,7 +73,7 @@ kata_key: security_manager
 ```
 
 - **`trigger_subscriptions`** — list of trigger IDs this component wants to fire on
-- **`delay_seconds`** — how long after the trigger to run the Ninja Summarizer. It is an offset from the trigger, not a wait after the previous subscriber, and the launcher sleeps it, not the scheduler. It is skipped on `summary_request`, `force_summary` and `force_ninja`. On `ha_start`, launches are spaced 30 s apart: each component waits the larger of its delay and its slot, so a boot doesn't overflow the Ninja's queue. `super` and `system` tier components have no delay.
+- **`delay_seconds`** — how long after the trigger to run the Ninja Summarizer. It is an offset from the trigger, not a wait after the previous subscriber, and the launcher sleeps it, not the scheduler. It is skipped on `summary_request`, `force_summary` and `force_ninja`. Every broadcast is spaced 30 s apart: each component waits the larger of its own delay and its launch slot (30 s per place in the list, plus the list's offset: 0 s, 10 s for `quarter_hour`, 20 s for the daily anchors), so a boot or a busy tick doesn't overflow the Ninja's queue. `super` and `system` tier components have no delay.
 - **`kata_key`** — the drawer key in the Kata cabinet where this component's summary is stored
 
 When the scheduler fires, it reads every KFC drawer and admits each component whose `trigger_subscriptions` includes the current `trigger.id`, then applies the shed rules:

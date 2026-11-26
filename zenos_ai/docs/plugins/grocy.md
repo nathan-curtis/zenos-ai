@@ -1,12 +1,20 @@
 # ZenOS-AI Grocy Inventory Component
 
-**Version:** 5.7.4  
+**Version:** 5.13.5  
 **Package:** `packages/zenos_ai/plugins/grocy/grocy.yaml`  
 **Primary script:** `zen_dojotools_inventory`  
 **Internal REST dispatcher:** `zen_sutra_grocy`  
 **KFC provider (sibling file):** `zen_sutra_logistics` — `packages/zenos_ai/plugins/grocy/sutra_logistics.yaml`, see [Logistics KFC Components](#logistics-kfc-components)
 
 ---
+
+> **2026.12.0 (5.10.0 to 5.13.5):** stock booking that books what it's told.
+> - [`bulk_stock_add`](#bulk_stock_add-preflight) checks every line before it writes anything.
+> - [`receipt_intake`](#receipt_intake) books a whole receipt, balanced to the cent and safe to rerun.
+> - A product can no longer be saved without a real unit. [`product_unit_audit` and `product_unit_repair`](#product-unit-repair) fix the ones that were.
+> - `stock_bbd_audit` and `stock_waste_expired` find and waste expired stock, never a false date.
+> - The Grocy Sutra reports a POST or DELETE that fails as an error; it used to report success.
+> - The userfield schema is 1.4.0: run `userfields_deploy`. New fields reach an MCP client after a restart.
 
 ## Overview
 
@@ -96,7 +104,12 @@ Read this as two truths meeting in the middle: the component knows what a part m
 | `stock_add_purchase` | Add purchased stock for an existing product |
 | `stock_consume` | Remove stock after use or replacement. Optional `spoiled: true` marks the consumption as waste/spoilage in Grocy's native stock log instead of a normal consume (default `false`). |
 | `waste_history` | Read-only: Grocy's own `spoiled=true` consume bookings (native waste log), optionally scoped to one `product_id`. `GET /objects/stock_log?query[]=spoiled=1` |
-| `bulk_stock_add` | Add stock (purchase) for a BOM list of products, resolving names with exact+fuzzy fallback. Each `bom` entry may carry its own `price` (real per-item price, e.g. from a receipt) overriding the call-level `price` for that item only. Requires `confirm_action: true` unless `dry_run: true`. `dry_run` (default `false`) skips the writes and returns a `preview` status per item. |
+| `bulk_stock_add` | Add stock (purchase) for a BOM list of products. Every line is resolved and checked before anything is written (see [preflight](#bulk_stock_add-preflight)); each booking is verified against Grocy's own record. Per-line overrides: `amount`, `price`, `unit`, `purchase_date`, `store`, `shopping_location_id`, `best_before_date`, `location_id`, `nonperishable`, `note`. `hold_invalid: true` books the clean lines and holds the rest. Requires `confirm_action: true` unless `dry_run: true`. |
+| `receipt_intake` | Book a whole receipt: header, lines, discounts, coupons and tax, checked in cents first and safe to rerun. See [receipt_intake](#receipt_intake). |
+| `stock_bbd_audit` | Read only. Stock entries whose best-before equals the purchase date on a product with a 0-day default: dates that were never real. |
+| `stock_waste_expired` | Expired stock by entry. The preview (default) lists each one and excludes false-date suspects. `dry_run: false` with `confirm_action: true` wastes only the `entry_ids` a person approved, each from its own entry and read back. |
+| `product_unit_audit` | Read only. Every product whose stock or purchase unit isn't a real unit, with its stock on hand. See [Product unit repair](#product-unit-repair). |
+| `product_unit_repair` | Reconcile one such product onto a new product with a real unit, and move every reference to it. Preview by default; `confirm_action: true` writes. Inventory Schema Edit level 1. |
 | `bulk_stock_reconcile_recent` | Reverse a duplicate/erroneous `bulk_stock_add` booking. For each product in `bom`, sums stock entries created at/after `since_timestamp` and subtracts that from the product's current total via `stock_inventory_adjust` — deliberately not `stock_undo_booking` or `stock_consume` (see code comments for why). `dry_run` defaults `true`; requires `confirm_action: true` to actually write. |
 | `shopping_add_product` | Add a specific product to the shopping list. Returns `{product_id, product_name, amount, list_id, action}` |
 | `shopping_remove_product` | Remove a product from the shopping list. Returns `{product_id, product_name, amount, list_id, action}` |
@@ -422,13 +435,79 @@ The `inventory` slice in the response carries the kitchen's volatile items from 
 }
 ```
 
-**Root cause:** `catalog_add_product` called without `unit_id` creates products with `qu_id_stock = null`. Grocy permanently blocks unit changes via API once stock history exists. The only recovery is delete and recreate with the correct unit specified at POST time.
+**Root cause:** a product created or updated with a unit that didn't resolve was stored with no unit. Grocy permanently blocks unit changes via API once stock history exists.
+
+**The guard (5.12.2):** the Grocy Sutra now refuses, for every caller, a product create whose stock or purchase unit isn't a real unit, and an update that carries one (`invalid_product_unit`). `update_product_meta`, `products_tag` and `provision_bom` no longer copy an empty unit back on their full-record writes. A product that already has no unit is fixed with [`product_unit_repair`](#product-unit-repair).
 
 **Prevention:** `catalog_add_product` now resolves the instance default unit ("each" → "Piece" fallback) when `unit_id` is omitted, before creating the product. `provision_bom` always passes `unit_id` — use it for any multi-part provisioning scenario.
 
 **`unit_conversions_add` global guard:** Calling `unit_conversions_add` without a `product_id` (global scope) now requires `confirm_action: true`. Global unit conversions affect all products in the instance and are a common source of accidental side effects. Scoped (per-product) conversions do not require confirmation.
 
 **`units_add` reactivation (v5.3.1):** if a unit name matches an existing but inactive unit, `units_add` now reactivates it instead of erroring on the duplicate name.
+
+---
+
+## bulk_stock_add preflight
+
+Every line is resolved and checked before anything is written:
+
+| Check | Rule |
+|---|---|
+| Product | `product_id`, or an exact name. Several matches is ambiguous: refused, never guessed. |
+| Units | A product with no purchase or stock unit is refused. A line whose `unit` isn't the product's purchase unit is refused. |
+| Parent | A product with no stock of its own (`no_own_stock`) is refused. |
+| Purchase date | A real date, not in the future. None means today, with a warning. |
+| Store | An exact name, else one partial match (with a warning), else refused. Or `shopping_location_id`. |
+| Best-before | An explicit date wins. `nonperishable` or a product default of -1 means never. A default of N days is the purchase date plus N. **A default of 0 means unknown and is refused**, not booked as expiring the day it was bought. |
+
+A line with errors stops the whole call, and nothing is written, unless `hold_invalid: true`. Then the valid lines are booked and the rest are held. Each booking is checked against Grocy's own booking record (purchase date, best-before, store, amount) and returns its booking and stock ids; a booking that failed, couldn't be verified or doesn't match says so. `purchased_date` is also sent by `stock_add_purchase`, `stock_buy_product` and `stock_add_by_barcode`.
+
+A call-level `note` isn't applied yet; give each line its own `note`.
+
+---
+
+## receipt_intake
+
+A receipt is booked as a receipt, not as a list of purchases.
+
+```yaml
+mode: receipt_intake
+dry_run: true          # the default: returns the plan
+receipt:
+  receipt_id: GROCER-2026-01-15-0001
+  store: Corner Grocer   # or shopping_location_id
+  purchase_date: "2026-01-15"
+  subtotal: 9.96
+  tax: 0
+  total: 9.96
+  lines:
+    - {line: 1, product_id: 101, description: MILK 2% GAL, amount: 2, unit: Gallon, unit_price: 5.48, line_total: 10.96}
+    - {line: 2, name: Cake Mix, type: free, line_total: 0}
+    - {line: 3, description: DIGITAL COUPON, type: coupon, line_total: -1.00}
+```
+
+- **Header:** `receipt_id`, `store` or `shopping_location_id`, `purchase_date`, `subtotal`, `tax`, `discounts`, `total`, `source_ref`, `notes`.
+- **Lines:** `line`, `product_id` or `name`, `description`, `amount`, `unit`, `unit_price` and/or `line_total`, `type` (`item`, `free`, `discount`, `coupon`), plus the bulk line keys (`best_before_date`, `nonperishable`, `location_id`, `note`).
+- **The money is checked in cents before anything is written:** `amount × unit_price = line_total` per line (within 1¢), items − discounts = subtotal and subtotal + tax = total (within 2¢). A receipt that doesn't balance is refused unless `allow_unbalanced: true`.
+- **Discounts and coupons** are recorded, never stocked. **Free lines** book at price 0. **Tax** is recorded, never spread into item prices.
+- **Item lines** go through the [bulk preflight](#bulk_stock_add-preflight). A line with no count or weight, in a unit other than the product's purchase unit, or for a product that buys and stocks in different units is held, never guessed.
+- **Safe to rerun.** Each booking's note is `rcpt:<receipt_id>/L<line>/R<receipt object>`. A rerun reads Grocy's stock log (notes survive consumption) and books only the lines that are missing.
+- **Kept in Grocy** as user objects: the `receipt` and `receipt_line` user entities (schema 1.4.0; `userfields_deploy` creates them).
+
+---
+
+## Product unit repair
+
+A product saved with no stock unit and then stocked can never get one through Grocy's API: Grocy changes a stocked product's unit only through a conversion from the old unit, and there is no old unit. The product id has to change, and everything that points at it has to follow.
+
+1. **`product_unit_audit`** (read only, a one-time check) lists every product whose stock or purchase unit is stored as empty, `None`, `null` or 0, or as a unit that no longer exists, with its stock on hand.
+2. **`product_unit_repair product_id=<id> unit_id=<id>`** previews by default; `confirm_action: true` writes. It:
+   - maps every reference first: in Grocy (stock, barcodes, chores, recipe ingredients, shopping list, meal plan, child products, user objects), in every cabinet (any `product_id` / `grocy_product_id` / `machine_product_id` key; kata and history cabinets are skipped), and in Mealie foods. A reference with no handler stops the product before anything is written;
+   - renames the old product `<name> (retired #<id>)`, creates the new one with the unit from the start (fields, userfields, barcodes and parent copied), and rebooks each stock entry with its own dates, price, location, store and note;
+   - zeroes the old stock by an inventory correction, not a consume, and repoints every reference through its owner (Room Manager, Mealie, Spa Manager's `consumables action=repoint`). A retired robot's Autovac catalog and receipt lines keep pointing at the old product as history;
+   - sets the old product inactive, and verifies: no live reference to the old id, and stock totals equal.
+
+Each step is journaled in the scratch cabinet, and a rerun continues from the journal. A finished repair deletes its journal. If the journal write can't be confirmed, the repair stops before any Grocy write.
 
 ---
 
@@ -498,7 +577,7 @@ Battery KFC was deliberately moved out of this file to `zen_stack_battery` (see 
 
 ## Userfields Schema Management
 
-ZenOS uses Grocy userfields to bind inventory objects to HA topology. The canonical schema (version **1.3.0**) defines **108 userfields**:
+ZenOS uses Grocy userfields to bind inventory objects to HA topology. The canonical schema is version **1.4.0**. 1.3.0 defined **108 userfields**, and 1.4.0 adds the `receipt` and `receipt_line` user entities and their fields for [receipt_intake](#receipt_intake):
 
 - **33 on Grocy's own objects:** products (20), locations (8), chores (2), tasks (1), shopping lists (1), shopping locations (1).
 - **75 on three ZenOS user entities** that `userfields_deploy` also creates: `depreciable_asset` (42, the finance depreciation codex), `catalog_item` (21, Library's physical items) and `asset_allocation` (12).
@@ -514,7 +593,7 @@ zen_dojotools_inventory:
   mode: userfields_deploy
 ```
 
-Idempotent — safe to re-run. Creates any missing fields, skips existing ones, stamps `schema_version: "1.3.0"` to the household cabinet under `grocy_schema`. **Run it before using any area-scoped inventory mode** (`chores_by_area`, `locations_get_by_area`, `room_brief`); without the schema, locations carry no `homeassistant_area` and those modes return nothing.
+Idempotent — safe to re-run. Creates any missing fields, skips existing ones, stamps `schema_version: "1.4.0"` to the household cabinet under `grocy_schema`. **Run it before using any area-scoped inventory mode** (`chores_by_area`, `locations_get_by_area`, `room_brief`); without the schema, locations carry no `homeassistant_area` and those modes return nothing.
 
 ### Auditing the Schema
 

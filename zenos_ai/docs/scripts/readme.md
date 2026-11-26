@@ -101,7 +101,7 @@ Identity resolver for household members and AI constructs. MCP-exposed. Resolves
 
 ---
 
-## 6. Zen DojoTools Scheduler — v5.7.1
+## 6. Zen DojoTools Scheduler — v5.7.2
 **File:** [`zen_dojotools_scheduler_readme.md`](zen_dojotools_scheduler_readme.md)
 
 Trigger orchestrator (the Abbot). Admits components by their Dojo drawer subscriptions and hands them to the `zen_abbot_launch` launcher; requests (`summary_request`, `supersummary_request`), maintenance forces (`summary_force`, `ninja_force`, `supersummary_force`), heartbeat drawer. The same file holds the Housekeeping and Safety Admit automations. Hardware triggers strip to `zen_dojotools_scheduler_custom.yaml`.

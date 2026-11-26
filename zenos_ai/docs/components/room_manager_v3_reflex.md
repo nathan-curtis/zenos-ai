@@ -190,7 +190,7 @@ never requires touching either file.
 | Label | Applied to | Effect |
 |---|---|---|
 | `<room>` (matches area_id) | The state sensor + every helper | Ties everything to this room. Auto-applied to the sensor by `self_label_resync` on next resync; helpers need it too. |
-| `zen_room_state` | The state sensor | Marks it as the room's authoritative state sensor — auto-applied by `self_label_resync`, don't apply by hand unless bootstrapping a room whose sensor name doesn't match either naming convention. |
+| `zen_room_state` | The state sensor | Marks it as the room's authoritative state sensor — auto-applied by `self_label_resync`, which finds each live sensor by its `room_state_room` attribute, whatever it's named. It also takes the label back from a dead leftover: an unavailable entity with no `room_state_room` whose room has a live sensor (only that label; room labels and registry rows stay). |
 | `motion` | Motion binary_sensor(s) | Drives `occupied`; motion *edges* also drive nightlight while asleep |
 | `occupied` | Presence binary_sensor(s) | Drives `occupied` |
 | `engaged` | media_player(s), monitored docks | Drives `engaged` on start; on stop, arms the shared timer's engaged→occupied decay |
@@ -437,12 +437,10 @@ not `input_number.<room>_delay_minutes` or similar. These are existence
 checks, not fuzzy matches; a typo is a silent no-op, not an error.
 
 **"New room's sensor isn't picking up its `zen_room_state` label"**
-Its friendly name must resolve to one of exactly two live entity_id
-conventions: `sensor.<room>_state` or `sensor.<room>_room_state`. If the
-sensor was deployed with a friendly_name that produces neither (an unusual
-slug collision), self-label won't find it — tag `zen_room_state` + the
-room's label by hand once, and it will be maintained (shunted, not
-re-applied) from then on.
+`self_label_resync` finds room sensors by their `room_state_room`
+attribute (dispatcher rev 14), so the entity_id doesn't matter. The sensor
+must be live and carry `room_state_room`; a sensor from an older template
+without that attribute isn't found. Run a resync after deploying it.
 
 **"How do I check if REFLEX is actually acting on state changes, without risking a wrong scene firing"**
 Set both `reflex_enable` AND `reflex_dry_run` on (via the labeled switch

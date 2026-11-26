@@ -54,6 +54,8 @@ Each one is off until you turn it on, unless it says otherwise.
 - **Paperwork:** an import Paperless couldn't file is flagged for a week, then listed quietly. *(Paperless; needs its read cert.)*
 - **The hot tub:** chemistry is judged against its last 24 hours, so one odd reading is a blip, not an alarm, and falling chlorine gets a warning before it's low.
 - **"What did the house do while I was out?":** security keeps a record of what it did on its own, and why. *(Always on.)*
+- **A grocery receipt:** hand the agent the receipt and it books every line, checked to the cent, with real purchase and best-before dates. A line it can't place is held for you, never guessed, and booking it twice does nothing. *(Grocy plugin.)*
+- **Expired stock:** the agent lists what has really expired, leaves out dates that were never real, and wastes only what you approve. *(Grocy plugin.)*
 - **Nobody could be asked:** a question that reached no phone answers that straight away, instead of waiting out a tap that can't come. *(Always on.)*
 - **A leak, an alarm or smoke:** the agent's summary of it starts at once, ahead of routine work. *(With the background summaries on.)*
 - **Judgment calls:** ask whether the forecast has changed enough to matter, when's the best time to mow, whether the hot tub is ready for a soak, whether a ticket looks ready to close, whether an overdue task is still real, or whether a room is really empty. Each answer is advice and says what it looked at. *(Preview; off until you turn on decision mode.)*
@@ -97,6 +99,7 @@ Each one is off until you turn it on, unless it says otherwise.
   See [SystemTools](../scripts/zen_dojotools_systemtools_readme.md).
 - **Labels 5.11.0, 5.11.1:** tagging or untagging through the tool re-arms the watchers that read that label. Labeling in the Home Assistant UI still needs the watcher turned off and on.
 - **Plant 5.14.0 to 5.16.0:** water and electrical summaries, the `water` and `electrical` components, behind `zenos.water.read` and `zenos.electrical.read`, from two new Plant codexes. Both are Oracle hosts; a decision never touches a valve or a breaker. See [The Plant codexes](../components/plant_manager.md#the-plant-codexes).
+- **Inventory 5.10.0 to 5.13.5 (Grocy plugin):** `receipt_intake`; `bulk_stock_add` checks every line before it writes; `stock_bbd_audit` and `stock_waste_expired`; `product_unit_audit` and `product_unit_repair`. See [Inventory](../plugins/grocy.md).
 - **FileCabinet 6.41.0:** `list` and `fleet` report drawer sizes, so you can see what fills a cabinet. See [FileCabinet](../scripts/zen_dojotools_filecabinet_readme.md#list).
 - **Oracle 0.4.0 (new, preview, off by default):** typed judgments through Home Assistant's `ai_task.evaluate`. 21 templates across seven components (Room Manager, Weather, Spa Master, Service Desk, Taskmaster, and Plant's water and electrical), each naming its own outcomes, and `ask` for an agent's own questions as advice. It never acts. Behind the operator's decision switch, `zenos.decision.use` and each component's decision cert (`zenos.decision.component.<component>`). See [Oracle](../scripts/zen_dojotools_oracle_readme.md#the-hosts) and [the story](#an-oracle-in-a-pear-tree).
 
@@ -147,6 +150,8 @@ It's a preview you try by hand; nothing in the background calls it yet. Where it
 - **Four new automations:** the Zen Security Sentry, the Zen Climate Envelope Watcher, Zen DojoTools Housekeeping and Zen Safety Admit.
 - **Your own trigger automations should send `summary_request`, not `summary_force`.** A force still works, but it's for maintenance now. See [the Scheduler](../scripts/zen_dojotools_scheduler_readme.md#requesting-a-run).
 - **Oracle needs Home Assistant 2026.11 and an AI Task entity that supports evaluation.** Without one, it answers `evaluator_unavailable`, and nothing else changes. Its `ask` fields reach an MCP client after a restart and a client reconnect.
+- **With the Grocy plugin, run `zen_dojotools_inventory mode=userfields_deploy`** to move to schema 1.4.0 (the receipt entities). Then `mode=product_unit_audit` lists any product saved without a real unit; fix each with `product_unit_repair`.
+- **`bulk_stock_add` refuses a line it can't resolve, and one bad line stops the whole call.** Pass `hold_invalid: true` to book the clean lines and hold the rest. A product whose default best-before is 0 days needs a date on the line.
 - **Autovac's `clean` answers `dispatched`, not `ok`.** Anything that reads `ok` from it needs updating.
 - **Includes 2026.11.1,** with its security fixes.
 
@@ -171,9 +176,10 @@ It's a preview you try by hand; nothing in the background calls it yet. Where it
   - A leak, alarm or smoke event starts its summaries at once, with no queue.
   - A routine refresh is a `summary_request`, through the normal gates; forces are for maintenance only. Autovac, garbage collection, Flynn's health refresh and the recovery router all send requests now.
   - SuperSummary runs every quarter hour, at start, and when a component's urgency asks for it, at most once every 5 minutes.
-  - At start, components launch 30 seconds apart, and one with no summary yet is filled. Flynn's start-up force is gone.
+  - Every broadcast launches components 30 seconds apart, so a busy tick (midnight fires three at once) no longer overflows the summarizer. At start, a component with no summary yet is filled, and Flynn's start-up force is gone.
   - The recovery router works out when each summary is stale from that component's own schedule, recovers the `system` tier too, and logs why it ran one.
   - SuperSummary uses the same rule to flag stale component summaries: it gives their age and never presents them as current. See [Freshness](../scripts/zen_dojotools_summarizers_readme.md#freshness).
+- **Room Manager labels its room sensors by what they are, not what they're named.** A live sensor carrying `room_state_room` gets `zen_room_state` and its room label at the next resync, and a dead leftover gives `zen_room_state` back.
 - **The summarizer kill switches can't be exposed to an agent.** They carry `zen_never_expose`, so Ectoplasm refuses them and Flynn keeps them unexposed.
 - **`sensor.zen_scheduler_queue_depth` measures pressure: Scheduler runs plus Ninja runs.** A dashboard card on it shows different numbers. See [the sensor reference](../sensors/readme.md#sensorzen_scheduler_queue_depth).
 - **Autovac:**
@@ -209,6 +215,10 @@ It's a preview you try by hand; nothing in the background calls it yet. Where it
 - **Editing a Grocy chore can turn it off or set its amount to 0.**
 - **The leak watch closes shutoff valves,** not only switches.
 - **A removed component no longer stops the Kung Fu bootstrap.**
+- **A Grocy write that failed says so.** A POST or DELETE that Grocy refused was reported as success, and `bulk_stock_add` reported every line as added.
+- **A product with a 0-day best-before default isn't booked as expiring the day it was bought.** `stock_bbd_audit` finds the entries that were.
+- **A product can't be saved without a real unit.** A unit that didn't resolve was saved as empty, and once the product had stock no tool could fix it. Now it's refused, and `product_unit_repair` fixes the ones that were saved.
+- **Spa Master's consumables answer.** Every action answered "Unknown action".
 - **Editing a stock entry's best-before date saves.** Inventory's `stock_entry_update` addressed the entry in a way Grocy refused, then reported the values you asked for as saved. It now writes to the right entry and reads it back from Grocy before reporting success.
 
 ---

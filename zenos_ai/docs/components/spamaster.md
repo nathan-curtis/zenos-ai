@@ -1,6 +1,6 @@
 # ZenOS-AI SpaMaster
 
-**Version:** 5.10.0. 5.9.0 and 5.10.0: an Oracle decision host; see [Decisions (KF6.5)](#decisions-kf65). 5.8.0: `summary` judges chemistry against its day: each reading against its 24-hour mean and 6-hour direction (Recorder history). Out of range now but the day in range and not moving away is `<metric>_blip` (1), likely one reading; a confirmed one keeps its score with the mean and direction; `chlorine_falling` (1) warns early. `chemistry.trends_24h` carries the mean and direction. 5.7.2: 5.7.2: on a spa with no water-temperature sensor, `summary` reads the controller's `current_temperature`; a spa with no cover or chemistry sensors simply skips those rules. 5.7.1: `summary` adds `not_heating` (3) and `cover_open_nobody_home` (3). 5.7.0 (#10702, KF6): `summary`, a scored read (urgency 0 to 5) that seeds the new `spamaster` background summary, with the read cert `zenos.spa.read` (in `zenos_agent_basic`). 5.6.0 (#10698): `zenos.actuation.spa_control` also covers `log` when the entry carries a salt boost, a cover close or a setpoint (those actuate), `setup`, and every `consumables` action except `status`. 5.5.x: the name fallbacks scan only their own domain; the chemistry history baseline query runs. 5.5.0: name outputs carry `entity_name` and `device_name`. 5.4.x: cert names in the `zenos.*` namespace. 5.3.0: onboarding gate (an agent without `zenos.agent.basic` gets help and `tool_manifest` only).
+**Version:** 5.10.2. 5.10.1, 5.10.2: `consumables` answers with its own result (an unknown-action fallback used to replace it), and `action=repoint` moves catalog entries between Grocy products. 5.9.0 and 5.10.0: an Oracle decision host; see [Decisions (KF6.5)](#decisions-kf65). 5.8.0: `summary` judges chemistry against its day: each reading against its 24-hour mean and 6-hour direction (Recorder history). Out of range now but the day in range and not moving away is `<metric>_blip` (1), likely one reading; a confirmed one keeps its score with the mean and direction; `chlorine_falling` (1) warns early. `chemistry.trends_24h` carries the mean and direction. 5.7.2: 5.7.2: on a spa with no water-temperature sensor, `summary` reads the controller's `current_temperature`; a spa with no cover or chemistry sensors simply skips those rules. 5.7.1: `summary` adds `not_heating` (3) and `cover_open_nobody_home` (3). 5.7.0 (#10702, KF6): `summary`, a scored read (urgency 0 to 5) that seeds the new `spamaster` background summary, with the read cert `zenos.spa.read` (in `zenos_agent_basic`). 5.6.0 (#10698): `zenos.actuation.spa_control` also covers `log` when the entry carries a salt boost, a cover close or a setpoint (those actuate), `setup`, and every `consumables` action except `status`. 5.5.x: the name fallbacks scan only their own domain; the chemistry history baseline query runs. 5.5.0: name outputs carry `entity_name` and `device_name`. 5.4.x: cert names in the `zenos.*` namespace. 5.3.0: onboarding gate (an agent without `zenos.agent.basic` gets help and `tool_manifest` only).
 **Script:** `zen_dojotools_spamaster`
 
 ---
@@ -297,7 +297,7 @@ For the shared Grocy inventory contract used by SpaMaster and AutoVac, see [Groc
 
 | Field | Description |
 |-------|-------------|
-| `action` | Sub-action: `status` \| `provision` \| `add_to_shopping` \| `log_replaced` \| `log_purchased` |
+| `action` | Sub-action: `status` \| `provision` \| `add_to_shopping` \| `log_replaced` \| `log_purchased` \| `repoint` |
 | `part` | Supply key from spa catalog (required for `log_replaced`, `log_purchased`) |
 | `amount` | Quantity for `log_purchased` (default 1, decimals supported) |
 | `force` | Re-run provision even if catalog already exists. Stock is preserved. |
@@ -315,7 +315,15 @@ What it does:
 2. Calls `provision_bom` twice (parts + chem supplies separately with different HA label sets) — resolves units, creates/finds products with correct `unit_id` at creation time, applies meta (`move_on_open`, `to_location_id`), tags with `spamaster,spamaster_part` or `spamaster,spamaster_chem`, creates/finds chores, seeds installed stock for new products
 3. Stores the full catalog in cabinet key `spa_consumables`
 
-Re-provision with `force=true` rebuilds the catalog entry; existing Grocy chores are found by name and reused rather than duplicated.
+Re-provision with `force=true` rebuilds the whole catalog: it clears the catalog's chore links and makes new products for any name it doesn't find. **Never use it to move the catalog to another product.**
+
+### Repoint
+
+```
+mode=consumables  action=repoint  config_json={"old_product_id": 531, "new_product_id": 1301}
+```
+
+Moves the catalog entries (parts and chemical supplies) that hold the old Grocy product id to the new one, and changes nothing else in `spa_config`. Inventory's [`product_unit_repair`](../plugins/grocy.md#product-unit-repair) calls it when a spa part's product is replaced.
 
 ---
 
