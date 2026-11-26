@@ -21,7 +21,7 @@ The house gets left home alone.
 
 Spinal Tap put locks on the cabinets and a pass in every agent's hand. Home Alone gives the house something to do with them. Security Manager grows from a panel reader into the house's security. It can tell you whether the house is ready to arm and keeps a record of what it did on its own. Once you turn them on, it also lights the house at dusk, lights the way in when you get home after dark, watches the garage doors, steps the alarm aside for the vacuum, and tells you when the range is on with nobody home. Climate learns which rooms each air handler serves and offers to pause the HVAC when a window's left open. A new Weather tool gives every other tool the forecast.
 
-The tools come up to caps: each gets a scored summary, a read cert of its own, and a background summary the agent can rely on. Underneath, the house's background thinking gets a calmer head. The Abbot only decides what runs. Maintenance and life-safety have their own lanes, and a routine refresh is a request, never a force. And a preview, Oracle, lets a component ask whether a change is worth a fresh summary before it pays for one.
+The tools come up to a capability baseline: each gets a scored summary, a read cert of its own, and a background summary the agent can rely on. Underneath, the house's background thinking gets a calmer head. The Abbot only decides what runs. Maintenance and life-safety have their own lanes, and a routine refresh is a request, never a force. And a preview, Oracle, lets a component ask whether a change is worth a fresh summary before it pays for one.
 
 Every new behavior is off until you turn it on, and each one acts only on grants you approved.
 
@@ -104,8 +104,6 @@ Each one is off until you turn it on, unless it says otherwise.
 
 ## The Coffee Bin
 
-<!-- Draft: Nathan to review. -->
-
 The house buys its coffee in one-pound bags and grinds from a bin. The bin weighs the same every time, so it's the tare. Weigh the bin, take the bin away, and what's left is coffee, counted in grams. Stock is the sealed bags at 454 g each, plus whatever is in the bin.
 
 Grocy handles tare weights, but it expects every stock write as the total on the scale, and ZenOS was sending "bought one bag". A purchase was refused, a use was read as a new total, and a count left out the container. Friday hit it first.
@@ -115,8 +113,6 @@ Grocy handles tare weights, but it expects every stock write as the total on the
 ---
 
 ## An Oracle in a Pear Tree
-
-<!-- Draft: Nathan to review. -->
 
 Every background summary costs the same whether the house changed or not. A trigger fires, the Ninja gathers the evidence, and a model writes the whole picture again. Most of the time the answer is "nothing much".
 
