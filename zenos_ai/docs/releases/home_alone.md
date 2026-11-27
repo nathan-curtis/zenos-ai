@@ -129,7 +129,7 @@ It's a preview you try by hand; nothing in the background calls it yet. Where it
 
 ## Read this before upgrading
 
-- **Home Alone is built for the pending Spook fix (5.11.2 or later).** Until it ships, follow the [Spook advisory](../../../README.md): Spook 5.6 to 5.10 can't load on Home Assistant 2026.11, and 5.11.0 and 5.11.1 freeze a ZenOS install.
+- **On Home Assistant 2026.11, use Spook 5.12.0** (see the [Spook advisory](../../../README.md)). Spook 5.6 to 5.10 can't load on 2026.11, and 5.11.0 and 5.11.1 freeze a ZenOS install.
   - Without a working Spook, the Zen Security Sentry can't run. Temporary overrides answer `spook_required`, and vacuum sync can't be turned on. Autovac's schedule editing needs Spook 5.11.0 or later.
   - Everything else in this release runs without it. The Sentry is its own automation, so a Spook problem never stops the Auto-Arm Watcher.
 - **Climate has its own file,** `dojotools_climate.yaml`, out of the Utilities bundle.
