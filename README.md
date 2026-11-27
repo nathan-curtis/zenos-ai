@@ -8,7 +8,7 @@ Welcome to the **Home Monastery**.
 
 **Current Stable: 2026.11.1 'This Is Spinal Tap'** (patch on 2026.11.0, `feat/2026.11.1`) | Previous: 2026.11.0 'This Is Spinal Tap' | Legacy line: 2026.9.1 'Steel Magnolia' (patch on 2026.9.0) and 2026.8.1 (patch on 2026.8.0 'Chef'). See [release notes](zenos_ai/docs/releases/spinal_tap.md).
 
-> **ZenOS Spook advisory (Home Assistant 2026.11):** install Spook **5.5.1** and park there until the pending Spook fixes ship in 5.11.2 or later. On Home Assistant 2026.11, Spook 5.6.0 to 5.10.0 fail to load (`cannot import name 'CONF_STOP_ACTIONS'`), and 5.11.0 and 5.11.1 freeze a ZenOS install for 30 to 40 seconds at a time ([frenck/spook#2005](https://github.com/frenck/spook/issues/2005)). On 5.5.1 everything works except the Ectoplasm actions that need Spook 5.7.0 (repair and ghost lists, categories, entity icons and aliases, and helper create and delete other than `input_number`): those answer `spook_version_required` and change nothing. To move: in HACS open **Spook**, choose **Redownload**, pick **5.5.1**, and restart Home Assistant. Still on Home Assistant 2026.10 or earlier? Stay where you are.
+> **ZenOS Spook advisory (Home Assistant 2026.11):** update Spook to **[5.12.0](https://github.com/frenck/spook/releases/tag/v5.12.0)**, tested with ZenOS on Home Assistant 2026.11. Skip 5.6.0 to 5.11.1: 5.6.0 to 5.10.0 fail to load on 2026.11 (`cannot import name 'CONF_STOP_ACTIONS'`), and 5.11.0 and 5.11.1 freeze a ZenOS install for 30 to 40 seconds at a time ([frenck/spook#2005](https://github.com/frenck/spook/issues/2005)). If you parked on 5.5.1, update now: the Ectoplasm actions that need Spook 5.7.0 or later (repair and ghost lists, categories, entity icons and aliases, and helper create and delete) work again. In HACS open **Spook**, update to **5.12.0**, and restart Home Assistant.
 
 > **Versioning:** Public ZenOS releases follow Home Assistant's `YYYY.M.patch` convention — if you're already running HA, you already know this clock. Internal architecture versioning (`5.1.x` series) is retained in commit history and internal tooling.
 
@@ -98,7 +98,7 @@ The year started with cabinets and a scheduler. It ends with a house that knows 
 
 - **Home Assistant** with packages enabled. Home Assistant plus a local inference server is enough; a full homelab is optional.
 - **A conversation agent with tool calling** and a context window that holds the ZenOS prompt, the tool manifest and live state in one pass. Not recommended: models under about 4B parameters (or about 8B if released before November 2025). The target is a context of about 64K or smaller, so the whole system can run locally on a single 16 GB GPU.
-- **Spook** (from HACS). On Home Assistant 2026.11, use Spook 5.5.1 for now; see the advisory above.
+- **Spook** (from HACS). On Home Assistant 2026.11, use Spook 5.12.0; see the advisory above.
 - **The Home Assistant Companion App** on a phone that can receive a push. Every cert, including your agent's backstage pass, is approved there.
 
 Install: follow the **[Install Guide](zenos_ai/docs/getting_started/install.md)**. Plugins under `packages/zenos_ai/plugins/` are optional.
